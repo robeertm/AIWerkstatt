@@ -96,7 +96,8 @@ def any_real_connected():
 
 @app.get("/api/health")
 def health():
-    return jsonify(ok=True, providers=[s.id for s in providers.all_specs()])
+    return jsonify(ok=True, version=config.VERSION,
+                   providers=[s.id for s in providers.all_specs()])
 
 
 @app.get("/api/me")
@@ -439,6 +440,27 @@ def update_check():
         pass
     _update_cache.update(at=now, data=data)
     return jsonify(data)
+
+
+@app.post("/api/update/install")
+@admin_required
+def update_install():
+    """Kick off a one-click update: exec the self-update script in the updater
+    sidecar (detached). It rebuilds and recreates the web container, so this
+    request's own process is replaced a minute later — the UI polls /api/health
+    and reloads when the new version answers."""
+    if ORCH._client is None:
+        return jsonify(error="Docker is unavailable."), 503
+    try:
+        c = ORCH._client.containers.get("aiwerkstatt-updater")
+    except Exception:
+        return jsonify(error="The updater isn't running. Recreate the stack once with "
+                             "`docker compose up -d` to enable one-click updates."), 409
+    try:
+        c.exec_run(["sh", "/project/scripts/self-update.sh"], detach=True)
+    except Exception as e:
+        return jsonify(error="Could not start the update: %s" % e), 500
+    return jsonify(ok=True), 202
 
 
 def _newer(a, b):

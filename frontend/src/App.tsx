@@ -32,7 +32,7 @@ function Working({ color }: { color: string }) {
 }
 
 // ---------- Login ----------
-function Login({ users, onDone }: { users: { name: string; emoji: string }[]; onDone: () => void }) {
+function Login({ users, onDone, version }: { users: { name: string; emoji: string }[]; onDone: () => void; version?: string }) {
   const [name, setName] = useState<string | null>(users.length === 1 ? users[0].name : null)
   const [pin, setPin] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -45,7 +45,7 @@ function Login({ users, onDone }: { users: { name: string; emoji: string }[]; on
       <div className="card pad stack fadein" style={{ width: 340 }}>
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: '2.2rem' }}>🛠️</div>
-          <div className="brand" style={{ fontSize: '1.3rem' }}>AIWerkstatt</div>
+          <div className="brand" style={{ fontSize: '1.3rem' }}>AIWerkstatt{version ? <small style={{ fontWeight: 500, color: 'var(--muted)' }}> v{version}</small> : null}</div>
           <div className="muted" style={{ fontSize: '.85rem' }}>Sign in</div>
         </div>
         {!name ? (
@@ -625,13 +625,30 @@ function LimitBanner() {
 function UpdateBanner() {
   const [u, setU] = useState<UpdateInfo | null>(null)
   const [hidden, setHidden] = useState(false)
+  const [state, setState] = useState<'idle' | 'updating' | 'error'>('idle')
   useEffect(() => { api.getUpdate().then(setU).catch(() => {}) }, [])
+  const doUpdate = async () => {
+    if (!confirm('Update now? AIWerkstatt rebuilds and restarts — this takes about a minute and briefly interrupts running work. The page reloads when it’s done.')) return
+    setState('updating')
+    try { await api.installUpdate() } catch { setState('error'); return }
+    const target = u?.latest
+    let tries = 0
+    const poll = () => api.getHealth().then((h) => {
+      if (!target || h.version === target) { location.reload(); return }
+      if (++tries > 140) { setState('error'); return }
+      setTimeout(poll, 3000)
+    }).catch(() => { if (++tries > 140) { setState('error'); return } setTimeout(poll, 3000) })
+    setTimeout(poll, 6000)
+  }
   if (hidden || !u?.update_available) return null
+  if (state === 'updating')
+    return <div className="banner info"><Working color="var(--accent)" /><span>Updating to {u.latest}… AIWerkstatt is rebuilding and will reload automatically (about a minute).</span></div>
   return (
     <div className="banner info">
       <span>🎉 AIWerkstatt {u.latest} is available (you have {u.current}).</span>
       <a href={u.url} target="_blank" rel="noreferrer">Release notes ↗</a>
-      <span>Update with <code>git pull &amp;&amp; docker compose up -d --build</code></span>
+      <button className="btn primary" style={{ padding: '.3rem .8rem' }} onClick={doUpdate}>⤴️ Update now</button>
+      {state === 'error' && <span style={{ color: 'var(--bad)' }}>Update failed — try <code>git pull &amp;&amp; docker compose up -d --build</code>.</span>}
       <span className="spacer" />
       <button className="chip" onClick={() => setHidden(true)}>dismiss</button>
     </div>
@@ -786,11 +803,13 @@ export default function App() {
   const [showAccount, setShowAccount] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
   const [onboard, setOnboard] = useState(() => !localStorage.getItem('aiw_onboarded'))
+  const [version, setVersion] = useState('')
   const refreshMe = useCallback(() => api.getMe().then(setMe).catch(() => setMe({ logged_in: false, users: [] })), [])
   useEffect(() => { refreshMe() }, [refreshMe])
+  useEffect(() => { api.getHealth().then((h) => setVersion(h.version)).catch(() => {}) }, [])
 
   if (!me) return <div className="center muted">Loading…</div>
-  if (!me.logged_in) return <Login users={me.users} onDone={refreshMe} />
+  if (!me.logged_in) return <Login users={me.users} onDone={refreshMe} version={version} />
 
   const user: User = me.user
   const isAdmin = user.role === 'admin'
@@ -806,6 +825,7 @@ export default function App() {
         {isAdmin && <button className="chip" onClick={() => setShowUsers(true)}>👥 Users</button>}
         <button className="chip" title="Help" onClick={() => setShowHelp(true)}>❔</button>
         <button className="chip" title="Account · change PIN" onClick={() => setShowAccount(true)}>{user.emoji} {user.name}</button>
+        {version && <span className="chip muted" title="Running version">v{version}</span>}
         <button className="chip" onClick={() => api.logout().then(refreshMe)}>Sign out</button>
       </div>
       {isAdmin && <UpdateBanner />}

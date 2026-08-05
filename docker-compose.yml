@@ -79,6 +79,26 @@ services:
     profiles: ["build-only"]
     command: ["true"]
 
+  # In-app updater. Idles until the web app triggers a one-click update; then it
+  # rebuilds and recreates the web container from a fresh `git pull`. It reaches
+  # Docker only through the proxy (no raw socket). The project directory is
+  # mounted so it can pull source and run compose. See docs/security.md.
+  updater:
+    build:
+      context: ./updater
+    image: aiwerkstatt-updater:latest
+    container_name: aiwerkstatt-updater
+    restart: unless-stopped
+    environment:
+      DOCKER_HOST: tcp://dockerproxy:2375
+    volumes:
+      - .:/project
+    working_dir: /project
+    depends_on:
+      - dockerproxy
+    networks:
+      - internal
+
 networks:
   internal:
     driver: bridge
