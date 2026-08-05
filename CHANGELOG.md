@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.3 — 2026-08-05
+
+### Fixed
+
+- **A hung agent no longer blocks its project (stall watchdog).** If the agent
+  process stops producing output while tasks are still pending — for example when
+  it gets stuck in an API-retry dead end or on a dead socket — the session used to
+  stay open indefinitely (the idle timeout only fires when nothing is pending),
+  holding the project's slot so new requests were never picked up. Now the session
+  terminates a silent agent after `WK_STALL_TIMEOUT` (default 600 s) and re-queues
+  its tasks for automatic retry, so the workshop self-heals. The stop control
+  remains an instant manual reset.
+
 ## 0.3.2 — 2026-08-05
 
 ### Fixed

@@ -57,6 +57,11 @@ RUNLOG      = os.environ.get("WK_RUNLOG", "/tmp/agent-runlog.jsonl")
 # via WK_IDLE_TIMEOUT if you want a longer warm window.
 IDLE_TIMEOUT = int(os.environ.get("WK_IDLE_TIMEOUT", "30"))
 MAX_SESSION  = int(os.environ.get("WK_MAX_SESSION", "7200"))
+# Stall watchdog: if the agent produces NO output for this long while tasks are still
+# pending (e.g. it hangs in an API-retry dead end / on a dead socket), treat it as stuck,
+# terminate it and re-queue the tasks. Without this the session would stay open forever
+# (the idle timeout only fires when nothing is pending) and block the project's slot.
+STALL_TIMEOUT = int(os.environ.get("WK_STALL_TIMEOUT", "600"))
 AUTO_PCT     = int(os.environ.get("WK_AUTO_COMPACT_PCT", "80"))
 LIMIT_WAIT   = int(os.environ.get("WK_LIMIT_WAIT", "1800"))
 
@@ -177,6 +182,7 @@ def main():
 
     start = time.time()
     last_activity = start
+    last_output = start        # stall watchdog: when did the agent last produce ANY output?
     ctx_pct = 0
     ctx_window = CTX_WINDOW
     sid = None
@@ -227,6 +233,7 @@ def main():
     while True:
         # 1) new runlog lines → normalised events
         for line in rlf:
+            last_output = time.time()   # any byte from the agent → it's alive (stall watchdog)
             for ev in adapter.parse_line(line):
                 kind = ev.get("kind")
                 if kind == "session":
@@ -314,6 +321,17 @@ def main():
             log("agent process ended (rc=%s) — closing session" % proc.returncode)
             break
         now = time.time()
+        # Stall watchdog: tasks are pending but the agent has gone silent for too long → it's
+        # hung (API-retry dead end / dead socket). Terminate it; the pending tasks are re-queued
+        # in teardown (auto-retry up to MAX_RETRIES). Keeps a hung agent from blocking the project.
+        if expected and now - last_output > STALL_TIMEOUT:
+            log("stall watchdog: no output for %ds with %d task(s) pending — agent hung, terminating + re-queueing"
+                % (int(now - last_output), len(expected)))
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            break
         idle = not expected
         if idle and now - last_activity > IDLE_TIMEOUT:
             log("idle timeout — closing session"); break
