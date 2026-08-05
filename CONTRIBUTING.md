@@ -11,7 +11,7 @@ one of the most valuable things you can add, and it's a small, well-defined chan
 (Windows/macOS) or Docker Engine (Linux).
 
 ```bash
-git clone https://github.com/OWNER/aiwerkstatt.git
+git clone https://github.com/robeertm/AIWerkstatt.git
 cd aiwerkstatt
 cp .env.example .env          # optional — sensible defaults, works as-is
 docker compose build          # builds the web UI + the agent-runner image
