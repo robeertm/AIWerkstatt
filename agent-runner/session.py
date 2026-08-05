@@ -51,7 +51,11 @@ LIVEFILE    = os.environ.get("WK_LIVEFILE", os.path.join(EVENTS, "live-%d.jsonl"
 INBOX       = os.environ.get("WK_INBOX", "/inbox")
 RUNLOG      = os.environ.get("WK_RUNLOG", "/tmp/agent-runlog.jsonl")
 
-IDLE_TIMEOUT = int(os.environ.get("WK_IDLE_TIMEOUT", "480"))
+# How long a session stays open after "done" so a quick follow-up lands in the
+# same live conversation. Kept short — once the agent is finished, the slot frees
+# up fast; a later follow-up resumes the session (full context preserved). Raise
+# via WK_IDLE_TIMEOUT if you want a longer warm window.
+IDLE_TIMEOUT = int(os.environ.get("WK_IDLE_TIMEOUT", "30"))
 MAX_SESSION  = int(os.environ.get("WK_MAX_SESSION", "7200"))
 AUTO_PCT     = int(os.environ.get("WK_AUTO_COMPACT_PCT", "80"))
 LIMIT_WAIT   = int(os.environ.get("WK_LIMIT_WAIT", "1800"))

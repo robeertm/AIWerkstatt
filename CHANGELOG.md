@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.1 — 2026-08-05
+
+### Changed
+
+- **Sessions close quickly once the agent is done.** The window a task session
+  stays open for a fast follow-up is now **30 s** (was 8 minutes). When the agent
+  finishes, the slot frees up right away and the "session open" indicator clears;
+  a later follow-up resumes the session with full context intact. Interjecting
+  while the agent is still working is unaffected. Override with `WK_IDLE_TIMEOUT`.
+
 ## 0.3.0 — 2026-08-05
 
 ### Added
