@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  leak-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Blocks the build on any secret / private-data finding (0 blocking required).
+      - name: Leak scan
+        run: python backend/scrub/scan.py .
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Byte-compile backend + agent-runner
+        run: |
+          python -m py_compile backend/*.py backend/providers/*.py backend/scrub/*.py
+          python -m py_compile agent-runner/session.py agent-runner/demo_agent.py agent-runner/providers/*.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci || npm install
+          npm run build

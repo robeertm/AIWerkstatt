@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import tempfile
 import threading
 import time
 
@@ -48,6 +50,15 @@ VOL_INBOX = os.environ.get("AIWERKSTATT_VOL_INBOX", "aiwerkstatt-inbox")
 
 MEM_LIMIT = os.environ.get("AIWERKSTATT_RUN_MEM", "2g")
 PIDS_LIMIT = int(os.environ.get("AIWERKSTATT_RUN_PIDS", "512"))
+
+# Used when a project workspace has no Dockerfile of its own: serve it statically.
+DEFAULT_DOCKERFILE = (
+    "FROM python:3.12-alpine\n"
+    "WORKDIR /site\n"
+    "COPY . /site\n"
+    "EXPOSE 8080\n"
+    'CMD ["python", "-m", "http.server", "8080"]\n'
+)
 
 
 def _log(msg):
@@ -102,6 +113,9 @@ class Orchestrator:
         slug = d["slug"]
         thread_id = int(d["thread_id"])
         provider = d.get("provider") or "claude"
+        # Ensure the project's workspace dir exists (shared volume, uid 10001) — the
+        # runner uses it as cwd, which would fail if it were missing.
+        os.makedirs("%s/%s" % (WORKSPACES_BIND, slug), exist_ok=True)
         first = self._write_first(thread_id, d.get("text", ""))
         env = {
             "WK_SLUG": slug,
@@ -210,6 +224,51 @@ class Orchestrator:
                 self._handle(d)
             except Exception as e:
                 _log("handle error for %s: %s" % (n, e))
+
+    # ---- deploy the app the agent built --------------------------------
+    def deploy(self, project_id, port):
+        """Build an image from the project workspace and run it as a sibling
+        container on the given host port. If the workspace has no Dockerfile,
+        a default static server is used so simple (index.html) apps just work."""
+        src = "%s/%s" % (WORKSPACES_BIND, project_id)
+        if not os.path.isdir(src) or not os.listdir(src):
+            return False
+        ctx = tempfile.mkdtemp(prefix="aiw-build-")
+        try:
+            for entry in os.listdir(src):
+                if entry in (".git", "node_modules", ".venv"):
+                    continue
+                s, d = os.path.join(src, entry), os.path.join(ctx, entry)
+                if os.path.isdir(s):
+                    shutil.copytree(s, d, ignore=shutil.ignore_patterns(".git", "node_modules", ".venv"))
+                else:
+                    shutil.copy2(s, d)
+            if not os.path.exists(os.path.join(ctx, "Dockerfile")):
+                with open(os.path.join(ctx, "Dockerfile"), "w", encoding="utf-8") as f:
+                    f.write(DEFAULT_DOCKERFILE)
+            tag = "aiwerkstatt-app-%s:latest" % project_id
+            self._client.images.build(path=ctx, tag=tag, rm=True, forcerm=True)
+        except Exception as e:
+            _log("build failed for %s: %s" % (project_id, e))
+            shutil.rmtree(ctx, ignore_errors=True)
+            return False
+        shutil.rmtree(ctx, ignore_errors=True)
+        name = "aiwerkstatt-app-%s" % project_id
+        try:
+            self._client.containers.get(name).remove(force=True)
+        except Exception:
+            pass
+        try:
+            self._client.containers.run(
+                tag, detach=True, name=name,
+                ports={"8080/tcp": int(port)},
+                restart_policy={"Name": "unless-stopped"},
+                mem_limit="1g", pids_limit=256)
+            _log("deployed %s on host port %s" % (project_id, port))
+            return True
+        except Exception as e:
+            _log("run failed for %s: %s" % (project_id, e))
+            return False
 
     def run_loop(self, interval=1.0):
         if self._client is None:

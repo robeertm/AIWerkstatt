@@ -1,0 +1,37 @@
+name: Release
+
+# Tagging vX.Y.Z publishes a source archive as a GitHub release. The version in
+# pyproject.toml and a matching `## X.Y.Z` CHANGELOG section are the source of
+# truth (see docs/releasing.md).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Leak scan (fail-closed before publishing)
+        run: python backend/scrub/scan.py .
+
+      - name: Build source archive
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          git archive --format=tar.gz --prefix="aiwerkstatt-${VERSION}/" -o "aiwerkstatt-${VERSION}.tar.gz" HEAD
+
+      - name: Extract changelog section
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk "/^## ${VERSION}/{f=1;next} /^## /{f=0} f" CHANGELOG.md > RELEASE_NOTES.md || true
+          [ -s RELEASE_NOTES.md ] || echo "Release ${VERSION}" > RELEASE_NOTES.md
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: RELEASE_NOTES.md
+          files: aiwerkstatt-*.tar.gz
