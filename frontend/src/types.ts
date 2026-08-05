@@ -25,6 +25,8 @@ export type UsageSummary = {
   today: { tokens: number; cost: number; runs: number }
   by_provider: { provider: string; tokens: number; cost: number; runs: number }[]
 }
+export type PlanWindow = { pct: number | null; resets_at: string | null }
+export type PlanLimit = { connected: boolean; available?: boolean; session?: PlanWindow; weekly?: PlanWindow }
 export type LimitStatus = { active: boolean; until?: number; resumes_at?: string }
 export type UpdateInfo = { current: string; latest: string | null; update_available: boolean; url: string }
 export type GithubStatus = { connected: boolean; login: string | null }
