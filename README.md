@@ -41,7 +41,7 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 **Prerequisite:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/macOS) or Docker Engine (Linux).
 
 ```bash
-git clone https://github.com/OWNER/aiwerkstatt.git
+git clone https://github.com/robeertm/AIWerkstatt.git
 cd aiwerkstatt
 cp .env.example .env          # optional — sensible defaults, works as-is
 docker compose build          # builds the web UI + the agent-runner image
