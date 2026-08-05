@@ -7,10 +7,10 @@
 
 One `docker compose up`. Any AI provider. Runs on your machine — Windows, macOS, Linux.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: Source-available](https://img.shields.io/badge/license-source--available-blue.svg)](LICENSE)
 [![Runs on Docker](https://img.shields.io/badge/runs%20on-Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![Providers](https://img.shields.io/badge/providers-Claude%20·%20OpenAI%20·%20Gemini-6E56CF)](#-connect-your-ai-provider)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Free to self-host](https://img.shields.io/badge/free%20to-self--host-brightgreen.svg)](#-quickstart-1-minute)
 
 </div>
 
@@ -41,6 +41,8 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 | <img src="docs/screenshots/02-gallery.png" alt="Project gallery" width="410"> | <img src="docs/screenshots/03-project.png" alt="Project view with per-project provider and model" width="410"> |
 | **Connect any AI provider** | **The live app, built in a container** |
 | <img src="docs/screenshots/05-providers.png" alt="Connect Claude, OpenAI or Gemini — or use the zero-key demo" width="410"> | <img src="docs/screenshots/06-live-app.png" alt="A live app the agent built, served from its own container" width="410"> |
+| **Publish it — leak-scanned first** | **See what it costs** |
+| <img src="docs/screenshots/10-publish.png" alt="Publish panel: scan for secrets, download a zip, or push to GitHub" width="410"> | <img src="docs/screenshots/08-usage.png" alt="Usage: tokens and cost, today and all-time, per provider" width="410"> |
 
 ## ✨ Why AIWerkstatt
 
@@ -49,8 +51,10 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 - **💬 Chat, don’t prompt-engineer.** Describe what you want like you’d tell a person. Follow up mid-run — the agent folds your note into what it’s already doing.
 - **📦 Isolated by design.** Every agent run and every app it builds runs in its **own container**. The agent can’t touch your machine, only its workspace.
 - **🚀 Live apps, instantly.** Each project deploys to a local port and gets a “open live” link. Watch it come together.
-- **🗂️ See everything.** Live thinking ticker, full file browser, context meter with one-click compaction, stop button — all the controls, none of the terminal.
-- **🔒 Leak-safe sharing.** A built-in scanner blocks secrets and private data before anything is ever pushed to a public repo.
+- **🗂️ See everything.** Live activity ticker, full file browser, context meter with one-click compaction, stop button, unread markers — all the controls, none of the terminal.
+- **🚀 Publish in a click.** Download a project as a zip, or push it straight to a GitHub repo you own — **leak-scanned first** so secrets and private data never ship.
+- **📊 Know what it costs.** A usage view tracks output tokens and cost per provider, today and all-time. The zero-key demo is free.
+- **👥 Bring your household or team.** PIN logins, an admin user manager, and per-user unread badges — everyone shares the same workshop.
 
 ## 🚀 Quickstart (1 minute)
 
@@ -116,11 +120,15 @@ The agent is contained, the Docker socket is proxied down to a minimal surface, 
 deterministic leak scanner guards anything you choose to publish. Read
 [docs/security.md](docs/security.md) before exposing it beyond localhost.
 
-## 🤝 Contributing
+## 💬 Feedback
 
-Issues and PRs welcome — new provider adapters especially. See [CONTRIBUTING.md](CONTRIBUTING.md).
-Every PR runs a leak scan and the test suite in CI.
+Bug reports and feature ideas are very welcome — please [open an issue](https://github.com/robeertm/AIWerkstatt/issues).
+Missing an AI provider? That's one of the most useful things to ask for. See [CONTRIBUTING.md](CONTRIBUTING.md)
+for how the pieces fit and how to run your own local build.
 
 ## 📄 License
 
-MIT © contributors. See [LICENSE](LICENSE).
+**Source-available — free to run, not for redistribution.** © 2026 Robert Manuwald.
+You may download and run AIWerkstatt for your own personal or internal use. Modifying,
+redistributing, or hosting it for others is not permitted without written permission.
+The apps *you* build with it are yours. See [LICENSE](LICENSE).

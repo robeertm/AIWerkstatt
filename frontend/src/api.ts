@@ -1,4 +1,7 @@
-import type { Me, User, Provider, Project, ThreadSummary, ThreadDetail, FileListing } from './types'
+import type {
+  Me, User, Provider, Project, ThreadSummary, ThreadDetail, FileListing,
+  UsageSummary, LimitStatus, UpdateInfo, GithubStatus, ActivityItem, ScanResult, PublishStatus,
+} from './types'
 
 async function j<T>(r: Response): Promise<T> {
   if (!r.ok) {
@@ -38,7 +41,7 @@ export const disconnectProvider = (id: string) => req(`/api/providers/${id}/cred
 
 // projects
 export const getProjects = () => fetch('/api/projects').then(j<{ projects: Project[]; me: string }>)
-export const getProject = (id: string) => fetch(`/api/projects/${id}`).then(j<{ project: Project; threads: ThreadSummary[] }>)
+export const getProject = (id: string) => fetch(`/api/projects/${id}`).then(j<{ project: Project; threads: ThreadSummary[]; publish: PublishStatus }>)
 export const createProject = (p: { name: string; emoji: string; desc: string; idea: string; provider: string; model?: string; effort?: string }) =>
   req('/api/projects', 'POST', p).then(j<{ project: Project }>)
 export const deleteProject = (id: string) => req(`/api/projects/${id}`, 'DELETE').then(j<{ ok: boolean }>)
@@ -58,6 +61,27 @@ export const getFiles = (id: string, path: string) =>
   fetch(`/api/projects/${id}/files?path=${encodeURIComponent(path)}`).then(j<FileListing>)
 export const fileRawUrl = (id: string, path: string) =>
   `/api/projects/${id}/files/raw?path=${encodeURIComponent(path)}`
+
+export const markSeen = (tid: number) => req(`/api/threads/${tid}/seen`, 'POST').then(j<{ ok: boolean }>)
+
+// visibility
+export const getActivity = (id: string) => fetch(`/api/projects/${id}/activity`).then(j<{ activity: ActivityItem[] }>)
+export const getUsage = () => fetch('/api/usage').then(j<UsageSummary>)
+export const getLimit = () => fetch('/api/limit').then(j<LimitStatus>)
+export const getUpdate = () => fetch('/api/update').then(j<UpdateInfo>)
+
+// github account (for publishing)
+export const getGithub = () => fetch('/api/github').then(j<GithubStatus>)
+export const connectGithub = (token: string) => req('/api/github', 'POST', { token }).then(j<{ ok: boolean; login: string }>)
+export const disconnectGithub = () => req('/api/github', 'DELETE').then(j<{ ok: boolean }>)
+
+// publish / release
+export const scanPublish = (id: string) => req(`/api/projects/${id}/publish/scan`, 'POST').then(j<{ scan: ScanResult; has_files: boolean }>)
+export const publishProject = (id: string, repo: string, priv: boolean) =>
+  req(`/api/projects/${id}/publish`, 'POST', { repo, private: priv }).then(j<{ ok: boolean; full_name: string; html_url: string; visibility: string; status: PublishStatus }>)
+export const releaseProject = (id: string, version: string, notes: string) =>
+  req(`/api/projects/${id}/release`, 'POST', { version, notes }).then(j<{ ok: boolean; tag: string; html_url: string; status: PublishStatus }>)
+export const exportUrl = (id: string) => `/api/projects/${id}/publish/export`
 
 // live URL from the current host + the project's port (never a hard-coded host).
 export const liveUrl = (port: number | null | undefined): string | null =>

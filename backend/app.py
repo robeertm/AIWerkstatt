@@ -12,6 +12,7 @@ import time
 
 from functools import wraps
 
+import requests
 from flask import Flask, jsonify, request, send_from_directory, send_file, abort, session
 
 import config
@@ -19,6 +20,7 @@ import db
 import store
 import engine
 import providers
+import publish
 import orchestrator as orch
 
 DIST = os.environ.get("AIWERKSTATT_DIST",
@@ -218,13 +220,16 @@ def _shape_project(p):
 @app.get("/api/projects")
 @login_required
 def projects_list():
+    me_name = current_user()["name"]
     out = []
     for p in engine.list_projects():
         d = _shape_project(p)
-        d["threads"] = len(engine.list_threads(p["id"]))
-        d["active"] = any(t["status"] in ("working", "queued") for t in engine.list_threads(p["id"]))
+        threads = engine.list_threads(p["id"])
+        d["threads"] = len(threads)
+        d["active"] = any(t["status"] in ("working", "queued") for t in threads)
+        d["unread"] = engine.project_unread(p["id"], me_name)
         out.append(d)
-    return jsonify(projects=out, me=current_user()["name"])
+    return jsonify(projects=out, me=me_name)
 
 
 @app.post("/api/projects")
@@ -251,7 +256,9 @@ def project_detail(pid):
     p = engine.get_project(pid)
     if not p:
         abort(404)
-    return jsonify(project=_shape_project(p), threads=engine.list_threads(pid))
+    return jsonify(project=_shape_project(p),
+                   threads=engine.list_threads(pid, current_user()["name"]),
+                   publish=publish.pub_status(pid))
 
 
 @app.post("/api/projects/<pid>/settings")
@@ -354,6 +361,168 @@ def thread_stop(tid):
         abort(404)
     engine.enqueue_stop(engine.get_project(th["project_id"]), tid)
     return jsonify(ok=True), 202
+
+
+@app.post("/api/threads/<int:tid>/seen")
+@login_required
+def thread_seen(tid):
+    engine.mark_seen(tid, current_user()["name"])
+    return jsonify(ok=True)
+
+
+# ---------- live activity, usage, rate-limit (visibility) ----------
+
+@app.get("/api/projects/<pid>/activity")
+@login_required
+def project_activity(pid):
+    if not engine.get_project(pid):
+        abort(404)
+    return jsonify(activity=engine.project_activity(pid))
+
+
+@app.get("/api/usage")
+@login_required
+def usage():
+    return jsonify(engine.usage_summary())
+
+
+@app.get("/api/limit")
+@login_required
+def limit():
+    return jsonify(engine.limit_status())
+
+
+# ---------- self-update check (admin) ----------
+
+_update_cache = {"at": 0, "data": None}
+
+
+@app.get("/api/update")
+@login_required
+def update_check():
+    now = time.time()
+    if _update_cache["data"] and now - _update_cache["at"] < 3600:
+        return jsonify(_update_cache["data"])
+    data = {"current": config.VERSION, "latest": None, "update_available": False,
+            "url": "https://github.com/%s/releases" % config.REPO_SLUG}
+    try:
+        r = requests.get("https://api.github.com/repos/%s/releases/latest" % config.REPO_SLUG,
+                         headers={"Accept": "application/vnd.github+json", "User-Agent": "AIWerkstatt"},
+                         timeout=10)
+        if r.status_code == 200:
+            tag = (r.json().get("tag_name") or "").lstrip("v")
+            data["latest"] = tag or None
+            if tag and tag != config.VERSION:
+                data["update_available"] = _newer(tag, config.VERSION)
+                data["url"] = r.json().get("html_url") or data["url"]
+    except requests.RequestException:
+        pass
+    _update_cache.update(at=now, data=data)
+    return jsonify(data)
+
+
+def _newer(a, b):
+    def parts(v):
+        out = []
+        for x in v.split("."):
+            try:
+                out.append(int(x))
+            except ValueError:
+                out.append(0)
+        return out
+    return parts(a) > parts(b)
+
+
+# ---------- GitHub account (for publishing) ----------
+
+@app.get("/api/github")
+@login_required
+def github_status():
+    return jsonify(connected=publish.github_connected(), login=publish.github_login())
+
+
+@app.post("/api/github")
+@admin_required
+def github_connect():
+    d = request.get_json(force=True) or {}
+    token = (d.get("token") or "").strip()
+    if len(token) < 20:
+        return jsonify(error="That doesn't look like a GitHub token."), 400
+    try:
+        info = publish.connect_github(token)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, login=info["login"])
+
+
+@app.delete("/api/github")
+@admin_required
+def github_disconnect():
+    publish.disconnect_github()
+    return jsonify(ok=True)
+
+
+# ---------- publish & release a project ----------
+
+def _may_publish(pid):
+    p = engine.get_project(pid)
+    if not p:
+        abort(404)
+    u = current_user()
+    if u["role"] != "admin" and p.get("created_by") != u["name"]:
+        return None
+    return p
+
+
+@app.post("/api/projects/<pid>/publish/scan")
+@login_required
+def publish_scan(pid):
+    if not _may_publish(pid):
+        return jsonify(error="Only the owner or an admin can publish."), 403
+    return jsonify(scan=publish.scan_project(pid), has_files=publish.has_files(pid))
+
+
+@app.get("/api/projects/<pid>/publish/export")
+@login_required
+def publish_export(pid):
+    if not _may_publish(pid):
+        return jsonify(error="Only the owner or an admin can export."), 403
+    if not publish.has_files(pid):
+        return jsonify(error="No files to export yet."), 400
+    buf = publish.zip_project(pid)
+    return send_file(buf, mimetype="application/zip", as_attachment=True,
+                     download_name="%s.zip" % pid, max_age=0)
+
+
+@app.post("/api/projects/<pid>/publish")
+@login_required
+def publish_go(pid):
+    p = _may_publish(pid)
+    if not p:
+        return jsonify(error="Only the owner or an admin can publish."), 403
+    if not publish.github_connected():
+        return jsonify(error="Connect a GitHub account first (⚙️ Providers → GitHub)."), 409
+    d = request.get_json(force=True) or {}
+    repo = (d.get("repo") or pid).strip()
+    private = bool(d.get("private"))
+    try:
+        res = publish.publish_project(pid, p["name"], repo, private)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, **res, status=publish.pub_status(pid))
+
+
+@app.post("/api/projects/<pid>/release")
+@login_required
+def release_go(pid):
+    if not _may_publish(pid):
+        return jsonify(error="Only the owner or an admin can release."), 403
+    d = request.get_json(force=True) or {}
+    try:
+        res = publish.release_project(pid, d.get("version", ""), d.get("notes", ""))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, **res, status=publish.pub_status(pid))
 
 
 # ---------- file browser (read-only, from the project workspace) ----------

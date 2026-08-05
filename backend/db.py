@@ -38,6 +38,17 @@ CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id INTEGER, task_id INTEGER,
   type TEXT, text TEXT, author TEXT, created_at TEXT
 );
+-- Per-user read markers: the id of the newest event a user has seen in a thread.
+CREATE TABLE IF NOT EXISTS thread_seen (
+  user TEXT, thread_id INTEGER, seen_id INTEGER DEFAULT 0,
+  PRIMARY KEY (user, thread_id)
+);
+-- Publish/release bookkeeping per project (the GitHub repo it was pushed to).
+CREATE TABLE IF NOT EXISTS pubmeta (
+  project_id TEXT PRIMARY KEY, repo TEXT, html_url TEXT,
+  visibility TEXT, version TEXT, release_url TEXT,
+  published_at TEXT, released_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_threads_project ON threads(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(thread_id);
 CREATE INDEX IF NOT EXISTS idx_events_thread ON events(thread_id);

@@ -1,11 +1,15 @@
 """Runtime configuration — everything comes from the environment, nothing is
 hard-coded. There is NO built-in project registry: projects are created at
-runtime through the UI and stored in the app's private data volume.
-
-(The private, family-specific fork keeps its own project registry elsewhere;
-this public build ships empty on purpose.)
+runtime through the UI and stored in the app's private data volume (empty on
+purpose — this is a personal, self-hosted install).
 """
 import os
+
+# Version of this build. Kept in sync with pyproject.toml / CHANGELOG.md; the
+# self-update check compares it against the latest published GitHub release.
+VERSION = "0.1.0"
+# GitHub repository this build is distributed from (owner/name).
+REPO_SLUG = os.environ.get("AIWERKSTATT_REPO", "robeertm/AIWerkstatt")
 
 # Where SQLite, provider credentials and queues live (a Docker named volume).
 DATA = os.environ.get("AIWERKSTATT_DATA", os.path.join(os.path.dirname(__file__), "..", "data"))

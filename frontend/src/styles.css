@@ -109,6 +109,23 @@ label.lbl { font-size: .8rem; color: var(--muted); font-weight: 600; }
 .pinpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
 .key { padding: .9rem; font-size: 1.2rem; font-weight: 700; }
 
+/* banners (limit / update) */
+.banner { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
+  padding: .6rem 1rem; font-size: .85rem; border-bottom: 1px solid var(--border); }
+.banner code { background: #ffffff18; padding: .1rem .4rem; border-radius: 6px;
+  font-family: ui-monospace, monospace; font-size: .8rem; }
+.banner a { text-decoration: underline; }
+.banner.warn { background: #fbbf2420; color: #fde68a; }
+.banner.info { background: #7c6cf026; color: #cfc8ff; }
+
+/* unread badge */
+.badge { display: inline-flex; align-items: center; justify-content: center;
+  min-width: 1.15rem; height: 1.15rem; padding: 0 .35rem; border-radius: 999px;
+  background: var(--accent); color: #fff; font-size: .7rem; font-weight: 700; line-height: 1; }
+
+/* single-line live ticker text */
+.ticker { max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 .fadein { animation: fi .25s ease both; }
 @keyframes fi { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .filerow { display: flex; align-items: center; gap: .6rem; padding: .5rem .5rem; border-radius: 10px; cursor: pointer; }

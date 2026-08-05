@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   Me, User, Provider, Project, ThreadSummary, ThreadDetail, FileEntry, FileListing,
+  UsageSummary, LimitStatus, UpdateInfo, GithubStatus, ActivityItem, ScanResult, PublishStatus,
 } from './types'
 import * as api from './api'
 
@@ -204,6 +205,7 @@ function ThreadView({ tid, accent, onBack }: { tid: number; accent: string; onBa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tid, t?.status, t?.session?.alive])
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }) }, [t?.timeline.length])
+  useEffect(() => { if (t) api.markSeen(tid).catch(() => {}) }, [tid, t?.timeline.length])
   const send = async () => {
     if (!text.trim()) return; setBusy(true); setErr(null)
     try { await api.addComment(tid, text.trim()); setText(''); setT(await api.getThread(tid)) }
@@ -277,10 +279,10 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
   const [providers, setProviders] = useState<Provider[]>([])
   const [title, setTitle] = useState(''); const [body, setBody] = useState(''); const [composing, setComposing] = useState(false)
   const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null); const [files, setFiles] = useState(false)
-  const refresh = useCallback(() => api.getProject(id).then((d) => { setProject(d.project); setThreads(d.threads) }).catch((e) => setErr(String(e.message))), [id])
+  const [pub, setPub] = useState<PublishStatus>({})
   useEffect(() => {
     let alive = true; let timer: ReturnType<typeof setTimeout>
-    const tick = () => api.getProject(id).then((d) => { if (!alive) return; setProject(d.project); setThreads(d.threads); const busyP = !d.project.live_ready || d.threads.some((t) => t.status === 'working' || t.status === 'queued'); timer = setTimeout(tick, busyP ? 3500 : 10000) }).catch(() => { timer = setTimeout(tick, 10000) })
+    const tick = () => api.getProject(id).then((d) => { if (!alive) return; setProject(d.project); setThreads(d.threads); setPub(d.publish || {}); const busyP = !d.project.live_ready || d.threads.some((t) => t.status === 'working' || t.status === 'queued'); timer = setTimeout(tick, busyP ? 3500 : 10000) }).catch(() => { timer = setTimeout(tick, 10000) })
     tick(); return () => { alive = false; clearTimeout(timer) }
   }, [id])
   useEffect(() => { api.getProviders().then((r) => setProviders(r.providers)).catch(() => {}) }, [])
@@ -310,6 +312,8 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
           <LiveLink project={project} building={active || !project.live_ready} />
         </div>
       </div>
+
+      <ActivityStrip id={id} />
 
       {(isAdmin || project.mine) && (
         <div className="card pad stack" style={{ marginBottom: '1rem' }}>
@@ -355,12 +359,15 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
       <div className="stack">
         {threads.map((t) => (
           <button key={t.id} className="card pad proj" onClick={() => onOpenThread(t.id)}>
-            <div className="between"><b>{t.title}</b><Pill status={t.status} /></div>
+            <div className="between"><b>{t.title}</b>
+              <span className="row">{!!t.unread && <span className="badge">{t.unread}</span>}<Pill status={t.status} /></span></div>
             {t.snippet && <div className="muted" style={{ fontSize: '.88rem', marginTop: '.2rem' }}>{t.snippet}</div>}
             <div className="muted" style={{ fontSize: '.75rem', marginTop: '.4rem' }}>{relTime(t.created_at)}</div>
           </button>
         ))}
       </div>
+
+      {(isAdmin || project.mine) && <PublishPanel id={id} initial={pub} isAdmin={isAdmin} />}
 
       {(isAdmin || project.mine) && (
         <div style={{ textAlign: 'center', marginTop: '2.5rem' }}>
@@ -414,7 +421,8 @@ function Gallery({ onOpen }: { onOpen: (id: string) => void }) {
         {projects.map((p) => (
           <button key={p.id} className="card pad proj" style={{ borderColor: `${p.accent}44` }} onClick={() => onOpen(p.id)}>
             <div className="top"><span className="emoji">{p.emoji}</span>
-              <div><div style={{ fontWeight: 800 }}>{p.name}</div><div className="muted" style={{ fontSize: '.8rem' }}>{p.descr || '—'}</div></div></div>
+              <div style={{ flex: 1 }}><div style={{ fontWeight: 800 }}>{p.name}</div><div className="muted" style={{ fontSize: '.8rem' }}>{p.descr || '—'}</div></div>
+              {!!p.unread && <span className="badge" title="new agent replies">{p.unread}</span>}</div>
             <div className="row" style={{ marginTop: '.7rem', fontSize: '.78rem' }}>
               {p.active ? <span className="chip" style={{ color: 'var(--warn)' }}><Working color="var(--warn)" /> working</span>
                 : p.live_ready ? <span className="chip" style={{ color: 'var(--good)' }}>● live</span> : <span className="chip muted">new</span>}
@@ -427,6 +435,292 @@ function Gallery({ onOpen }: { onOpen: (id: string) => void }) {
   )
 }
 
+// ---------- Change PIN (also the forced first-run flow) ----------
+function ChangePin({ forced, onDone, onClose }: { forced: boolean; onDone: () => void; onClose?: () => void }) {
+  const [pin, setPin] = useState(''); const [confirm, setConfirm] = useState('')
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null)
+  const digits = (v: string) => v.replace(/\D/g, '').slice(0, 12)
+  const save = async () => {
+    if (pin.length < 4) { setErr('PIN must be 4–12 digits.'); return }
+    if (pin !== confirm) { setErr("The two PINs don't match."); return }
+    setBusy(true); setErr(null)
+    try { await api.changePin(pin); onDone() } catch (e) { setErr(String((e as Error).message)) } finally { setBusy(false) }
+  }
+  return (
+    <div className="scrim" onClick={forced ? undefined : onClose}>
+      <div className="card modal pad stack fadein" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 360 }}>
+        <div className="between"><b>{forced ? '🔒 Set your PIN' : '🔒 Change PIN'}</b>
+          {!forced && <button className="chip" onClick={onClose}>✕ close</button>}</div>
+        {forced && <div className="muted" style={{ fontSize: '.85rem' }}>You're on the default PIN. Choose your own to continue.</div>}
+        <input className="input" type="password" inputMode="numeric" placeholder="New PIN (4–12 digits)"
+          value={pin} onChange={(e) => setPin(digits(e.target.value))} />
+        <input className="input" type="password" inputMode="numeric" placeholder="Repeat new PIN"
+          value={confirm} onChange={(e) => setConfirm(digits(e.target.value))} />
+        {err && <div style={{ color: 'var(--bad)', fontSize: '.85rem' }}>{err}</div>}
+        <button className="btn primary" disabled={busy || !pin} onClick={save}>{busy ? 'saving…' : 'Save PIN'}</button>
+      </div>
+    </div>
+  )
+}
+
+// ---------- Admin: user management ----------
+function AdminUsersModal({ meName, onClose }: { meName: string; onClose: () => void }) {
+  const [users, setUsers] = useState<User[]>([])
+  const [name, setName] = useState(''); const [pin, setPin] = useState('')
+  const [emoji, setEmoji] = useState('🙂'); const [role, setRole] = useState('member')
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null)
+  const load = useCallback(() => api.getUsers().then((r) => setUsers(r.users)).catch(() => {}), [])
+  useEffect(() => { load() }, [load])
+  const add = async () => {
+    setBusy(true); setErr(null)
+    try { await api.addUser(name.trim(), pin, role, emoji); setName(''); setPin(''); setEmoji('🙂'); setRole('member'); await load() }
+    catch (e) { setErr(String((e as Error).message)) } finally { setBusy(false) }
+  }
+  const remove = async (n: string) => {
+    if (!confirm(`Remove ${n}?`)) return
+    try { await api.removeUser(n); await load() } catch (e) { alert(String((e as Error).message)) }
+  }
+  return (
+    <div className="scrim" onClick={onClose}>
+      <div className="card modal pad stack fadein" onClick={(e) => e.stopPropagation()}>
+        <div className="between"><b>👥 Users</b><button className="chip" onClick={onClose}>✕ close</button></div>
+        <div className="stack" style={{ gap: '.25rem' }}>
+          {users.map((u) => (
+            <div key={u.name} className="between filerow">
+              <span className="row"><span>{u.emoji}</span><b>{u.name}</b>
+                <span className="chip muted">{u.role}</span>
+                {u.must_change && <span className="chip" style={{ color: 'var(--warn)' }}>default PIN</span>}</span>
+              {u.name.toLowerCase() !== meName.toLowerCase()
+                ? <button className="chip" style={{ color: 'var(--bad)' }} onClick={() => remove(u.name)}>remove</button>
+                : <span className="chip muted">you</span>}
+            </div>
+          ))}
+        </div>
+        <div className="card pad stack" style={{ background: 'var(--surface-2)' }}>
+          <b style={{ fontSize: '.9rem' }}>Add a user</b>
+          <div className="row">
+            <input className="input" style={{ width: '3.6rem', textAlign: 'center' }} value={emoji} maxLength={2} onChange={(e) => setEmoji(e.target.value)} />
+            <input className="input" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="row">
+            <input className="input" type="password" inputMode="numeric" placeholder="PIN (4–12 digits)"
+              value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 12))} />
+            <select className="input" style={{ width: 'auto' }} value={role} onChange={(e) => setRole(e.target.value)}>
+              <option value="member">member</option><option value="admin">admin</option>
+            </select>
+          </div>
+          {err && <div style={{ color: 'var(--bad)', fontSize: '.85rem' }}>{err}</div>}
+          <button className="btn primary" disabled={busy || !name.trim() || pin.length < 4} onClick={add}>{busy ? 'adding…' : 'Add user'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------- Usage ----------
+function UsageModal({ onClose }: { onClose: () => void }) {
+  const [u, setU] = useState<UsageSummary | null>(null)
+  useEffect(() => { api.getUsage().then(setU).catch(() => {}) }, [])
+  const fmt = (n: number) => n.toLocaleString()
+  const money = (n: number) => `$${n.toFixed(n < 1 ? 4 : 2)}`
+  const Stat = ({ label, s }: { label: string; s: { tokens: number; cost: number; runs: number } }) => (
+    <div className="card pad" style={{ flex: 1, background: 'var(--surface-2)' }}>
+      <div className="muted" style={{ fontSize: '.72rem' }}>{label}</div>
+      <div style={{ fontWeight: 800, fontSize: '1.2rem' }}>{money(s.cost)}</div>
+      <div className="muted" style={{ fontSize: '.76rem' }}>{fmt(s.tokens)} tokens · {s.runs} runs</div>
+    </div>
+  )
+  return (
+    <div className="scrim" onClick={onClose}>
+      <div className="card modal pad stack fadein" onClick={(e) => e.stopPropagation()}>
+        <div className="between"><b>📊 Usage</b><button className="chip" onClick={onClose}>✕ close</button></div>
+        {!u ? <div className="muted pad">Loading…</div> : (
+          <>
+            <div className="row" style={{ gap: '.6rem', alignItems: 'stretch' }}>
+              <Stat label="Today" s={u.today} /><Stat label="All time" s={u.total} />
+            </div>
+            {u.by_provider.length > 0 && (
+              <div className="stack" style={{ gap: '.2rem' }}>
+                <div className="muted" style={{ fontSize: '.76rem' }}>By provider</div>
+                {u.by_provider.map((p) => (
+                  <div key={p.provider} className="between filerow">
+                    <b>{p.provider}</b>
+                    <span className="muted" style={{ fontSize: '.82rem' }}>{fmt(p.tokens)} tok · {money(p.cost)} · {p.runs} runs</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="muted" style={{ fontSize: '.72rem' }}>Output-token usage as reported by each provider. Demo runs are free.</div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------- Banners ----------
+function LimitBanner() {
+  const [l, setL] = useState<LimitStatus | null>(null)
+  useEffect(() => {
+    let alive = true; const f = () => api.getLimit().then((d) => { if (alive) setL(d) }).catch(() => {})
+    f(); const t = setInterval(f, 30000); return () => { alive = false; clearInterval(t) }
+  }, [])
+  if (!l?.active) return null
+  return <div className="banner warn">⏸️ Usage limit reached — agents pause and resume automatically at {l.resumes_at}.</div>
+}
+
+function UpdateBanner() {
+  const [u, setU] = useState<UpdateInfo | null>(null)
+  const [hidden, setHidden] = useState(false)
+  useEffect(() => { api.getUpdate().then(setU).catch(() => {}) }, [])
+  if (hidden || !u?.update_available) return null
+  return (
+    <div className="banner info">
+      <span>🎉 AIWerkstatt {u.latest} is available (you have {u.current}).</span>
+      <a href={u.url} target="_blank" rel="noreferrer">Release notes ↗</a>
+      <span>Update with <code>git pull &amp;&amp; docker compose up -d --build</code></span>
+      <span className="spacer" />
+      <button className="chip" onClick={() => setHidden(true)}>dismiss</button>
+    </div>
+  )
+}
+
+// ---------- Onboarding ----------
+function Onboarding({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="scrim" onClick={onClose}>
+      <div className="card modal pad stack fadein" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 470 }}>
+        <div className="between"><b>👋 Welcome to AIWerkstatt</b><button className="chip" onClick={onClose}>✕</button></div>
+        <ol className="stack" style={{ paddingLeft: '1.1rem', gap: '.5rem', margin: 0 }}>
+          <li><b>Connect a provider.</b> Open <b>⚙️ Providers</b> and add a Claude, OpenAI or Gemini key — or just use the zero-key <b>Demo</b>.</li>
+          <li><b>Create a project.</b> Give it a name and a first idea; the agent starts building right away.</li>
+          <li><b>Chat with it.</b> Follow up in plain words, watch the live activity, open the app it builds.</li>
+          <li><b>Publish when ready.</b> Leak-scan a project and push it to GitHub — or download it as a zip — from its page.</li>
+        </ol>
+        <button className="btn primary" onClick={onClose}>Let's go 🚀</button>
+      </div>
+    </div>
+  )
+}
+
+// ---------- Live activity strip (project view) ----------
+function ActivityStrip({ id }: { id: string }) {
+  const [items, setItems] = useState<ActivityItem[]>([])
+  useEffect(() => {
+    let alive = true
+    const f = () => api.getActivity(id).then((r) => { if (alive) setItems(r.activity) }).catch(() => {})
+    f(); const t = setInterval(f, 3000); return () => { alive = false; clearInterval(t) }
+  }, [id])
+  const live = items.filter((i) => i.status === 'working' || i.status === 'queued' || i.session?.alive)
+  if (live.length === 0) return null
+  return (
+    <div className="card pad stack" style={{ marginBottom: '1rem', borderColor: '#fbbf2455', gap: '.4rem' }}>
+      <div className="row" style={{ fontSize: '.8rem' }}><Working color="var(--warn)" /><b style={{ color: 'var(--warn)' }}>Live now</b></div>
+      {live.map((i) => (
+        <div key={i.thread_id} className="between" style={{ fontSize: '.82rem' }}>
+          <span className="row"><b>{i.title}</b>
+            {i.session?.alive && <span className="muted">· context {i.session.ctx_pct}%</span>}</span>
+          <span className="muted ticker">{i.last ? i.last.text : (STATUS[i.status]?.label || '')}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ---------- Publish & release (project view) ----------
+function PublishPanel({ id, initial, isAdmin }: { id: string; initial: PublishStatus; isAdmin: boolean }) {
+  const [open, setOpen] = useState(false)
+  const [gh, setGh] = useState<GithubStatus | null>(null)
+  const [pub, setPub] = useState<PublishStatus>(initial || {})
+  const [scan, setScan] = useState<ScanResult | null>(null)
+  const [repo, setRepo] = useState(id)
+  const [priv, setPriv] = useState(false)
+  const [token, setToken] = useState('')
+  const [version, setVersion] = useState('v1.0.0')
+  const [busy, setBusy] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const loadGh = useCallback(() => api.getGithub().then(setGh).catch(() => {}), [])
+  useEffect(() => { if (open) loadGh() }, [open, loadGh])
+  const wrap = (k: string, fn: () => Promise<void>) => async () => {
+    setBusy(k); setErr(null); setMsg(null)
+    try { await fn() } catch (e) { setErr(String((e as Error).message)) } finally { setBusy(null) }
+  }
+  const doScan = wrap('scan', async () => { const r = await api.scanPublish(id); setScan(r.scan) })
+  const connect = wrap('gh', async () => { await api.connectGithub(token.trim()); setToken(''); await loadGh() })
+  const publishNow = wrap('publish', async () => { const r = await api.publishProject(id, repo.trim(), priv); setPub(r.status); setMsg(`Published → ${r.html_url}`) })
+  const releaseNow = wrap('release', async () => { const r = await api.releaseProject(id, version.trim(), ''); setPub(r.status); setMsg(`Released ${r.tag}`) })
+  return (
+    <div className="card pad stack" style={{ marginTop: '1.4rem' }}>
+      <button className="between" style={{ background: 'transparent', border: 0, color: 'var(--text)', cursor: 'pointer', font: 'inherit', width: '100%', padding: 0 }} onClick={() => setOpen((v) => !v)}>
+        <b>🌐 Publish &amp; release</b>
+        <span className="chip muted">{pub.html_url ? `published · ${pub.visibility || ''}` : (open ? 'hide' : 'open')}</span>
+      </button>
+      {open && (
+        <>
+          <div className="muted" style={{ fontSize: '.82rem' }}>Share the app this project built — as a zip, or straight to GitHub. It's leak-scanned first so secrets never ship.</div>
+
+          <div className="row" style={{ flexWrap: 'wrap' }}>
+            <button className="btn" disabled={busy === 'scan'} onClick={doScan}>{busy === 'scan' ? 'scanning…' : '🔍 Scan for secrets'}</button>
+            <a className="btn ghost" href={api.exportUrl(id)}>⬇️ Download .zip</a>
+          </div>
+          {scan && (
+            <div className="card pad" style={{ background: 'var(--surface-2)', fontSize: '.82rem' }}>
+              {scan.blocking === 0
+                ? <span style={{ color: 'var(--good)' }}>✓ Clean — no blocking secrets found{scan.review ? ` (${scan.review} to review)` : ''}.</span>
+                : <span style={{ color: 'var(--bad)' }}>✕ {scan.blocking} blocking issue(s) — fix before publishing:</span>}
+              {scan.findings.slice(0, 6).map((f, i) => (
+                <div key={i} className="muted" style={{ marginTop: '.2rem' }}>{f.severity === 'block' ? '🔴' : '🟡'} {f.file}:{f.line} · {f.rule}</div>
+              ))}
+            </div>
+          )}
+
+          <div className="card pad stack" style={{ background: 'var(--surface-2)' }}>
+            <div className="between"><b style={{ fontSize: '.9rem' }}>GitHub</b>
+              <span className="chip" style={{ color: gh?.connected ? 'var(--good)' : 'var(--muted)' }}>{gh?.connected ? `● ${gh.login}` : '○ not connected'}</span></div>
+            {!gh?.connected ? (
+              isAdmin ? (
+                <>
+                  <input className="input" type="password" placeholder="Paste a GitHub token (repo scope)" value={token} onChange={(e) => setToken(e.target.value)} />
+                  <div className="row">
+                    <button className="btn primary" disabled={busy === 'gh' || token.length < 20} onClick={connect}>{busy === 'gh' ? 'connecting…' : 'Connect GitHub'}</button>
+                    <a className="chip" href="https://github.com/settings/tokens/new?scopes=repo&description=AIWerkstatt" target="_blank" rel="noreferrer">Create a token ↗</a>
+                  </div>
+                </>
+              ) : <div className="muted" style={{ fontSize: '.82rem' }}>Ask an admin to connect a GitHub account, then you can publish here.</div>
+            ) : (
+              <>
+                <div className="row" style={{ flexWrap: 'wrap' }}>
+                  <input className="input" style={{ width: 'auto', flex: 1 }} placeholder="repository name" value={repo} onChange={(e) => setRepo(e.target.value)} />
+                  <label className="row" style={{ fontSize: '.82rem' }}><input type="checkbox" checked={priv} onChange={(e) => setPriv(e.target.checked)} /> private</label>
+                </div>
+                <button className="btn primary" disabled={busy === 'publish'} onClick={publishNow}>{busy === 'publish' ? 'publishing…' : (pub.html_url ? '⤴️ Push update to GitHub' : '🚀 Publish to GitHub')}</button>
+              </>
+            )}
+          </div>
+
+          {pub.html_url && (
+            <div className="card pad stack" style={{ background: 'var(--surface-2)' }}>
+              <div className="between"><b style={{ fontSize: '.9rem' }}>Release</b>
+                {pub.version && <span className="chip" style={{ color: 'var(--good)' }}>{pub.version}</span>}</div>
+              <a className="chip" href={pub.html_url} target="_blank" rel="noreferrer">📦 {pub.repo} ↗</a>
+              <div className="row">
+                <input className="input" style={{ width: 'auto' }} value={version} onChange={(e) => setVersion(e.target.value)} />
+                <button className="btn" disabled={busy === 'release'} onClick={releaseNow}>{busy === 'release' ? 'releasing…' : '🏷️ Tag a release'}</button>
+              </div>
+              {pub.release_url && <a className="chip" href={pub.release_url} target="_blank" rel="noreferrer">latest release ↗</a>}
+            </div>
+          )}
+
+          {err && <div style={{ color: 'var(--bad)', fontSize: '.85rem' }}>{err}</div>}
+          {msg && <div style={{ color: 'var(--good)', fontSize: '.85rem' }}>{msg}</div>}
+          <div className="muted" style={{ fontSize: '.72rem' }}>The app you built is yours. Publishing pushes your project's files to a repository you own.</div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ---------- App shell ----------
 type View = { v: 'gallery' } | { v: 'project'; id: string } | { v: 'thread'; tid: number; accent: string }
 
@@ -434,6 +728,11 @@ export default function App() {
   const [me, setMe] = useState<Me | null>(null)
   const [view, setView] = useState<View>({ v: 'gallery' })
   const [showProviders, setShowProviders] = useState(false)
+  const [showUsage, setShowUsage] = useState(false)
+  const [showUsers, setShowUsers] = useState(false)
+  const [showAccount, setShowAccount] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
+  const [onboard, setOnboard] = useState(() => !localStorage.getItem('aiw_onboarded'))
   const refreshMe = useCallback(() => api.getMe().then(setMe).catch(() => setMe({ logged_in: false, users: [] })), [])
   useEffect(() => { refreshMe() }, [refreshMe])
 
@@ -442,6 +741,7 @@ export default function App() {
 
   const user: User = me.user
   const isAdmin = user.role === 'admin'
+  const closeOnboard = () => { setOnboard(false); setShowHelp(false); localStorage.setItem('aiw_onboarded', '1') }
   return (
     <>
       <div className="hdr">
@@ -449,14 +749,24 @@ export default function App() {
         <div className="brand" style={{ cursor: 'pointer' }} onClick={() => setView({ v: 'gallery' })}>AIWerkstatt<small>self-hosted AI app workshop</small></div>
         <div className="spacer" />
         <button className="chip" onClick={() => setShowProviders(true)}>⚙️ Providers</button>
-        <span className="chip">{user.emoji} {user.name}</span>
+        <button className="chip" onClick={() => setShowUsage(true)}>📊 Usage</button>
+        {isAdmin && <button className="chip" onClick={() => setShowUsers(true)}>👥 Users</button>}
+        <button className="chip" title="Help" onClick={() => setShowHelp(true)}>❔</button>
+        <button className="chip" title="Account · change PIN" onClick={() => setShowAccount(true)}>{user.emoji} {user.name}</button>
         <button className="chip" onClick={() => api.logout().then(refreshMe)}>Sign out</button>
       </div>
+      {isAdmin && <UpdateBanner />}
+      <LimitBanner />
       {view.v === 'gallery' && <Gallery onOpen={(id) => setView({ v: 'project', id })} />}
       {view.v === 'project' && <ProjectView id={view.id} isAdmin={isAdmin} onBack={() => setView({ v: 'gallery' })}
         onOpenThread={(tid) => setView({ v: 'thread', tid, accent: '#7c6cf0' })} />}
       {view.v === 'thread' && <ThreadView tid={view.tid} accent={view.accent} onBack={() => { const cur = view; setView({ v: 'gallery' }); void cur }} />}
       {showProviders && <ProvidersModal onClose={() => setShowProviders(false)} isAdmin={isAdmin} />}
+      {showUsage && <UsageModal onClose={() => setShowUsage(false)} />}
+      {showUsers && isAdmin && <AdminUsersModal meName={user.name} onClose={() => setShowUsers(false)} />}
+      {showAccount && <ChangePin forced={false} onDone={() => { setShowAccount(false); refreshMe() }} onClose={() => setShowAccount(false)} />}
+      {(onboard || showHelp) && !user.must_change && <Onboarding onClose={closeOnboard} />}
+      {user.must_change && <ChangePin forced onDone={refreshMe} />}
     </>
   )
 }

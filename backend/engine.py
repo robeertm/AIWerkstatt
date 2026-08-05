@@ -19,6 +19,12 @@ import providers
 TASK_QUEUE = os.path.join(config.DATA, "task-queue")
 EVENTS_DIR = os.environ.get("AIWERKSTATT_EVENTS_DIR", "/events")
 INGESTED_DIR = os.path.join(EVENTS_DIR, ".ingested")
+USAGE_DIR = os.path.join(EVENTS_DIR, "usage")
+LIMIT_FILE = os.path.join(EVENTS_DIR, "limit.json")
+
+# Agent-authored event types that count as "new for the user" (an actual answer
+# or state change), so pure acks/user turns don't light up the unread badge.
+_UNREAD_TYPES = ("reply", "failed", "stopped", "limited")
 
 PALETTE = ["#f472b6", "#fb7185", "#f59e0b", "#facc15", "#34d399",
            "#22d3ee", "#60a5fa", "#a78bfa", "#f97316", "#2dd4bf"]
@@ -184,6 +190,87 @@ def thread_session(thread_id):
             "pending": int(d.get("pending", 0)), "compacting": bool(d.get("compacting"))}
 
 
+# ---------- usage (aggregated from the runners' usage files) ----------
+
+def usage_summary():
+    """Fold the per-run usage files the runners drop in the events volume into a
+    small summary: totals, a per-provider breakdown, and today's figures."""
+    total_tokens = total_cost = runs = 0
+    today_tokens = today_cost = today_runs = 0.0
+    by_provider = {}
+    day_start = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
+    try:
+        names = os.listdir(USAGE_DIR)
+    except OSError:
+        names = []
+    for n in names:
+        if not n.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(USAGE_DIR, n), "r", encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        tok = int(d.get("output_tokens", 0) or 0)
+        cost = float(d.get("cost_usd", 0) or 0)
+        prov = d.get("provider", "?")
+        total_tokens += tok
+        total_cost += cost
+        runs += 1
+        p = by_provider.setdefault(prov, {"provider": prov, "tokens": 0, "cost": 0.0, "runs": 0})
+        p["tokens"] += tok
+        p["cost"] += cost
+        p["runs"] += 1
+        if int(d.get("at", 0) or 0) >= day_start:
+            today_tokens += tok
+            today_cost += cost
+            today_runs += 1
+    for p in by_provider.values():
+        p["cost"] = round(p["cost"], 4)
+    return {
+        "total": {"tokens": total_tokens, "cost": round(total_cost, 4), "runs": runs},
+        "today": {"tokens": int(today_tokens), "cost": round(today_cost, 4), "runs": int(today_runs)},
+        "by_provider": sorted(by_provider.values(), key=lambda x: -x["tokens"]),
+    }
+
+
+# ---------- rate-limit status (written by a runner when it hits a limit) ----------
+
+def limit_status():
+    try:
+        with open(LIMIT_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {"active": False}
+    until = int(d.get("until", 0) or 0)
+    now = int(time.time())
+    if until <= now:
+        return {"active": False}
+    return {"active": True, "until": until,
+            "resumes_at": time.strftime("%H:%M", time.localtime(until))}
+
+
+# ---------- live activity (for the ticker) ----------
+
+def project_activity(project_id):
+    """What each thread is doing right now — feeds the live activity strip."""
+    out = []
+    for th in db.query_all("SELECT id, title FROM threads WHERE project_id=? ORDER BY id DESC",
+                           (project_id,)):
+        status = _thread_status(th["id"])
+        sess = thread_session(th["id"])
+        if status not in ("working", "queued") and not sess:
+            continue
+        last = db.query_one(
+            "SELECT type, text, created_at FROM events WHERE thread_id=? ORDER BY id DESC LIMIT 1",
+            (th["id"],))
+        out.append({"thread_id": th["id"], "title": th["title"], "status": status,
+                    "session": sess,
+                    "last": ({"type": last["type"], "text": (last["text"] or "")[:160],
+                              "created_at": last["created_at"]} if last else None)})
+    return out
+
+
 def _thread_status(thread_id):
     tasks = db.query_all("SELECT status FROM tasks WHERE thread_id=? ORDER BY id", (thread_id,))
     st = [t["status"] for t in tasks]
@@ -199,14 +286,52 @@ def _thread_status(thread_id):
     return "done"
 
 
-def list_threads(project_id):
+# ---------- unread markers (per user) ----------
+
+def _seen_id(user, thread_id):
+    if not user:
+        return 0
+    r = db.query_one("SELECT seen_id FROM thread_seen WHERE user=? AND thread_id=?", (user, thread_id))
+    return int(r["seen_id"]) if r else 0
+
+
+def thread_unread(thread_id, user):
+    if not user:
+        return 0
+    ph = ",".join("?" * len(_UNREAD_TYPES))
+    r = db.query_one(
+        "SELECT COUNT(*) c FROM events WHERE thread_id=? AND id>? AND type IN (%s)" % ph,
+        (thread_id, _seen_id(user, thread_id), *_UNREAD_TYPES))
+    return int(r["c"]) if r else 0
+
+
+def mark_seen(thread_id, user):
+    if not user:
+        return
+    top = db.query_one("SELECT COALESCE(MAX(id),0) m FROM events WHERE thread_id=?", (thread_id,))["m"]
+    db.execute(
+        "INSERT INTO thread_seen(user,thread_id,seen_id) VALUES(?,?,?) "
+        "ON CONFLICT(user,thread_id) DO UPDATE SET seen_id=excluded.seen_id",
+        (user, thread_id, int(top)))
+
+
+def project_unread(project_id, user):
+    if not user:
+        return 0
+    total = 0
+    for th in db.query_all("SELECT id FROM threads WHERE project_id=?", (project_id,)):
+        total += thread_unread(th["id"], user)
+    return total
+
+
+def list_threads(project_id, user=None):
     out = []
     for th in db.query_all("SELECT * FROM threads WHERE project_id=? ORDER BY id DESC", (project_id,)):
         snippet = db.query_one("SELECT text FROM events WHERE thread_id=? AND type='user' ORDER BY id LIMIT 1",
                                (th["id"],))
         out.append({"id": th["id"], "title": th["title"], "status": _thread_status(th["id"]),
                     "snippet": (snippet["text"][:160] if snippet else ""),
-                    "created_at": th["created_at"]})
+                    "created_at": th["created_at"], "unread": thread_unread(th["id"], user)})
     return out
 
 
