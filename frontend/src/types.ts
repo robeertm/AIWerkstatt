@@ -13,10 +13,32 @@ export type Project = {
   id: string; name: string; emoji: string; descr: string; accent: string
   provider: string; model: string; effort: string
   live_port: number | null; live_url: string | null; live_ready: boolean
-  mine?: boolean; threads?: number; active?: boolean; created_by?: string
+  mine?: boolean; threads?: number; active?: boolean; created_by?: string; unread?: number
 }
 
-export type ThreadSummary = { id: number; title: string; status: string; snippet: string; created_at: string }
+export type ThreadSummary = { id: number; title: string; status: string; snippet: string; created_at: string; unread?: number }
+
+// visibility / self-management
+export type UsageSummary = {
+  total: { tokens: number; cost: number; runs: number }
+  today: { tokens: number; cost: number; runs: number }
+  by_provider: { provider: string; tokens: number; cost: number; runs: number }[]
+}
+export type LimitStatus = { active: boolean; until?: number; resumes_at?: string }
+export type UpdateInfo = { current: string; latest: string | null; update_available: boolean; url: string }
+export type GithubStatus = { connected: boolean; login: string | null }
+export type ActivityItem = {
+  thread_id: number; title: string; status: string; session: Session
+  last: { type: string; text: string; created_at: string } | null
+}
+
+// publish / release
+export type ScanFinding = { file: string; line: number; severity: string; rule: string; snippet: string }
+export type ScanResult = { ok: boolean; blocking: number; review: number; findings: ScanFinding[] }
+export type PublishStatus = {
+  project_id?: string; repo?: string; html_url?: string; visibility?: string
+  version?: string; release_url?: string; published_at?: string; released_at?: string
+}
 export type TimelineEntry = { id: string; type: string; author: string; text: string; created_at: string }
 export type Session = { alive: boolean; ctx_pct: number; pending: number; compacting: boolean } | null
 export type ThreadDetail = {

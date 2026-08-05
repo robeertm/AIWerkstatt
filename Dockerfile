@@ -10,7 +10,8 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 # gosu: drop from root (volume setup) to the app user at startup.
-RUN apt-get update && apt-get install -y --no-install-recommends gosu \
+# gosu: drop root→app at startup. git: push a project to GitHub on "Publish".
+RUN apt-get update && apt-get install -y --no-install-recommends gosu git \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 10001 app
 COPY backend/requirements.txt ./
