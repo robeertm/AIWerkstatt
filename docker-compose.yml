@@ -32,9 +32,19 @@ services:
       # Host reachable name the browser uses to open a live app (localhost by default).
       AIWERKSTATT_PUBLIC_HOST: ${AIWERKSTATT_PUBLIC_HOST:-localhost}
       AIWERKSTATT_MAX_RETRIES: ${AIWERKSTATT_MAX_RETRIES:-5}
+      # Volume names the orchestrator mounts into the agent-runner containers.
+      # Must match the explicit names below so both sides share the same volumes.
+      AIWERKSTATT_VOL_WORKSPACES: aiwerkstatt-workspaces
+      AIWERKSTATT_VOL_EVENTS: aiwerkstatt-events
+      AIWERKSTATT_VOL_INBOX: aiwerkstatt-inbox
+      AIWERKSTATT_APP_UID: "10001"
     volumes:
       # SQLite, provider credentials (0600), queues, journal — persists across redeploys.
       - data:/data
+      # Shared with every agent-runner (same uid 10001 → read/write/delete both sides).
+      - workspaces:/workspaces
+      - events:/events
+      - inbox:/inbox
     depends_on:
       - dockerproxy
     networks:
@@ -72,5 +82,14 @@ networks:
   internal:
     driver: bridge
 
+# Explicit names so the orchestrator can mount the SAME volumes into the sibling
+# agent-runner containers it launches through the daemon.
 volumes:
   data:
+    name: aiwerkstatt-data
+  workspaces:
+    name: aiwerkstatt-workspaces
+  events:
+    name: aiwerkstatt-events
+  inbox:
+    name: aiwerkstatt-inbox

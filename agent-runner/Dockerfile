@@ -18,6 +18,7 @@ RUN npm install -g \
 
 WORKDIR /runner
 COPY . /runner
+RUN chmod +x /runner/entrypoint.sh
 
 # Non-root: the run is contained by the container, not by host users.
 RUN useradd -m -u 10001 runner \
