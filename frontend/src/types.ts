@@ -6,7 +6,8 @@ export type Me =
 export type ProviderModel = { id: string; label: string; context_window: number }
 export type Provider = {
   id: string; label: string; models: ProviderModel[]; default_model: string
-  efforts: string[]; auth_modes: string[]; key_help_url: string; key_help: string; connected: boolean
+  efforts: string[]; auth_modes: string[]; key_help_url: string; key_help: string
+  connected: boolean; available: boolean
 }
 
 export type Project = {

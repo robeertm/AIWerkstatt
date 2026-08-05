@@ -8,6 +8,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Demo retires once you connect a real provider.** As soon as any credential-based
+  provider (Claude/OpenAI/Gemini) is connected, the zero-key demo is removed from the
+  provider choosers and the providers panel; it returns when no credential is left.
+
 - **Live agent feed.** Watch what the agent is doing while it works — its narration,
   the files it writes and edits, and each tool result — streamed step by step into
   the task thread. Interject at any time; it folds your note into the running task.

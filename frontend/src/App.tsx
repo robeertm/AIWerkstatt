@@ -96,7 +96,7 @@ function ProvidersModal({ onClose, isAdmin }: { onClose: () => void; isAdmin: bo
       <div className="card modal pad stack fadein" onClick={(e) => e.stopPropagation()}>
         <div className="between"><b>AI providers</b><button className="chip" onClick={onClose}>✕ close</button></div>
         <div className="muted" style={{ fontSize: '.85rem' }}>Connect at least one. Keys are stored privately on this machine, never in the repo.</div>
-        {list.map((p) => (
+        {list.filter((p) => p.id !== 'demo' || p.available).map((p) => (
           <div key={p.id} className="card pad stack" style={{ background: 'var(--surface-2)' }}>
             <div className="between">
               <b>{p.label}</b>
@@ -363,7 +363,8 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
             <label className="lbl">Provider</label>
             <select className="input" style={{ width: 'auto' }} value={project.provider}
               onChange={(e) => { const p = providers.find((x) => x.id === e.target.value); changeSettings(e.target.value, p?.default_model || '', '') }}>
-              {providers.map((p) => <option key={p.id} value={p.id} disabled={!p.connected}>{p.label}{p.connected ? '' : ' (not connected)'}</option>)}
+              {providers.filter((p) => p.id !== 'demo' || p.available || p.id === project.provider)
+                .map((p) => <option key={p.id} value={p.id} disabled={!p.connected}>{p.label}{p.connected ? '' : ' (not connected)'}</option>)}
             </select>
             {spec && spec.models.length > 0 && (
               <select className="input" style={{ width: 'auto' }} value={project.model} onChange={(e) => changeSettings(project.provider, e.target.value, project.effort)}>
@@ -435,6 +436,15 @@ function Gallery({ onOpen }: { onOpen: (id: string) => void }) {
   useEffect(() => {
     load(); const t = setInterval(load, 6000); return () => clearInterval(t)
   }, [load])
+  // Default the new-project provider to a connected one — never a hidden demo.
+  useEffect(() => {
+    if (!providers.length) return
+    const visible = providers.filter((p) => p.id !== 'demo' || p.available)
+    if (!visible.some((p) => p.id === provider && p.connected)) {
+      const best = visible.find((p) => p.connected) || visible[0]
+      if (best && best.id !== provider) setProvider(best.id)
+    }
+  }, [providers, provider])
   const create = async () => {
     if (!name.trim()) return; setBusy(true); setErr(null)
     try { const r = await api.createProject({ name: name.trim(), emoji, desc: '', idea: idea.trim(), provider }); setCreating(false); setName(''); setIdea(''); onOpen(r.project.id) }
@@ -450,7 +460,8 @@ function Gallery({ onOpen }: { onOpen: (id: string) => void }) {
             <input className="input" placeholder="Project name" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <select className="input" value={provider} onChange={(e) => setProvider(e.target.value)}>
-            {providers.map((p) => <option key={p.id} value={p.id} disabled={!p.connected}>{p.label}{p.connected ? '' : ' (connect first)'}</option>)}
+            {providers.filter((p) => p.id !== 'demo' || p.available)
+              .map((p) => <option key={p.id} value={p.id} disabled={!p.connected}>{p.label}{p.connected ? '' : ' (connect first)'}</option>)}
           </select>
           <textarea className="area" rows={3} placeholder="First idea (optional) — the agent starts on it right away" value={idea} onChange={(e) => setIdea(e.target.value)} />
           {err && <div style={{ color: 'var(--bad)', fontSize: '.85rem' }}>{err}</div>}
