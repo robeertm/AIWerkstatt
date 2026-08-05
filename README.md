@@ -26,6 +26,22 @@ It’s the friendly front-end you wish coding agents came with: a project galler
 task threads with a live activity ticker, a file browser, and — critically — **it’s yours**.
 No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 
+## 📸 See it in action
+
+<div align="center">
+
+**Describe what you want → the agent builds and deploys it → open it live, keep nudging.**
+
+<img src="docs/screenshots/04-thread.png" alt="A task thread: you ask for an app in plain language, the agent builds and deploys it, and you get an Open live link" width="840">
+
+</div>
+
+| Your project gallery | Provider &amp; model, per project |
+|:---:|:---:|
+| <img src="docs/screenshots/02-gallery.png" alt="Project gallery" width="410"> | <img src="docs/screenshots/03-project.png" alt="Project view with per-project provider and model" width="410"> |
+| **Connect any AI provider** | **The live app, built in a container** |
+| <img src="docs/screenshots/05-providers.png" alt="Connect Claude, OpenAI or Gemini — or use the zero-key demo" width="410"> | <img src="docs/screenshots/06-live-app.png" alt="A live app the agent built, served from its own container" width="410"> |
+
 ## ✨ Why AIWerkstatt
 
 - **🖱️ One-command install.** `docker compose up`. That’s the whole setup. Windows, macOS, Linux.
@@ -42,7 +58,7 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 
 ```bash
 git clone https://github.com/robeertm/AIWerkstatt.git
-cd aiwerkstatt
+cd AIWerkstatt
 cp .env.example .env          # optional — sensible defaults, works as-is
 docker compose build          # builds the web UI + the agent-runner image
 docker compose up             # start it
