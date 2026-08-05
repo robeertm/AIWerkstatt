@@ -1,0 +1,27 @@
+# Secrets & local state — never committed.
+.env
+*.local.yml
+*.local.yaml
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Node / frontend build
+node_modules/
+frontend/dist/
+dist/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

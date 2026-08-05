@@ -1,0 +1,85 @@
+# Default leak-scan rules — GENERIC secret patterns only, safe to ship publicly.
+# A maintainer's private deny-list (personal names, home IPs, internal hosts) is
+# layered on at release time via AIWERKSTATT_SCRUB_RULES and is NEVER committed here.
+#
+# severity = "block"  -> fails the scan (release/push refused)
+# severity = "review" -> counted & shown, never blocks (false-positive-prone)
+
+# ---- Tokens / API keys (block) ----
+[[rule]]
+name = "github_pat_classic"
+severity = "block"
+pattern = "ghp_[A-Za-z0-9]{20,}"
+
+[[rule]]
+name = "github_pat_fine"
+severity = "block"
+pattern = "github_pat_[A-Za-z0-9_]{20,}"
+
+[[rule]]
+name = "anthropic_key"
+severity = "block"
+pattern = "sk-ant-[A-Za-z0-9_-]{20,}"
+
+[[rule]]
+name = "openai_key"
+severity = "block"
+pattern = "sk-(proj-)?[A-Za-z0-9]{20,}"
+
+[[rule]]
+name = "google_api_key"
+severity = "block"
+pattern = "AIza[0-9A-Za-z_-]{30,}"
+
+[[rule]]
+name = "slack_token"
+severity = "block"
+pattern = "xox[baprs]-[A-Za-z0-9-]{10,}"
+
+[[rule]]
+name = "aws_access_key"
+severity = "block"
+pattern = "AKIA[0-9A-Z]{16}"
+
+[[rule]]
+name = "private_key_block"
+severity = "block"
+pattern = "-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"
+
+[[rule]]
+name = "claude_oauth_token_env"
+severity = "block"
+pattern = "CLAUDE_CODE_OAUTH_TOKEN\\s*=\\s*['\"]?[A-Za-z0-9._-]{20,}"
+
+# ---- Weaker signals (review) ----
+[[rule]]
+name = "generic_secret_assignment"
+severity = "review"
+pattern = "(?i)(password|secret|api[_-]?key|token)\\s*[:=]\\s*['\"][^'\"]{8,}['\"]"
+
+[[rule]]
+name = "private_ipv4"
+severity = "review"
+pattern = "\\b(10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3})\\b"
+
+# ---- Risky filenames (block: real secret files) ----
+# Real env files with secrets — but NOT the committed .env.example/sample/template.
+[[risky_file]]
+name = "dotenv"
+severity = "block"
+pattern = "(^|/)\\.env(\\.(?!(example|sample|template|dist)$)[^/]+)?$"
+
+[[risky_file]]
+name = "secrets_json"
+severity = "block"
+pattern = "(^|/)secrets?\\.json$"
+
+[[risky_file]]
+name = "private_key_file"
+severity = "block"
+pattern = "(^|/)(id_rsa|id_ed25519|.*\\.pem|.*\\.key|.*\\.p12|.*\\.pfx)$"
+
+[[risky_file]]
+name = "credentials_file"
+severity = "block"
+pattern = "(^|/)credentials?(\\.|$)"

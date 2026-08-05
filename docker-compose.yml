@@ -1,0 +1,76 @@
+# AIWerkstatt — self-hosted AI app workshop.
+# One `docker compose up`, connect any AI provider, build & watch live apps.
+#
+# Two long-lived services:
+#   web         — control plane (Flask + built React UI). Talks to Docker ONLY
+#                 through the hardened socket proxy, never the raw socket.
+#   dockerproxy — the ONLY container that sees /var/run/docker.sock, with a
+#                 minimal allowed API surface. See docs/security.md.
+#
+# Agent runs and the apps they build are launched at runtime by the orchestrator
+# as sibling containers (not baked into this file).
+name: aiwerkstatt
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aiwerkstatt-web:latest
+    container_name: aiwerkstatt-web
+    restart: unless-stopped
+    ports:
+      - "${AIWERKSTATT_PORT:-8095}:8095"
+    environment:
+      # Docker access goes exclusively through the proxy (no raw socket in web).
+      DOCKER_HOST: tcp://dockerproxy:2375
+      AIWERKSTATT_DATA: /data
+      # Image the orchestrator starts for each agent run (built from ./agent-runner).
+      AGENT_RUNNER_IMAGE: ${AGENT_RUNNER_IMAGE:-aiwerkstatt-agent-runner:latest}
+      # Host port range handed out to the web apps that agents build & deploy.
+      AIWERKSTATT_PORT_RANGE: ${AIWERKSTATT_PORT_RANGE:-8100-8199}
+      # Host reachable name the browser uses to open a live app (localhost by default).
+      AIWERKSTATT_PUBLIC_HOST: ${AIWERKSTATT_PUBLIC_HOST:-localhost}
+      AIWERKSTATT_MAX_RETRIES: ${AIWERKSTATT_MAX_RETRIES:-5}
+    volumes:
+      # SQLite, provider credentials (0600), queues, journal — persists across redeploys.
+      - data:/data
+    depends_on:
+      - dockerproxy
+    networks:
+      - internal
+
+  dockerproxy:
+    image: ghcr.io/tecnativa/docker-socket-proxy:latest
+    container_name: aiwerkstatt-dockerproxy
+    restart: unless-stopped
+    environment:
+      # Minimal surface: enough to create/start/stop agent + app containers and
+      # manage their volumes/networks. Everything else stays denied (default 0),
+      # in particular INFO/SWARM/SECRETS/PLUGINS and socket reconfiguration.
+      CONTAINERS: 1
+      IMAGES: 1
+      VOLUMES: 1
+      NETWORKS: 1
+      EXEC: 1
+      POST: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - internal
+
+  # Build-only: produces the agent-runner image the orchestrator launches.
+  # Never started by `up` (profile keeps it out); `docker compose build` builds it.
+  agent-runner:
+    build:
+      context: ./agent-runner
+    image: aiwerkstatt-agent-runner:latest
+    profiles: ["build-only"]
+    command: ["true"]
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  data:
