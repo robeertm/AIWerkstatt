@@ -148,8 +148,14 @@ class ClaudeAdapter(AgentAdapter):
                 out.append({"kind": "limit", "reset": reset})
         elif t == "result":
             is_err = bool(o.get("is_error")) or str(o.get("subtype", "")).startswith("error")
-            limited = (o.get("error") == "rate_limit" or o.get("api_error_status") == 429
-                       or o.get("terminal_reason") == "api_error")
+            # Only a REAL usage limit pauses the whole workshop — NOT every API error.
+            # `terminal_reason == "api_error"` also covers transient failures (server_error,
+            # "Connection closed mid-response"); those must fall through to the normal
+            # failed/retry path, otherwise a single network hiccup triggers a bogus
+            # "usage limit reached" pause for every project. Real limits carry
+            # error == "rate_limit" / api_error_status == 429 (plus the rate_limit_event
+            # with status == "rejected", handled separately above).
+            limited = (o.get("error") == "rate_limit" or o.get("api_error_status") == 429)
             reset = 0
             ri = o.get("rate_limit_info") or {}
             try:

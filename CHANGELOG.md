@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.2 — 2026-08-05
+
+### Fixed
+
+- **A transient API error no longer triggers a bogus "usage limit" pause.** When a
+  streaming response was interrupted (`server_error` / "Connection closed
+  mid-response", reported as `terminal_reason: "api_error"`), the Claude adapter
+  treated it as a usage limit — which pauses every project and shows a false
+  "usage limit reached" banner. Now only real limits pause the workshop
+  (`error == "rate_limit"` / HTTP 429, plus the `rate_limit_event` with status
+  `rejected`); a transient failure falls through to the normal retry path, so the
+  task is simply re-run without stopping anything else.
+
 ## 0.3.1 — 2026-08-05
 
 ### Changed
