@@ -12,6 +12,34 @@ import json
 from .base import AgentAdapter, RunContext, register
 
 _VALID_EFFORT = {"low", "medium", "high", "xhigh", "max"}
+_MAX_ACT = 300
+
+
+def _clip(s: str) -> str:
+    s = " ".join(str(s).split())
+    return s if len(s) <= _MAX_ACT else s[:_MAX_ACT] + " …"
+
+
+def _tool_line(name: str, inp: dict) -> str:
+    """A tool call as one human-readable line (matches the live-ticker style)."""
+    if name == "Bash":
+        cmd = str(inp.get("command", "")).strip().split("\n")[0]
+        return "$ " + cmd
+    for key in ("file_path", "path", "pattern", "url", "query", "prompt"):
+        if inp.get(key):
+            return "%s: %s" % (name, inp[key])
+    return name
+
+
+def _result_line(content) -> str:
+    if isinstance(content, list):
+        content = " ".join(b.get("text", "") for b in content
+                           if isinstance(b, dict) and b.get("type") == "text")
+    text = str(content or "")
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    if not lines:
+        return "(empty)"
+    return lines[0] if len(lines) == 1 else "%s   … (%d lines)" % (lines[0], len(lines))
 
 
 class ClaudeAdapter(AgentAdapter):
@@ -82,9 +110,33 @@ class ClaudeAdapter(AgentAdapter):
             out.append({"kind": "session", "id": o["session_id"]})
         t = o.get("type")
         if t == "assistant":
-            c = self._ctx_tokens((o.get("message") or {}).get("usage"))
+            msg = o.get("message") or {}
+            c = self._ctx_tokens(msg.get("usage"))
             if c:
                 out.append({"kind": "ctx", "tokens": c, "window": None})
+            # live activity: what the agent is saying / thinking / doing
+            content = msg.get("content")
+            if isinstance(content, list):
+                for bl in content:
+                    if not isinstance(bl, dict):
+                        continue
+                    bt = bl.get("type")
+                    if bt == "text" and bl.get("text", "").strip():
+                        out.append({"kind": "activity", "act": "say", "text": _clip(bl["text"])})
+                    elif bt == "thinking":
+                        txt = bl.get("thinking") or bl.get("text") or ""
+                        if txt.strip():
+                            out.append({"kind": "activity", "act": "think", "text": _clip(txt)})
+                    elif bt == "tool_use":
+                        out.append({"kind": "activity", "act": "tool",
+                                    "text": _clip(_tool_line(bl.get("name", "?"), bl.get("input") or {}))})
+        elif t == "user":
+            content = (o.get("message") or {}).get("content")
+            if isinstance(content, list):
+                for bl in content:
+                    if isinstance(bl, dict) and bl.get("type") == "tool_result":
+                        out.append({"kind": "activity", "act": "result",
+                                    "text": _clip(_result_line(bl.get("content")))})
         elif t == "rate_limit_event":
             ri = o.get("rate_limit_info") or {}
             if ri.get("status") == "rejected":

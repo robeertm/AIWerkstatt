@@ -1,6 +1,7 @@
 import type {
   Me, User, Provider, Project, ThreadSummary, ThreadDetail, FileListing,
   UsageSummary, LimitStatus, UpdateInfo, GithubStatus, ActivityItem, ScanResult, PublishStatus,
+  LiveFeed,
 } from './types'
 
 async function j<T>(r: Response): Promise<T> {
@@ -63,6 +64,7 @@ export const fileRawUrl = (id: string, path: string) =>
   `/api/projects/${id}/files/raw?path=${encodeURIComponent(path)}`
 
 export const markSeen = (tid: number) => req(`/api/threads/${tid}/seen`, 'POST').then(j<{ ok: boolean }>)
+export const getLive = (tid: number, offset: number) => fetch(`/api/threads/${tid}/live?offset=${offset}`).then(j<LiveFeed>)
 
 // visibility
 export const getActivity = (id: string) => fetch(`/api/projects/${id}/activity`).then(j<{ activity: ActivityItem[] }>)

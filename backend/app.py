@@ -370,6 +370,16 @@ def thread_seen(tid):
     return jsonify(ok=True)
 
 
+@app.get("/api/threads/<int:tid>/live")
+@login_required
+def thread_live(tid):
+    try:
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    return jsonify(engine.read_live(tid, offset))
+
+
 # ---------- live activity, usage, rate-limit (visibility) ----------
 
 @app.get("/api/projects/<pid>/activity")
