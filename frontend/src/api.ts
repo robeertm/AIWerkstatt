@@ -22,6 +22,8 @@ const req = (url: string, method: string, body?: unknown) =>
     body: body ? JSON.stringify(body) : undefined,
   })
 
+export const getHealth = () => fetch('/api/health').then(j<{ ok: boolean; version: string; providers: string[] }>)
+
 // auth
 export const getMe = () => fetch('/api/me').then(j<Me>)
 export const login = (name: string, pin: string) => req('/api/login', 'POST', { name, pin }).then(j<{ user: User }>)
@@ -71,6 +73,7 @@ export const getActivity = (id: string) => fetch(`/api/projects/${id}/activity`)
 export const getUsage = () => fetch('/api/usage').then(j<UsageSummary>)
 export const getLimit = () => fetch('/api/limit').then(j<LimitStatus>)
 export const getUpdate = () => fetch('/api/update').then(j<UpdateInfo>)
+export const installUpdate = () => req('/api/update/install', 'POST').then(j<{ ok: boolean }>)
 
 // github account (for publishing)
 export const getGithub = () => fetch('/api/github').then(j<GithubStatus>)

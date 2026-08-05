@@ -87,3 +87,21 @@ Two things you should hold in mind:
 Within that model — one trusted operator, on their own machine — AIWerkstatt keeps
 the socket minimal, the runners unprivileged, the keys out of images and the repo,
 and private data out of anything you publish.
+
+## The updater sidecar
+
+One-click update is done by a small `updater` container, not by the web app
+recreating itself (a process can't cleanly replace its own container). On
+**⤴️ Update now**, the web app asks the updater to run `scripts/self-update.sh`,
+which does `git pull`, rebuilds the images, and recreates the `web` container.
+
+- The updater reaches Docker **only through the same hardened proxy** as the web
+  app (`DOCKER_HOST=tcp://dockerproxy:2375`) — it never mounts the raw socket.
+- It mounts the **project directory** (the compose file and git checkout) so it can
+  pull source and run compose. That directory is your own repo clone.
+- It runs the classic builder (`DOCKER_BUILDKIT=0`) for proxy compatibility.
+- It is admin-only (the endpoint requires an admin) and only ever runs that one
+  fixed script.
+
+If you'd rather not have it, remove the `updater` service from `docker-compose.yml`
+and update by hand with `git pull && docker compose up -d --build`.
