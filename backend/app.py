@@ -82,8 +82,14 @@ def provider_creds(provider_id):
 def provider_connected(provider_id):
     spec = providers.get_spec(provider_id)
     if spec and not spec.auth_modes:
-        return True   # demo — no credentials needed
+        return True   # demo — no credentials needed (always runnable)
     return store.provider_connected(provider_id)
+
+
+def any_real_connected():
+    """True once at least one credential-based provider (Claude/OpenAI/Gemini) is
+    connected. Used to retire the zero-key demo from the choosers."""
+    return any(store.provider_connected(s.id) for s in providers.all_specs() if s.auth_modes)
 
 
 # ---------- auth routes ----------
@@ -169,10 +175,14 @@ def users_remove(name):
 @app.get("/api/providers")
 @login_required
 def providers_list():
+    real = any_real_connected()
     out = []
     for s in providers.all_specs():
         d = s.public()
         d["connected"] = provider_connected(s.id)
+        # `available` = offer this as a choice. The demo retires once a real
+        # provider is connected; it returns when no credential is left.
+        d["available"] = (not real) if not s.auth_modes else d["connected"]
         out.append(d)
     return jsonify(providers=out)
 
