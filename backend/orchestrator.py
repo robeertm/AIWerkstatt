@@ -1,10 +1,10 @@
 """Orchestrator — launches one ephemeral agent-runner container per task.
 
-This is the portable replacement for the private fork's root `dispatch-broker`
-+ `runuser` + `/srv/wk` model. It runs INSIDE the web container and talks to the
-Docker daemon ONLY through the hardened socket proxy (`DOCKER_HOST=tcp://
-dockerproxy:2375`). It never touches the raw socket, and the containers it starts
-are unprivileged (cap-drop ALL, no-new-privileges, no docker access).
+Each agent run gets its own container instead of relying on host-level user
+isolation. The orchestrator runs INSIDE the web container and talks to the Docker
+daemon ONLY through the hardened socket proxy (`DOCKER_HOST=tcp://dockerproxy:2375`).
+It never touches the raw socket, and the containers it starts are unprivileged
+(cap-drop ALL, no-new-privileges, no docker access).
 
 Decoupling is by files, exactly like the proven design:
   * the engine drops a descriptor in ``/data/task-queue/<id>.json``,

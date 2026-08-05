@@ -3,7 +3,8 @@
 The web control plane owns SQLite. To dispatch work it drops a descriptor file in
 ``/data/task-queue`` which the orchestrator picks up; the agent-runner streams
 typed events into the shared ``events`` volume which ``ingest_once`` folds back
-into SQLite. This file-drop-box decoupling mirrors the proven private design.
+into SQLite. This file-drop-box decoupling keeps the web process and the
+ephemeral run containers loosely coupled.
 """
 import json
 import os
