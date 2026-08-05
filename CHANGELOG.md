@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Running version always visible** — a version chip in the header and on the
+  login screen, served from `/api/health`.
+- **One-click in-app updater.** When a newer release is available, admins get an
+  **Update now** button; a small `updater` sidecar (shipped in the compose file
+  from first install) does `git pull`, rebuilds the images, and recreates the web
+  container, then the UI reloads on the new version. It reaches Docker only through
+  the hardened proxy — never the raw socket. The manual `git pull && docker compose
+  up -d --build` remains as a fallback.
+
 ## 0.2.0 — 2026-08-05
 
 ### Added
