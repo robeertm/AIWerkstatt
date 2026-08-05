@@ -10,9 +10,8 @@ Ported from the proven production driver. The valuable core is unchanged:
   * usage (output tokens / cost) and rate-limit handling are tracked and
     reported, unanswered tasks are requeued on an unexpected exit.
 
-What changed vs. the host version: isolation is now the CONTAINER, so there is
-no `runuser`, no per-user secret file, no FIFO — this process is the direct
-parent of the provider CLI and writes to its stdin pipe. Everything
+Isolation is the CONTAINER, so this process is simply the direct parent of the
+provider CLI and writes to its stdin pipe (no extra plumbing). Everything
 provider-specific (argv, stdin encoding, stream parsing, compaction) lives
 behind an ``AgentAdapter`` (see ``providers/``). Credentials arrive in the
 environment (sourced by the entrypoint), never on the command line.
@@ -109,8 +108,8 @@ def save_session_id(sid):
 
 def start_agent():
     """Start the provider CLI as a child process: stdin = pipe (we feed messages),
-    stdout+stderr → runlog file (we tail it). No runuser, no FIFO — the container
-    is the isolation boundary."""
+    stdout+stderr → runlog file (we tail it). The container is the isolation
+    boundary."""
     argv = adapter.build_argv(RunContext(model=MODEL, effort=EFFORT,
                                          resume_id=RESUME_SID, allowed_tools=ALLOWED))
     log("exec: %s" % " ".join(argv))
