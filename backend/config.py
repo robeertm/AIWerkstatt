@@ -7,7 +7,7 @@ import os
 
 # Version of this build. Kept in sync with pyproject.toml / CHANGELOG.md; the
 # self-update check compares it against the latest published GitHub release.
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 # GitHub repository this build is distributed from (owner/name).
 REPO_SLUG = os.environ.get("AIWERKSTATT_REPO", "robeertm/AIWerkstatt")
 
