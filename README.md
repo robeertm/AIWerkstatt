@@ -30,19 +30,25 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 
 <div align="center">
 
-**Describe what you want → the agent builds and deploys it → open it live, keep nudging.**
+**Tell it what you want — then watch the agent work: it builds, deploys, and keeps going as you chat. Stop or steer it any time.**
 
-<img src="docs/screenshots/04-thread.png" alt="A task thread: you ask for an app in plain language, the agent builds and deploys it, and you get an Open live link" width="840">
+<img src="docs/screenshots/12-working.png" alt="A live task thread: the agent is working on a countdown timer, with a follow-up folded in, a live session bar and a Stop button" width="860">
 
 </div>
 
-| Your project gallery | Provider &amp; model, per project |
+| The agent at work, across the project | The finished conversation |
 |:---:|:---:|
+| <img src="docs/screenshots/13-activity.png" alt="Project view with a live activity ticker and an unread badge" width="410"> | <img src="docs/screenshots/04-thread.png" alt="A completed task thread with an Open live link" width="410"> |
+| **Your project gallery** | **Inside a project** |
 | <img src="docs/screenshots/02-gallery.png" alt="Project gallery" width="410"> | <img src="docs/screenshots/03-project.png" alt="Project view with per-project provider and model" width="410"> |
-| **Connect any AI provider** | **The live app, built in a container** |
+| **Connect any AI provider** | **The live app it built** |
 | <img src="docs/screenshots/05-providers.png" alt="Connect Claude, OpenAI or Gemini — or use the zero-key demo" width="410"> | <img src="docs/screenshots/06-live-app.png" alt="A live app the agent built, served from its own container" width="410"> |
-| **Publish it — leak-scanned first** | **See what it costs** |
+| **Publish — leak-scanned first** | **See what it costs** |
 | <img src="docs/screenshots/10-publish.png" alt="Publish panel: scan for secrets, download a zip, or push to GitHub" width="410"> | <img src="docs/screenshots/08-usage.png" alt="Usage: tokens and cost, today and all-time, per provider" width="410"> |
+| **Manage your household or team** | **Your account &amp; PIN** |
+| <img src="docs/screenshots/09-users.png" alt="Admin user manager" width="410"> | <img src="docs/screenshots/11-account.png" alt="Change your PIN" width="410"> |
+| **A short first-run guide** | **Simple PIN sign-in** |
+| <img src="docs/screenshots/07-onboarding.png" alt="Onboarding overlay" width="410"> | <img src="docs/screenshots/01-login.png" alt="PIN login screen" width="410"> |
 
 ## ✨ Why AIWerkstatt
 
