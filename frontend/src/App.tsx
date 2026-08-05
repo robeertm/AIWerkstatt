@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   Me, User, Provider, Project, ThreadSummary, ThreadDetail, FileEntry, FileListing,
   UsageSummary, LimitStatus, UpdateInfo, GithubStatus, ActivityItem, ScanResult, PublishStatus,
-  LiveEntry,
+  LiveEntry, PlanLimit,
 } from './types'
 import * as api from './api'
 
@@ -570,6 +570,82 @@ function AdminUsersModal({ meName, onClose }: { meName: string; onClose: () => v
   )
 }
 
+// ---------- real plan-limit status (per-user Claude account connect) ----------
+function fmtResetTime(r: string | null | undefined): string | null {
+  if (!r) return null
+  const d = new Date(r)
+  return isNaN(d.getTime()) ? null : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function PlanLimitSection() {
+  const [pl, setPl] = useState<PlanLimit | null>(null)
+  const [connecting, setConnecting] = useState(false)
+  const [code, setCode] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const load = () => api.getPlanLimit().then(setPl).catch(() => setPl({ connected: false }))
+  useEffect(() => { load() }, [])
+
+  const start = async () => {
+    setErr('')
+    try {
+      const { url } = await api.planLimitStart()
+      window.open(url, '_blank', 'noopener')
+      setConnecting(true)
+    } catch { setErr('Could not start — try again.') }
+  }
+  const finish = async () => {
+    setBusy(true); setErr('')
+    try { await api.planLimitFinish(code.trim()); setConnecting(false); setCode(''); await load() }
+    catch (e: any) { setErr(e?.message || 'Could not connect — check the code.') }
+    finally { setBusy(false) }
+  }
+  const disconnect = async () => { await api.planLimitDisconnect().catch(() => {}); await load() }
+
+  if (!pl) return null
+  const box = { background: 'var(--surface-2)' }
+
+  if (pl.connected && pl.available) {
+    const r = fmtResetTime(pl.session?.resets_at)
+    return (
+      <div className="card pad stack" style={{ ...box, gap: '.3rem' }}>
+        <div className="between">
+          <b style={{ fontSize: '.85rem' }}>Your Claude plan</b>
+          <button className="chip" onClick={disconnect} title="Disconnect this Claude account">Disconnect</button>
+        </div>
+        <div className="row" style={{ gap: '.6rem', flexWrap: 'wrap' }}>
+          {pl.session?.pct != null &&
+            <span>Session <b>{pl.session.pct}%</b>{r ? <span className="muted"> · resets {r}</span> : null}</span>}
+          {pl.weekly?.pct != null && <span className="muted">Week <b>{pl.weekly.pct}%</b></span>}
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="card pad stack" style={{ ...box, gap: '.35rem' }}>
+      <b style={{ fontSize: '.85rem' }}>Your Claude plan {pl.connected && <span className="muted">· connected (usage unavailable right now)</span>}</b>
+      {!connecting ? (
+        <>
+          <div className="muted" style={{ fontSize: '.78rem' }}>
+            Connect your Claude account to see your live session &amp; weekly usage. Read-only; you can disconnect anytime.
+          </div>
+          <button className="chip" onClick={start} style={{ alignSelf: 'flex-start' }}>🔗 Connect Claude account</button>
+        </>
+      ) : (
+        <>
+          <div className="muted" style={{ fontSize: '.78rem' }}>Authorize in the opened tab, then paste the code shown there:</div>
+          <input className="input" placeholder="Paste code here" value={code} onChange={(e) => setCode(e.target.value)} />
+          <div className="row" style={{ gap: '.4rem' }}>
+            <button className="chip primary" disabled={busy || !code.trim()} onClick={finish}>{busy ? '…' : 'Connect'}</button>
+            <button className="chip" onClick={() => { setConnecting(false); setCode(''); setErr('') }}>Cancel</button>
+          </div>
+        </>
+      )}
+      {err && <div className="muted" style={{ color: 'var(--danger, #e66)', fontSize: '.76rem' }}>{err}</div>}
+    </div>
+  )
+}
+
 // ---------- Usage ----------
 function UsageModal({ onClose }: { onClose: () => void }) {
   const [u, setU] = useState<UsageSummary | null>(null)
@@ -587,6 +663,7 @@ function UsageModal({ onClose }: { onClose: () => void }) {
     <div className="scrim" onClick={onClose}>
       <div className="card modal pad stack fadein" onClick={(e) => e.stopPropagation()}>
         <div className="between"><b>📊 Usage</b><button className="chip" onClick={onClose}>✕ close</button></div>
+        <PlanLimitSection />
         {!u ? <div className="muted pad">Loading…</div> : (
           <>
             <div className="row" style={{ gap: '.6rem', alignItems: 'stretch' }}>

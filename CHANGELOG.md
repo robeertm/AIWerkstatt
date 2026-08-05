@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0 — 2026-08-05
+
+### Added
+
+- **See your real Claude plan usage in the cockpit.** Each user can optionally
+  connect their own Claude account (a standard OAuth login, read-only) from the
+  **📊 Usage** panel. Once connected, the panel shows your live **session** and
+  **weekly** utilisation with the session reset time — the same numbers the Claude
+  `/usage` dialog reports. Disconnect anytime.
+- **Why a separate connect:** the usage endpoint requires the `user:profile` scope,
+  which a project's inference token doesn't carry — so it uses a per-user login
+  token, kept only server-side and refreshed automatically. Everything degrades
+  gracefully: not connected, or any hiccup, simply shows nothing. New backend
+  `planlimit.py` (+ `/api/planlimit…` routes); no change to how agents run.
+
 ## 0.3.3 — 2026-08-05
 
 ### Fixed

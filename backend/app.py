@@ -21,6 +21,7 @@ import store
 import engine
 import providers
 import publish
+import planlimit
 import orchestrator as orch
 
 DIST = os.environ.get("AIWERKSTATT_DIST",
@@ -110,6 +111,36 @@ def me():
                        users=[{"name": x["name"], "emoji": x.get("emoji", "🙂")} for x in users],
                        first_run=bool(first_run))
     return jsonify(logged_in=True, user=store.public_user(u))
+
+
+# ---- real plan-limit status (per-user, optional Claude account connect) ----
+@app.post("/api/planlimit/connect/start")
+@login_required
+def planlimit_start():
+    return jsonify(url=planlimit.start_connect(current_user()["name"]))
+
+
+@app.post("/api/planlimit/connect/finish")
+@login_required
+def planlimit_finish():
+    d = request.get_json(force=True, silent=True) or {}
+    ok, err = planlimit.finish_connect(current_user()["name"], d.get("code"))
+    if not ok:
+        return jsonify(error=err), 400
+    return jsonify(ok=True)
+
+
+@app.delete("/api/planlimit/connect")
+@login_required
+def planlimit_disconnect():
+    planlimit.disconnect(current_user()["name"])
+    return jsonify(ok=True)
+
+
+@app.get("/api/planlimit")
+@login_required
+def planlimit_status():
+    return jsonify(planlimit.get_status(current_user()["name"]))
 
 
 @app.post("/api/login")

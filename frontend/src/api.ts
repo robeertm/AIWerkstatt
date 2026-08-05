@@ -71,6 +71,10 @@ export const getLive = (tid: number, offset: number) => fetch(`/api/threads/${ti
 // visibility
 export const getActivity = (id: string) => fetch(`/api/projects/${id}/activity`).then(j<{ activity: ActivityItem[] }>)
 export const getUsage = () => fetch('/api/usage').then(j<UsageSummary>)
+export const getPlanLimit = () => fetch('/api/planlimit').then(j<import('./types').PlanLimit>)
+export const planLimitStart = () => req('/api/planlimit/connect/start', 'POST').then(j<{ url: string }>)
+export const planLimitFinish = (code: string) => req('/api/planlimit/connect/finish', 'POST', { code }).then(j<{ ok: boolean }>)
+export const planLimitDisconnect = () => req('/api/planlimit/connect', 'DELETE').then(j<{ ok: boolean }>)
 export const getLimit = () => fetch('/api/limit').then(j<LimitStatus>)
 export const getUpdate = () => fetch('/api/update').then(j<UpdateInfo>)
 export const installUpdate = () => req('/api/update/install', 'POST').then(j<{ ok: boolean }>)
