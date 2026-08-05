@@ -15,8 +15,10 @@ echo "[updater] $(date -u +%FT%TZ) starting self-update"
 git config --global --add safe.directory /project 2>/dev/null || true
 
 if [ -d .git ]; then
-  echo "[updater] git pull --ff-only"
-  git pull --ff-only
+  BRANCH=$(git rev-parse --abbrev-ref HEAD)
+  echo "[updater] git pull --ff-only origin $BRANCH"
+  # Explicit remote+branch so it works whether or not upstream tracking is set.
+  git pull --ff-only origin "$BRANCH"
 else
   echo "[updater] no git checkout — cannot pull; aborting" >&2
   exit 1
@@ -27,6 +29,8 @@ echo "[updater] building images (web + agent-runner)"
 docker compose --profile build-only build web agent-runner
 
 echo "[updater] recreating web"
-docker compose up -d web
+# --no-deps: recreate ONLY web. Never touch dockerproxy — it's the updater's own
+# lifeline to Docker; recreating it would sever this script mid-flight.
+docker compose up -d --no-deps web
 
 echo "[updater] $(date -u +%FT%TZ) done"
