@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   Me, User, Provider, Project, ThreadSummary, ThreadDetail, FileEntry, FileListing,
   UsageSummary, LimitStatus, UpdateInfo, GithubStatus, ActivityItem, ScanResult, PublishStatus,
+  LiveEntry,
 } from './types'
 import * as api from './api'
 
@@ -190,6 +191,46 @@ function LiveLink({ project, building }: { project: { live_port: number | null; 
   return <span className="chip muted">preview appears after the first build</span>
 }
 
+// ---------- Live agent feed (watch what it's doing, step by step) ----------
+function LiveRow({ e }: { e: LiveEntry }) {
+  if (e.act === 'tool') {
+    const bash = e.text.startsWith('$ ')
+    return <div className={`liverow tool${bash ? ' bash' : ''}`}>{bash ? e.text : `🔧 ${e.text}`}</div>
+  }
+  if (e.act === 'think') return <div className="liverow think">💭 {e.text}</div>
+  if (e.act === 'result') return <div className="liverow result">↳ {e.text}</div>
+  return <div className="liverow say">💬 {e.text}</div>
+}
+function AgentLive({ tid }: { tid: number }) {
+  const [entries, setEntries] = useState<LiveEntry[]>([])
+  const [live, setLive] = useState(false)
+  const offset = useRef(0)
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => { setEntries([]); offset.current = 0 }, [tid])
+  useEffect(() => {
+    let alive = true; let timer: ReturnType<typeof setTimeout>
+    const tick = () => api.getLive(tid, offset.current).then((d) => {
+      if (!alive) return
+      setLive(d.live)
+      if (d.entries.length) { offset.current = d.offset; setEntries((e) => [...e, ...d.entries].slice(-250)) }
+      timer = setTimeout(tick, d.live ? 1200 : 5000)
+    }).catch(() => { timer = setTimeout(tick, 5000) })
+    tick(); return () => { alive = false; clearTimeout(timer) }
+  }, [tid])
+  useEffect(() => { box.current?.scrollTo({ top: box.current.scrollHeight }) }, [entries.length])
+  if (entries.length === 0) return null
+  return (
+    <div className="card pad stack live">
+      <div className="between" style={{ fontSize: '.78rem' }}>
+        <span className="row">{live ? <Working color="var(--accent)" /> : <span>🔎</span>}
+          <b>What the agent is doing</b></span>
+        <span className="muted">{entries.length} steps</span>
+      </div>
+      <div className="livebox" ref={box}>{entries.map((e, i) => <LiveRow key={i} e={e} />)}</div>
+    </div>
+  )
+}
+
 // ---------- Thread view ----------
 function ThreadView({ tid, accent, onBack }: { tid: number; accent: string; onBack: () => void }) {
   const [t, setT] = useState<ThreadDetail | null>(null)
@@ -242,8 +283,9 @@ function ThreadView({ tid, accent, onBack }: { tid: number; accent: string; onBa
       </div>
 
       <div className="stack" style={{ position: 'sticky', bottom: '.6rem', marginTop: '1rem' }}>
+        <AgentLive tid={tid} />
         {s?.alive && (
-          <div className="card pad" style={{ background: 'rgba(16,20,38,.8)' }}>
+          <div className="card pad" style={{ background: '#12162a' }}>
             <div className="between" style={{ fontSize: '.78rem' }}>
               <span style={{ color: 'var(--good)', fontWeight: 700 }}>● session open — type to add to it</span>
               <span className="row">

@@ -30,9 +30,9 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 
 <div align="center">
 
-**Tell it what you want — then watch the agent work: it builds, deploys, and keeps going as you chat. Stop or steer it any time.**
+**Watch the agent work — every step it takes — and jump in any time. It builds, deploys, and keeps going as you chat. Stop or steer it whenever.**
 
-<img src="docs/screenshots/12-working.png" alt="A live task thread: the agent is working on a countdown timer, with a follow-up folded in, a live session bar and a Stop button" width="860">
+<img src="docs/screenshots/14-live-agent.png" alt="A live task thread: the agent's step-by-step activity feed (what it says, the files it writes and edits, the results), a live session bar, and a Stop button" width="860">
 
 </div>
 
@@ -55,6 +55,7 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 - **🖱️ One-command install.** `docker compose up`. That’s the whole setup. Windows, macOS, Linux.
 - **🔌 Bring any AI provider.** Anthropic Claude, OpenAI, and Google Gemini out of the box — pick per project. Adding another is a small plug-in.
 - **💬 Chat, don’t prompt-engineer.** Describe what you want like you’d tell a person. Follow up mid-run — the agent folds your note into what it’s already doing.
+- **👀 Watch it work, step by step.** A live feed shows what the agent says, thinks, and does — every file it writes, every command it runs — as it happens. Jump in or hit Stop any time.
 - **📦 Isolated by design.** Every agent run and every app it builds runs in its **own container**. The agent can’t touch your machine, only its workspace.
 - **🚀 Live apps, instantly.** Each project deploys to a local port and gets a “open live” link. Watch it come together.
 - **🗂️ See everything.** Live activity ticker, full file browser, context meter with one-click compaction, stop button, unread markers — all the controls, none of the terminal.

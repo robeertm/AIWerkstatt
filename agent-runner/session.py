@@ -47,6 +47,7 @@ STATUS_FILE = os.environ.get("WK_STATUS_FILE", os.path.join(EVENTS, "status-%d.j
 SESS_STATE  = os.environ.get("WK_SESS_STATE", os.path.join(EVENTS, "sess-%d.txt" % THREAD_ID))
 LIMITFILE   = os.environ.get("WK_LIMITFILE", os.path.join(EVENTS, "limit.json"))
 LASTFILE    = os.environ.get("WK_LASTFILE", os.path.join(EVENTS, "limit-last.json"))
+LIVEFILE    = os.environ.get("WK_LIVEFILE", os.path.join(EVENTS, "live-%d.jsonl" % THREAD_ID))
 INBOX       = os.environ.get("WK_INBOX", "/inbox")
 RUNLOG      = os.environ.get("WK_RUNLOG", "/tmp/agent-runlog.jsonl")
 
@@ -88,6 +89,24 @@ def emit(task_id, etype, text, payload=None):
         d["payload"] = payload
     name = "%s.%d%03d.json" % (task_id if task_id is not None else "t", time.time_ns(), _seq % 1000)
     _atomic_write(os.path.join(EVENTS, name), json.dumps(d, ensure_ascii=False))
+
+
+_live_seq = 0
+
+
+def emit_activity(act, text):
+    """Append one line to the shared live-activity feed (the web tails it so the
+    user can watch what the agent is doing, step by step). Append-only; the web
+    reads it incrementally by byte offset."""
+    global _live_seq
+    _live_seq += 1
+    rec = {"seq": _live_seq, "act": act, "text": text, "at": int(time.time())}
+    try:
+        os.makedirs(os.path.dirname(LIVEFILE), exist_ok=True)
+        with open(LIVEFILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log("live write failed: %s" % e)
 
 
 def write_status(ctx_pct, alive, pending, compacting=False):
@@ -220,6 +239,9 @@ def main():
                     limited_close = (head[1] if head[0] == "task" else None,
                                      int(ev.get("reset", 0) or 0))
                     should_close = True
+                elif kind == "activity":
+                    emit_activity(ev.get("act", "say"), ev.get("text", ""))
+                    last_activity = time.time()
                 elif kind == "result":
                     handle_result(ev)
 

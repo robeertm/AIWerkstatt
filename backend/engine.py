@@ -250,6 +250,46 @@ def limit_status():
             "resumes_at": time.strftime("%H:%M", time.localtime(until))}
 
 
+# ---------- live agent feed (watch what the agent is doing, step by step) ----------
+
+def read_live(thread_id, offset=0):
+    """Incremental read of the shared live-activity file a runner appends to.
+    Returns new entries since `offset` (a byte position), the next offset, and
+    whether the session is still alive."""
+    path = os.path.join(EVENTS_DIR, "live-%d.jsonl" % thread_id)
+    live = bool(thread_session(thread_id))
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return {"entries": [], "offset": 0, "live": live}
+    start = max(0, int(offset or 0))
+    if start > size:      # file rotated/shrank → restart from the top
+        start = 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(start)
+            raw = f.read()
+    except OSError:
+        return {"entries": [], "offset": start, "live": live}
+    cut = raw.rfind("\n")   # only parse up to the last COMPLETE line
+    if cut < 0:
+        return {"entries": [], "offset": start, "live": live}
+    usable = raw[:cut + 1]
+    new_offset = start + len(usable.encode("utf-8"))
+    entries = []
+    for line in usable.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except ValueError:
+            continue
+    if len(entries) > 400:
+        entries = entries[-400:]
+    return {"entries": entries, "offset": new_offset, "live": live}
+
+
 # ---------- live activity (for the ticker) ----------
 
 def project_activity(project_id):

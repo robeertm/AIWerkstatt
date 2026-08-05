@@ -8,6 +8,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Live agent feed.** Watch what the agent is doing while it works — its narration,
+  the files it writes and edits, and each tool result — streamed step by step into
+  the task thread. Interject at any time; it folds your note into the running task.
+
 - **Publish & release.** Push a project's app to a GitHub repo you own (connect a
   token once), or download it as a zip — always leak-scanned first. Tag a release
   on the published repo.

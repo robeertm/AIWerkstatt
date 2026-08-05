@@ -126,6 +126,17 @@ label.lbl { font-size: .8rem; color: var(--muted); font-weight: 600; }
 /* single-line live ticker text */
 .ticker { max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* live agent feed — watch what it's doing, step by step */
+.live { background: #12162a; gap: .45rem; box-shadow: 0 -8px 24px rgba(6,8,20,.55); }
+.livebox { max-height: 230px; overflow: auto; display: flex; flex-direction: column;
+  gap: .2rem; font-size: .82rem; padding-right: .2rem; }
+.liverow { padding: .12rem .1rem; line-height: 1.4; word-break: break-word; }
+.liverow.say { color: var(--text); }
+.liverow.think { color: var(--muted); font-style: italic; }
+.liverow.result { color: var(--muted); }
+.liverow.tool { color: #c7c0ff; }
+.liverow.tool.bash { font-family: ui-monospace, monospace; color: #a7f3d0; }
+
 .fadein { animation: fi .25s ease both; }
 @keyframes fi { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .filerow { display: flex; align-items: center; gap: .6rem; padding: .5rem .5rem; border-radius: 10px; cursor: pointer; }
