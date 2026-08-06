@@ -331,6 +331,21 @@ def _thread_status(thread_id):
     return "done"
 
 
+def project_active(project_id, agent_alive):
+    """Is this project genuinely busy right now? A ``queued`` task always counts — an
+    agent will start. A ``running`` task counts ONLY when its agent container is really
+    alive (``agent_alive``). A leftover ``running`` row from a hard-killed runner — one
+    that died (OOM, kill, host restart) before writing a terminal event — must not pin
+    the gallery to "in progress" forever."""
+    rows = db.query_all(
+        "SELECT t.status AS status FROM tasks t "
+        "JOIN threads th ON th.id = t.thread_id "
+        "WHERE th.project_id = ? AND t.status IN ('queued', 'running')", (project_id,))
+    if any(r["status"] == "queued" for r in rows):
+        return True
+    return bool(agent_alive) and any(r["status"] == "running" for r in rows)
+
+
 # ---------- unread markers (per user) ----------
 
 def _seen_id(user, thread_id):
