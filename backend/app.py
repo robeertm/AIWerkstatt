@@ -268,7 +268,7 @@ def projects_list():
         d = _shape_project(p)
         threads = engine.list_threads(p["id"])
         d["threads"] = len(threads)
-        d["active"] = any(t["status"] in ("working", "queued") for t in threads)
+        d["active"] = engine.project_active(p["id"], ORCH._alive(p["id"]) is not None)
         d["unread"] = engine.project_unread(p["id"], me_name)
         out.append(d)
     return jsonify(projects=out, me=me_name)

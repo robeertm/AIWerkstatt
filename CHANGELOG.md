@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.2 — 2026-08-06
+
+### Fixed
+
+- **A project no longer shows as "in progress" forever after an agent dies unexpectedly.**
+  The gallery marked a project busy whenever any of its threads had a `running` task.
+  Normally the agent writes a terminal event (reply/failed) as it finishes, which clears
+  that — but if the agent container dies *hard* (out-of-memory, killed, host restart)
+  before it can, the task stays `running` with no live agent, and the project stayed
+  flagged busy indefinitely (and never showed a finish). The busy indicator is now
+  liveness-aware: a `queued` task always counts, but a `running` task counts only when
+  its agent container is actually alive. A leftover `running` row from a vanished runner
+  no longer pins the project to "in progress".
+
 ## 0.4.1 — 2026-08-06
 
 ### Fixed
