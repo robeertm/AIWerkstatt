@@ -125,9 +125,11 @@ def write_status(ctx_pct, alive, pending, compacting=False):
          "updated": int(time.time())}, ensure_ascii=False))
 
 
-def write_limit(until, since):
+def write_limit(until, since, known=False):
+    # `known` = the resume time is a REAL provider reset (not a retry-cadence guess); the
+    # banner only shows a clock time when it's true.
     for p in (LIMITFILE, LASTFILE):
-        _atomic_write(p, json.dumps({"until": int(until), "since": int(since)}))
+        _atomic_write(p, json.dumps({"until": int(until), "since": int(since), "known": bool(known)}))
 
 
 def save_session_id(sid):
@@ -345,14 +347,21 @@ def main():
     if limited_close is not None:
         tid, reset = limited_close
         now = int(time.time())
-        if not reset or reset <= now:
-            reset = now + LIMIT_WAIT
-        write_limit(reset, now)
-        hhmm = time.strftime("%H:%M", time.localtime(reset))
+        # Only show a concrete resume time when the provider gave a REAL reset time.
+        # Agents here run on the project's own credential (usually an API key), which has
+        # no plan "session reset" — so if the event carries none, we retry after LIMIT_WAIT
+        # but must NOT invent a clock time (that reads as a bogus value). Word it honestly.
+        real = bool(reset and reset > now)
+        if not real:
+            reset = now + LIMIT_WAIT   # internal retry cadence only — never shown as a time
+        write_limit(reset, now, real)
+        if real:
+            msg = ("⏸️ Usage limit reached — the agent resumes automatically at %s."
+                   % time.strftime("%H:%M", time.localtime(reset)))
+        else:
+            msg = "⏸️ Usage limit reached — the agent resumes automatically once the limit resets."
         if tid is not None:
-            emit(tid, "limited",
-                 "⏸️ Usage limit reached — the agent resumes automatically at %s." % hhmm,
-                 {"reset": reset})
+            emit(tid, "limited", msg, {"reset": reset, "reset_known": real})
             result["requeue"].append(tid)
         result["limited"] = reset
         result["reset"] = reset

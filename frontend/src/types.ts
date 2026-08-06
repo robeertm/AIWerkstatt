@@ -27,7 +27,7 @@ export type UsageSummary = {
 }
 export type PlanWindow = { pct: number | null; resets_at: string | null }
 export type PlanLimit = { connected: boolean; available?: boolean; session?: PlanWindow; weekly?: PlanWindow }
-export type LimitStatus = { active: boolean; until?: number; resumes_at?: string }
+export type LimitStatus = { active: boolean; until?: number; resumes_at?: string; reset_known?: boolean }
 export type UpdateInfo = { current: string; latest: string | null; update_available: boolean; url: string }
 export type GithubStatus = { connected: boolean; login: string | null }
 export type ActivityItem = {

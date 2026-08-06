@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.1 — 2026-08-06
+
+### Fixed
+
+- **No more made-up resume time when a usage limit has no known reset.** When an agent
+  hit a usage limit and the provider did **not** report a real reset time, the pause
+  message and the top banner still showed a concrete clock time — actually just the
+  internal retry cadence (`now + 30 min`), which reads as a bogus value. Agents here run
+  on the project's own credential (typically an API key, which has no plan "session
+  reset"), so that time was never authoritative. Now a clock time is shown **only** when
+  the provider gives a genuine reset; otherwise the message reads "resumes automatically
+  once the limit resets" and the agent still retries in the background. When a real reset
+  **is** reported, it is shown exactly as before.
+
 ## 0.4.0 — 2026-08-05
 
 ### Added
