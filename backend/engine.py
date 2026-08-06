@@ -246,8 +246,13 @@ def limit_status():
     now = int(time.time())
     if until <= now:
         return {"active": False}
-    return {"active": True, "until": until,
-            "resumes_at": time.strftime("%H:%M", time.localtime(until))}
+    # Only expose a resume clock time when it's a REAL provider reset — otherwise the pause
+    # is just our internal retry cadence and a shown time would be a made-up value.
+    known = bool(d.get("known"))
+    out = {"active": True, "until": until, "reset_known": known}
+    if known:
+        out["resumes_at"] = time.strftime("%H:%M", time.localtime(until))
+    return out
 
 
 # ---------- live agent feed (watch what the agent is doing, step by step) ----------

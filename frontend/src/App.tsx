@@ -696,7 +696,8 @@ function LimitBanner() {
     f(); const t = setInterval(f, 30000); return () => { alive = false; clearInterval(t) }
   }, [])
   if (!l?.active) return null
-  return <div className="banner warn">⏸️ Usage limit reached — agents pause and resume automatically at {l.resumes_at}.</div>
+  const when = l.reset_known && l.resumes_at ? ` at ${l.resumes_at}` : ' once the limit resets'
+  return <div className="banner warn">⏸️ Usage limit reached — agents pause and resume automatically{when}.</div>
 }
 
 function UpdateBanner() {
