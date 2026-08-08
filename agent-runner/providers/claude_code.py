@@ -42,6 +42,19 @@ def _result_line(content) -> str:
     return lines[0] if len(lines) == 1 else "%s   … (%d lines)" % (lines[0], len(lines))
 
 
+# Behaviour rule injected on every turn (--append-system-prompt). Core: real parallelism goes ONLY
+# through the Agent tool (subagents run synchronously within the same run and return their results) —
+# never through detached background jobs, whose output is lost when the run ends.
+_AGENT_RULES = (
+    "You run as a single non-interactive pass. For parallelism, use the Agent tool: subagents run "
+    "SYNCHRONOUSLY within THIS run and return their results, so you can reassemble them. NEVER use "
+    "background processes (nohup, &, disown, daemons or self-invoked CLI calls) — their output is lost "
+    "the moment your run ends. Do EVERYTHING within this run: wait for subagents, reassemble, verify "
+    "and commit BEFORE you reply. Never announce that you will report back later — after your reply "
+    "the run ends, there is no later."
+)
+
+
 class ClaudeAdapter(AgentAdapter):
     id = "claude"
 
@@ -60,8 +73,14 @@ class ClaudeAdapter(AgentAdapter):
             argv += ["--effort", ctx.effort.lower()]
         argv += ["--model", ctx.model or self.model,
                  "--permission-mode", "acceptEdits"]
-        if ctx.allowed_tools:
-            argv += ["--allowedTools", ctx.allowed_tools]
+        # Parallel subagents: ensure the Agent tool is available (Claude Code spawns subagents that
+        # run SYNCHRONOUSLY within this same run). Scoped to the Claude adapter — other providers keep
+        # their own tool set untouched.
+        tools = ctx.allowed_tools or "Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch,TodoWrite"
+        if "Agent" not in [x.strip() for x in tools.split(",")]:
+            tools += ",Agent"
+        argv += ["--allowedTools", tools,
+                 "--append-system-prompt", _AGENT_RULES]
         return argv
 
     def encode_user_message(self, text: str) -> bytes:
@@ -111,9 +130,13 @@ class ClaudeAdapter(AgentAdapter):
         t = o.get("type")
         if t == "assistant":
             msg = o.get("message") or {}
-            c = self._ctx_tokens(msg.get("usage"))
-            if c:
-                out.append({"kind": "ctx", "tokens": c, "window": None})
+            # Only the MAIN conversation drives the context bar. Subagent messages carry a
+            # parent_tool_use_id (≠ null) and have their own context — counting them would skew
+            # the parent agent's ctx%.
+            if not o.get("parent_tool_use_id"):
+                c = self._ctx_tokens(msg.get("usage"))
+                if c:
+                    out.append({"kind": "ctx", "tokens": c, "window": None})
             # live activity: what the agent is saying / thinking / doing
             content = msg.get("content")
             if isinstance(content, list):

@@ -125,6 +125,10 @@ class Orchestrator:
             "WK_MODEL": d.get("model", ""),
             "WK_EFFORT": d.get("effort", ""),
             "WK_ALLOWED": d.get("allowed_tools", ""),
+            # How long the parent run waits for parallel subagents before finishing (Claude Code
+            # default 10 min). Raised to 30 min for larger fan-outs; genuine hangs are caught by the
+            # stall watchdog. Harmless for non-Claude providers.
+            "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": os.environ.get("WK_BG_WAIT_CEILING_MS", "1800000"),
             "WK_WT": "%s/%s" % (WORKSPACES_BIND, slug),
             "WK_FIRST_MSG_FILE": first,
             "WK_FIRST_TASK": str(int(d["id"])),
