@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.3 — 2026-08-08
+
+### Added
+
+- **Real parallel subagents for the Claude provider.** An agent can now fan work out to
+  parallel subagents via the **Agent tool** — the subagents run **synchronously within the
+  same run** (same process tree) and return their results, so the agent can reassemble,
+  verify and commit before it replies. Previously agents that tried to parallelise reached
+  for detached background shell jobs (`nohup … &`), whose output was lost the moment the
+  run ended. The Agent tool is now enabled for the Claude adapter, and a per-run rule
+  (`--append-system-prompt`) steers agents to use it — and never to background work or
+  promise to "report back later". The wait ceiling for subagents is raised to 30 minutes
+  (`WK_BG_WAIT_CEILING_MS`); genuine hangs are still caught by the stall watchdog. Subagent
+  token usage is included in the run's totals, so the usage view accounts for it. The
+  context bar ignores subagent snapshots (`parent_tool_use_id`) so it stays accurate. Other
+  providers are untouched.
+
 ## 0.4.2 — 2026-08-06
 
 ### Fixed
