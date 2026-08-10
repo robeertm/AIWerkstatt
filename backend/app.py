@@ -327,11 +327,8 @@ def project_delete(pid):
         abort(404)
     if current_user()["role"] != "admin" and p.get("created_by") != current_user()["name"]:
         return jsonify(error="Only the owner or an admin can delete this."), 403
-    engine.delete_project(pid)
-    try:
-        ORCH._client.containers.get("aiwerkstatt-app-%s" % pid).remove(force=True)
-    except Exception:
-        pass
+    tids = engine.delete_project(pid)
+    ORCH.purge_project(pid, tids)
     return jsonify(ok=True)
 
 

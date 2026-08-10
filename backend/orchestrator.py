@@ -362,6 +362,41 @@ class Orchestrator:
             _log("run failed for %s: %s" % (project_id, e))
             return False
 
+    def purge_project(self, slug, thread_ids):
+        """Remove everything a deleted project leaves behind so nothing survives on disk or in
+        Docker: the deployed app container and its built image, the workspace tree, the
+        persisted Claude session store, and every per-thread runtime file (inbox,
+        live/sess/status/usage). Best-effort — a delete must fully clean up."""
+        for op in (
+            lambda: self._client.containers.get("aiwerkstatt-app-%s" % slug).remove(force=True),
+            lambda: self._client.images.remove("aiwerkstatt-app-%s:latest" % slug, force=True),
+        ):
+            try:
+                op()
+            except Exception:
+                pass
+        for tree in ("%s/%s" % (WORKSPACES_BIND, slug), "%s/%s" % (AGENTHOME_BIND, slug)):
+            shutil.rmtree(tree, ignore_errors=True)
+        for tid in thread_ids or []:
+            shutil.rmtree("%s/%s" % (INBOX_BIND, tid), ignore_errors=True)
+            for p in ("%s/live-%s.jsonl" % (EVENTS_BIND, tid),
+                      "%s/sess-%s.txt" % (EVENTS_BIND, tid),
+                      "%s/status-%s.json" % (EVENTS_BIND, tid)):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+        try:
+            udir = os.path.join(EVENTS_BIND, "usage")
+            for f in os.listdir(udir):
+                if f.startswith("%s-" % slug) and f.endswith(".json"):
+                    try:
+                        os.remove(os.path.join(udir, f))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
     def run_loop(self, interval=1.0):
         if self._client is None:
             _log("docker SDK unavailable — orchestrator idle")

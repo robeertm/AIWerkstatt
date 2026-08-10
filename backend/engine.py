@@ -109,12 +109,17 @@ def set_project_settings(pid, provider=None, model=None, effort=None):
 
 
 def delete_project(pid):
+    """Delete all of a project's DB state and return its thread ids so the caller can purge
+    the matching runtime artifacts (workspace, Claude store, event files, deployed image)."""
     tids = [r["id"] for r in db.query_all("SELECT id FROM threads WHERE project_id=?", (pid,))]
     for tid in tids:
         db.execute("DELETE FROM events WHERE thread_id=?", (tid,))
         db.execute("DELETE FROM tasks WHERE thread_id=?", (tid,))
+        db.execute("DELETE FROM thread_seen WHERE thread_id=?", (tid,))
     db.execute("DELETE FROM threads WHERE project_id=?", (pid,))
+    db.execute("DELETE FROM pubmeta WHERE project_id=?", (pid,))
     db.execute("DELETE FROM projects WHERE id=?", (pid,))
+    return tids
 
 
 def mark_live_ready(pid):

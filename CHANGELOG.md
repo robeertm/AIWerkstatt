@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.6.2 — 2026-08-10
+
+### Fixed
+
+- **Deleting a project now really removes everything.** A delete previously dropped only the
+  database rows (and even left the per-user read markers behind), so the built code, the
+  conversation transcript, the persisted session store, the per-thread event/inbox files and the
+  built container image all lingered on disk and in Docker — a "deleted" project was still
+  recoverable and its data stayed around. A delete now also removes the workspace, the Claude
+  session store, the inbox and event/usage files, the `thread_seen`/`pubmeta` rows, and the built
+  app image (the running container was already removed). Nothing survives a delete.
+
 ## 0.6.1 — 2026-08-10
 
 ### Fixed
