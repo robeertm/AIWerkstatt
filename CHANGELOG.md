@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **Follow-ups no longer dead-end after the agent's runner has closed.** Each agent run is a
+  throwaway container, and Claude's session store (`~/.claude`) lived inside it — so once the
+  short idle window passed and the runner exited, the next follow-up started a fresh container
+  where `--resume <session>` couldn't find the conversation and failed instantly ("The run did
+  not finish cleanly. It will be retried automatically."), which made the project look stuck and
+  swallowed every further request. The session store is now persisted **per thread** on the
+  internal events volume (`CLAUDE_CONFIG_DIR`), so a follow-up resumes with full context across
+  containers. If the stored transcript for the requested session isn't there — a conversation
+  started before this fix, or a lost store — the run starts a **fresh session on the existing
+  workspace** instead of dead-ending; the files carry the state. The misleading "will be retried
+  automatically" wording (nothing actually retried it) is replaced with an honest message.
+
 ## 0.6.0 — 2026-08-10
 
 ### Added

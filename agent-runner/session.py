@@ -220,7 +220,8 @@ def main():
         tid = head[1]
         text = ev.get("text") or ""
         if ev.get("error") or not text:
-            emit(tid, "failed", "The run did not finish cleanly. It will be retried automatically.")
+            emit(tid, "failed", "The run ended without a reply. Your workspace is unchanged — "
+                                "send your message again to try once more.")
         else:
             emit(tid, "reply", text[:6000])
         # One result = the agent processed everything fed so far. A mid-turn
