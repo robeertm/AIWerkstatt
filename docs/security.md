@@ -28,7 +28,7 @@ So even if the web process were compromised, it cannot read Swarm secrets,
 enumerate the host via `INFO`, load plugins, or reconfigure the socket. It can only
 do container/image/volume/network lifecycle work.
 
-## Agent-runner containers are unprivileged
+## Agent and app containers are unprivileged
 
 Every task runs in a throwaway container the orchestrator launches with tight
 limits:
@@ -43,6 +43,15 @@ limits:
 It gets network access (it needs the provider API, `git`, `npm`, etc.) and its own
 `workspaces/<slug>` subtree — nothing more.
 
+**The app the agent builds gets the same lockdown.** When a project goes live it runs
+as its own sibling container with `cap_drop: ALL`, `no-new-privileges`, and
+memory/pid limits — the identical treatment. This matters because it is the most
+exposed container (it serves HTTP on a host port): it holds **no** provider keys, mounts
+**none** of the shared volumes, and sits on the default bridge only — never the internal
+network — so a bug in the generated app cannot reach the control plane, the socket
+proxy, your keys, or another project. A vulnerability is contained to that one
+throwaway app container.
+
 ## Provider keys live in the app's private volume
 
 Your provider API keys / tokens are stored in the **web container's private `data`
@@ -53,12 +62,18 @@ volume** with restrictive permissions. They are:
   that one ephemeral container**, never written to its command line;
 - gone when that container is removed.
 
-## The leak scanner guards what you publish
+## The leak scanner guards what you publish — and what you deploy
 
 `backend/scrub/scan.py` is a **deterministic** scanner that runs before anything is
 pushed to a public repo (and in CI on every PR). It blocks on real secret patterns
 — provider keys, GitHub/Slack/AWS tokens, private-key blocks, real `.env` and
 credential files — and reports weaker signals for review without blocking.
+
+The **same gate runs before a live deploy.** When the agent finishes and the
+orchestrator is about to build the app into an image, it scans the workspace first; a
+blocking secret **stops the deploy** — the project stays not-live and the reason
+appears in the live feed — so a hard-coded key never ends up baked into a running
+image. On by default; set `AIWERKSTATT_DEPLOY_SECRET_SCAN=0` to opt out.
 
 The rules are **data, not code** (`rules.default.toml`, generic patterns only), and
 a maintainer can layer a **private overlay** via
@@ -66,6 +81,24 @@ a maintainer can layer a **private overlay** via
 (personal names, home addresses, internal hostnames) **without committing it** to
 the public repo. A blocking finding fails the scan; fix the file rather than
 weakening the rule.
+
+## From "the agent wrote it" to "it's live"
+
+Keep two failure modes apart:
+
+- **A secret in the generated code** is caught by the scanner gate above: it runs
+  before the image is built, so a real key / token / private-key block never reaches a
+  live container. Same rules as publish, on by default.
+- **A vulnerability in the generated code** is *not* caught by a scanner — AIWerkstatt
+  does **no** static analysis of your app's logic, and it would be dishonest to imply
+  otherwise. What bounds it is **containment**: the app runs in its own unprivileged,
+  capability-stripped sibling container with no keys, no shared volumes, and no path to
+  the control plane or other projects. So a flaw in a built app can compromise, at
+  worst, that one throwaway container — not the host, your keys, or your other work.
+
+If you want true vulnerability scanning, add it as a step (e.g. an image scan such as
+Trivy, or a SAST pass) — the boundary here is deliberately *isolation-first*, not
+verification.
 
 ## Honest residual risk
 

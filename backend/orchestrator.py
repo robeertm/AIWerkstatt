@@ -29,6 +29,7 @@ import threading
 import time
 
 import config
+from scrub.scan import scan_tree
 
 try:
     import docker  # docker-py
@@ -50,6 +51,10 @@ VOL_INBOX = os.environ.get("AIWERKSTATT_VOL_INBOX", "aiwerkstatt-inbox")
 
 MEM_LIMIT = os.environ.get("AIWERKSTATT_RUN_MEM", "2g")
 PIDS_LIMIT = int(os.environ.get("AIWERKSTATT_RUN_PIDS", "512"))
+
+# Scan the app the agent built for hard-coded secrets BEFORE it goes live — the same
+# deterministic gate that guards publishing. On by default; set to "0" to opt out.
+DEPLOY_SECRET_SCAN = os.environ.get("AIWERKSTATT_DEPLOY_SECRET_SCAN", "1") != "0"
 
 # Used when a project workspace has no Dockerfile of its own: serve it statically.
 DEFAULT_DOCKERFILE = (
@@ -94,6 +99,20 @@ class Orchestrator:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
         os.replace(tmp, os.path.join(d, name))
+
+    def _note_live(self, thread_id, text, act="say"):
+        """Append one line to the thread's live-activity feed the web UI tails, so a
+        deploy decision (e.g. a blocked secret) shows up where the user is already
+        watching the agent work. Best-effort; never raises into the caller."""
+        if not thread_id:
+            return
+        try:
+            path = os.path.join(EVENTS_BIND, "live-%d.jsonl" % int(thread_id))
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"kind": "activity", "act": act, "text": text},
+                                   ensure_ascii=False) + "\n")
+        except Exception:
+            pass
 
     def _alive(self, slug) -> dict | None:
         info = self._running.get(slug)
@@ -230,12 +249,40 @@ class Orchestrator:
                 _log("handle error for %s: %s" % (n, e))
 
     # ---- deploy the app the agent built --------------------------------
-    def deploy(self, project_id, port):
+    def _secret_gate(self, project_id, src, thread_id) -> bool:
+        """True if the built code is clear of hard-coded secrets. On a blocking
+        finding: log it, tell the user in the live feed, and return False so the
+        deploy is skipped and the project stays not-live."""
+        try:
+            scan = scan_tree(src)
+        except Exception as e:   # a scanner bug must not wedge every deploy
+            _log("secret scan error for %s: %s — deploying anyway" % (project_id, e))
+            return True
+        if not scan.get("blocking"):
+            return True
+        files = sorted({f["file"] for f in scan["findings"] if f["severity"] == "block"})
+        preview = ", ".join(files[:5]) + (" …" if len(files) > 5 else "")
+        _log("DEPLOY BLOCKED for %s: %d secret finding(s) in %s"
+             % (project_id, scan["blocking"], preview))
+        self._note_live(thread_id,
+            "🚫 Live deploy blocked — the leak scanner found %d hard-coded secret(s) "
+            "in the built code (%s). Remove them (read the value from an environment "
+            "variable or operator-supplied config instead) and it will deploy."
+            % (scan["blocking"], preview))
+        return False
+
+    def deploy(self, project_id, port, thread_id=None):
         """Build an image from the project workspace and run it as a sibling
         container on the given host port. If the workspace has no Dockerfile,
-        a default static server is used so simple (index.html) apps just work."""
+        a default static server is used so simple (index.html) apps just work.
+
+        Before building, the workspace is scanned for hard-coded secrets (the same
+        gate as publish): a real provider key / token / private-key block baked
+        into the code is refused HERE, so it never lands inside a live image."""
         src = "%s/%s" % (WORKSPACES_BIND, project_id)
         if not os.path.isdir(src) or not os.listdir(src):
+            return False
+        if DEPLOY_SECRET_SCAN and not self._secret_gate(project_id, src, thread_id):
             return False
         ctx = tempfile.mkdtemp(prefix="aiw-build-")
         try:
@@ -267,6 +314,12 @@ class Orchestrator:
                 tag, detach=True, name=name,
                 ports={"8080/tcp": int(port)},
                 restart_policy={"Name": "unless-stopped"},
+                # Same lockdown as the agent-runner. The deployed app is the most
+                # exposed container (it serves on a host port), so it gets no Linux
+                # capabilities and cannot gain new privileges; it joins only the
+                # default bridge, never the internal network, so it cannot reach the
+                # control plane or the socket proxy.
+                cap_drop=["ALL"], security_opt=["no-new-privileges"],
                 mem_limit="1g", pids_limit=256)
             _log("deployed %s on host port %s" % (project_id, port))
             return True

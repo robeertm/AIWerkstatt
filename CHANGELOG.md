@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Security
+
+- **Secret gate on live deploy.** The deterministic leak scanner that guards publishing
+  now also runs before a project is built into a live image. A hard-coded secret
+  (provider key, token, private-key block, real credential file) **blocks the deploy** —
+  the project stays not-live and the reason shows up in the live activity feed — so a
+  key can no longer be baked into a running app. On by default; opt out with
+  `AIWERKSTATT_DEPLOY_SECRET_SCAN=0`.
+- **Deployed app containers are hardened like the runner.** The container a project runs
+  in now drops all Linux capabilities (`cap_drop: ALL`) and forbids privilege escalation
+  (`no-new-privileges`), matching the agent-runner. It is the most exposed container
+  (it serves on a host port), holds no keys, mounts no shared volumes, and stays on the
+  default bridge only — so a vulnerability in a built app is contained to that one
+  throwaway container.
+
 ## 0.4.3 — 2026-08-08
 
 ### Added

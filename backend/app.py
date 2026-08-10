@@ -699,7 +699,7 @@ def _ingest_loop():
             for project_id, thread_id, etype in engine.ingest_once():
                 if etype == "reply":
                     p = engine.get_project(project_id)
-                    if p and ORCH.deploy(project_id, p["port"]):
+                    if p and ORCH.deploy(project_id, p["port"], thread_id):
                         engine.mark_live_ready(project_id)
         except Exception:
             pass
