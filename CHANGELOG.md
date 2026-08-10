@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.6.0 — 2026-08-10
+
+### Added
+
+- **One-click launchers — no command line needed.** Download the release zip, unzip, and
+  double-click `AIWerkstatt.command` (macOS), `AIWerkstatt.bat` (Windows) or `AIWerkstatt.sh`
+  (Linux). The launcher checks Docker (starting Docker Desktop if needed), builds and starts
+  everything, waits for the app, and opens your browser at http://localhost:8095. Docker is
+  the only thing you install yourself.
+- **Active "Check for updates" button.** The admin header now has a live update check that
+  asks GitHub for the latest release on demand — a plain reload uses a 1-hour cache, so a
+  freshly published release no longer stays hidden until it expires. `GET /api/update?force=1`
+  bypasses the cache; the button shows "✓ You're on the latest" or the one-click **Update
+  now** banner.
+
 ## 0.5.0 — 2026-08-10
 
 ### Security

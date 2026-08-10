@@ -453,7 +453,10 @@ _update_cache = {"at": 0, "data": None}
 @login_required
 def update_check():
     now = time.time()
-    if _update_cache["data"] and now - _update_cache["at"] < 3600:
+    # `?force=1` bypasses the 1-hour cache so the "Check for updates" button always
+    # asks GitHub live (a plain reload keeps using the cache — that's the fast path).
+    force = request.args.get("force")
+    if not force and _update_cache["data"] and now - _update_cache["at"] < 3600:
         return jsonify(_update_cache["data"])
     data = {"current": config.VERSION, "latest": None, "update_available": False,
             "url": "https://github.com/%s/releases" % config.REPO_SLUG}
