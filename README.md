@@ -52,7 +52,7 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 
 ## ✨ Why AIWerkstatt
 
-- **🖱️ One-command install.** `docker compose up`. That’s the whole setup. Windows, macOS, Linux.
+- **🖱️ One-click install.** Download the release zip, unzip, and **double-click the launcher for your OS** — it builds everything, starts it, and opens your browser. No command line. (Prefer the terminal? `docker compose up -d --build` still works.) Windows, macOS, Linux.
 - **🔌 Bring any AI provider.** Anthropic Claude, OpenAI, and Google Gemini out of the box — pick per project. Adding another is a small plug-in.
 - **💬 Chat, don’t prompt-engineer.** Describe what you want like you’d tell a person. Follow up mid-run — the agent folds your note into what it’s already doing.
 - **👀 Watch it work, step by step.** A live feed shows what the agent says, thinks, and does — every file it writes, every command it runs — as it happens. Jump in or hit Stop any time.
@@ -63,20 +63,28 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 - **📊 Know what it costs.** A usage view tracks output tokens and cost per provider, today and all-time. The zero-key demo is free.
 - **👥 Bring your household or team.** PIN logins, an admin user manager, and per-user unread badges — everyone shares the same workshop.
 
-## 🚀 Quickstart (1 minute)
+## 🚀 Quickstart
 
-**Prerequisite:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/macOS) or Docker Engine (Linux).
+**The one prerequisite:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/macOS) or Docker Engine (Linux). Install it once — everything else is automatic.
+
+### 🖱️ One-click (no command line)
+
+1. **Download** the latest release zip from the [Releases page](https://github.com/robeertm/AIWerkstatt/releases/latest) → **Source code (zip)**.
+2. **Unzip** it anywhere.
+3. **Double-click the launcher for your system** — it builds everything and opens the app for you:
+   - **macOS** → `AIWerkstatt.command`  *(first time only: right-click → Open, to get past Gatekeeper)*
+   - **Windows** → `AIWerkstatt.bat`
+   - **Linux** → `AIWerkstatt.sh`  *(or `./AIWerkstatt.sh` in a terminal)*
+
+The first run builds the images (a few minutes); after that it starts in seconds and your browser opens at **http://localhost:8095**. Create your admin login, connect a provider (below), and send your first request. 🎈 *(Stop it later with `docker compose down` in that folder, or just quit Docker.)*
+
+### ⌨️ Or from the command line
 
 ```bash
 git clone https://github.com/robeertm/AIWerkstatt.git
 cd AIWerkstatt
-cp .env.example .env          # optional — sensible defaults, works as-is
-docker compose build          # builds the web UI + the agent-runner image
-docker compose up             # start it
+docker compose up -d --build      # build + start, then open http://localhost:8095
 ```
-
-Then open **http://localhost:8095**, create your admin login, connect a provider (below),
-and send your first request. 🎈
 
 ## 🔌 Connect your AI provider
 

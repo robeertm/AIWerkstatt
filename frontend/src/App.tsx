@@ -703,8 +703,14 @@ function LimitBanner() {
 function UpdateBanner() {
   const [u, setU] = useState<UpdateInfo | null>(null)
   const [hidden, setHidden] = useState(false)
-  const [state, setState] = useState<'idle' | 'updating' | 'error'>('idle')
+  const [state, setState] = useState<'idle' | 'checking' | 'updating' | 'error'>('idle')
+  const [checked, setChecked] = useState(false)
   useEffect(() => { api.getUpdate().then(setU).catch(() => {}) }, [])
+  const check = async () => {
+    setState('checking'); setHidden(false)
+    try { setU(await api.getUpdate(true)); setChecked(true); setState('idle') }
+    catch { setState('error') }
+  }
   const doUpdate = async () => {
     if (!confirm('Update now? AIWerkstatt rebuilds and restarts — this takes about a minute and briefly interrupts running work. The page reloads when it’s done.')) return
     setState('updating')
@@ -718,17 +724,31 @@ function UpdateBanner() {
     }).catch(() => { if (++tries > 140) { setState('error'); return } setTimeout(poll, 3000) })
     setTimeout(poll, 6000)
   }
-  if (hidden || !u?.update_available) return null
   if (state === 'updating')
-    return <div className="banner info"><Working color="var(--accent)" /><span>Updating to {u.latest}… AIWerkstatt is rebuilding and will reload automatically (about a minute).</span></div>
+    return <div className="banner info"><Working color="var(--accent)" /><span>Updating to {u?.latest}… AIWerkstatt is rebuilding and will reload automatically (about a minute).</span></div>
+  if (!hidden && u?.update_available)
+    return (
+      <div className="banner info">
+        <span>🎉 AIWerkstatt {u.latest} is available (you have {u.current}).</span>
+        <a href={u.url} target="_blank" rel="noreferrer">Release notes ↗</a>
+        <button className="btn primary" style={{ padding: '.3rem .8rem' }} onClick={doUpdate}>⤴️ Update now</button>
+        {state === 'error' && <span style={{ color: 'var(--bad)' }}>Update failed — try <code>git pull &amp;&amp; docker compose up -d --build</code>.</span>}
+        <span className="spacer" />
+        <button className="chip" onClick={() => setHidden(true)}>dismiss</button>
+      </div>
+    )
+  // No update pending (fresh, dismissed, or not yet checked): always offer an active,
+  // live check — a plain reload uses the 1-hour cache, this asks GitHub right now.
   return (
-    <div className="banner info">
-      <span>🎉 AIWerkstatt {u.latest} is available (you have {u.current}).</span>
-      <a href={u.url} target="_blank" rel="noreferrer">Release notes ↗</a>
-      <button className="btn primary" style={{ padding: '.3rem .8rem' }} onClick={doUpdate}>⤴️ Update now</button>
-      {state === 'error' && <span style={{ color: 'var(--bad)' }}>Update failed — try <code>git pull &amp;&amp; docker compose up -d --build</code>.</span>}
-      <span className="spacer" />
-      <button className="chip" onClick={() => setHidden(true)}>dismiss</button>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '.6rem', padding: '.35rem .1rem', fontSize: '.85rem' }}>
+      <button className="chip" onClick={check} disabled={state === 'checking'} title="Ask GitHub for the latest release right now">
+        {state === 'checking' ? 'Checking…' : '⟳ Check for updates'}
+      </button>
+      {state === 'error'
+        ? <span style={{ color: 'var(--bad)' }}>Couldn’t reach GitHub — try again.</span>
+        : checked && u && !u.update_available
+          ? <span style={{ color: 'var(--good)' }}>✓ You’re on the latest{u.current ? ` (v${u.current})` : ''}.</span>
+          : u?.current ? <span style={{ color: 'var(--muted)' }}>Running v{u.current}.</span> : null}
     </div>
   )
 }
