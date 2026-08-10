@@ -42,6 +42,12 @@ FIRST_DIR = "/inbox"          # per-thread subdir created here
 EVENTS_BIND = "/events"
 WORKSPACES_BIND = "/workspaces"
 INBOX_BIND = "/inbox"
+# Claude's session store (~/.claude) otherwise lives INSIDE the ephemeral runner and is lost
+# when the container exits — so `--resume <sid>` in the next follow-up's fresh container always
+# fails instantly (empty result → the run is marked "did not finish cleanly"). Persist it per
+# thread on the internal, never-published events volume so a follow-up can resume with full
+# context. Shared by web (which creates/inspects it) and every runner (which reads/writes it).
+AGENTHOME_BIND = "/events/agenthome"
 
 # Actual Docker volume names (compose gives them explicit names). The runner and
 # the web container must reference the SAME names on the daemon.
@@ -127,6 +133,20 @@ class Orchestrator:
         self._running.pop(slug, None)
         return None
 
+    def _resume_ok(self, cfg_dir, sid) -> bool:
+        """True only if Claude's stored transcript for this session id is actually on the
+        persistent store. Otherwise `--resume` would fail in the fresh runner and the
+        follow-up would dead-end, so the caller launches a fresh session instead (the
+        workspace files carry the state). Covers threads created before this persistence
+        existed and any lost/rotated store."""
+        try:
+            for _root, _dirs, files in os.walk(cfg_dir):
+                if any(sid in f for f in files):
+                    return True
+        except OSError:
+            pass
+        return False
+
     # ---- launch -----------------------------------------------------------
     def _launch(self, d):
         slug = d["slug"]
@@ -135,6 +155,18 @@ class Orchestrator:
         # Ensure the project's workspace dir exists (shared volume, uid 10001) — the
         # runner uses it as cwd, which would fail if it were missing.
         os.makedirs("%s/%s" % (WORKSPACES_BIND, slug), exist_ok=True)
+        # Persistent Claude config/session dir for THIS thread (survives the ephemeral runner)
+        # so a follow-up can `--resume` with full context. If the stored transcript for the
+        # requested session id isn't actually here — a thread created before this persistence
+        # existed, or a lost store — don't resume into a fresh container (that dead-ends);
+        # start a fresh session on the existing workspace instead.
+        cfg_dir = "%s/%s/%d" % (AGENTHOME_BIND, slug, thread_id)
+        os.makedirs(cfg_dir, exist_ok=True)
+        resume_sid = d.get("session_id", "") or ""
+        if resume_sid and not self._resume_ok(cfg_dir, resume_sid):
+            _log("resume store missing for %s/%s (sid=%s) — starting a fresh session on the "
+                 "existing workspace" % (slug, thread_id, resume_sid))
+            resume_sid = ""
         first = self._write_first(thread_id, d.get("text", ""))
         env = {
             "WK_SLUG": slug,
@@ -154,7 +186,10 @@ class Orchestrator:
             "WK_EVENTS": EVENTS_BIND,
             "WK_INBOX": "%s/%s" % (INBOX_BIND, thread_id),
             "WK_USAGE_DIR": "%s/usage" % EVENTS_BIND,
-            "WK_RESUME_SID": d.get("session_id", "") or "",
+            # Relocate Claude's ~/.claude onto the persistent per-thread dir above so the
+            # session transcript survives this container and `--resume` works next time.
+            "CLAUDE_CONFIG_DIR": cfg_dir,
+            "WK_RESUME_SID": resume_sid,
         }
         env.update(self._creds_fn(provider) or {})   # e.g. {"ANTHROPIC_API_KEY": "..."}
         volumes = {
