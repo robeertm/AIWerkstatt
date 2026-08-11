@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.0 — 2026-08-11
+
+### Added — "What the agent is doing" now shows every last bit (full text + full screen)
+- The live activity feed used to summarise as it parsed: a tool result was collapsed to its
+  first line plus `… (140 lines)`, thinking/output was flattened onto one line and clipped at
+  300 chars. You could see *that* something happened, but not *what*.
+- **Runner (`agent-runner/providers/claude_code.py`):** every live-activity event now also
+  carries a `full` field — the unclipped content with newlines preserved (the whole tool
+  result, the whole thought, the whole multi-line command / input JSON). Capped only against a
+  pathological dump (`_FULL_MAX` = 20 000 chars per entry). The compact one-liner (`text`) is
+  unchanged for the default view.
+- **Backend (`engine.read_live`):** entry cap 400 → 1500 (the detail view scrolls far back),
+  plus a 3 MB per-fetch full-text budget handed out newest-first, so a fresh load of a long run
+  stays light on mobile while the most recent steps keep their full detail.
+- **Frontend:** a persisted **"📜 Full text"** toggle (flip on once, stays on) renders every
+  line ungated; in compact mode, rows with more behind them carry a **▸** and expand
+  individually on click; a **⤢ full-screen** button opens the whole log in a large scroll area
+  (Esc closes). Stable per-row ids instead of array index (no wrong row expanding on reload),
+  history cap 250 → 2000.
+
 ## 0.7.0 — 2026-08-11
 
 ### Changed

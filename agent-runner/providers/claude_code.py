@@ -12,7 +12,11 @@ import json
 from .base import AgentAdapter, RunContext, register
 
 _VALID_EFFORT = {"low", "medium", "high", "xhigh", "max"}
-_MAX_ACT = 300
+_MAX_ACT = 300           # compact one-liner (default live view)
+# Full, unclipped text per entry (detail / full-screen view): every line of a tool
+# result, the whole thought, the whole multi-line command. Capped only against a
+# pathological mega-dump (20 000 chars ≈ several hundred lines of output).
+_FULL_MAX = 20000
 
 
 def _clip(s: str) -> str:
@@ -40,6 +44,38 @@ def _result_line(content) -> str:
     if not lines:
         return "(empty)"
     return lines[0] if len(lines) == 1 else "%s   … (%d lines)" % (lines[0], len(lines))
+
+
+def _tool_full(name: str, inp: dict) -> str:
+    """The WHOLE tool call — multi-line bash commands in full, otherwise the full
+    input parameters as readable JSON."""
+    if name == "Bash":
+        return "$ " + str(inp.get("command", "")).strip()
+    if inp:
+        return name + "\n" + json.dumps(inp, ensure_ascii=False, indent=2)
+    return name
+
+
+def _result_full(content) -> str:
+    """The WHOLE tool result, newlines preserved (not collapsed to the first line)."""
+    if isinstance(content, list):
+        content = "\n".join(b.get("text", "") for b in content
+                            if isinstance(b, dict) and b.get("type") == "text")
+    return str(content or "")
+
+
+def _act(act: str, compact: str, full: str | None = None) -> dict:
+    """One live-activity event: always the compact one-liner, PLUS the full text when
+    it genuinely adds detail (multi-line / longer). Full is capped only against a
+    pathological dump — otherwise every last bit is kept, newlines and all."""
+    d = {"kind": "activity", "act": act, "text": compact}
+    full = (full or "").rstrip()
+    if full:
+        if len(full) > _FULL_MAX:
+            full = full[:_FULL_MAX] + " …"
+        if " ".join(full.split()) != compact:
+            d["full"] = full
+    return d
 
 
 # Behaviour rule injected on every turn (--append-system-prompt). Core: real parallelism goes ONLY
@@ -145,21 +181,21 @@ class ClaudeAdapter(AgentAdapter):
                         continue
                     bt = bl.get("type")
                     if bt == "text" and bl.get("text", "").strip():
-                        out.append({"kind": "activity", "act": "say", "text": _clip(bl["text"])})
+                        out.append(_act("say", _clip(bl["text"]), bl["text"]))
                     elif bt == "thinking":
                         txt = bl.get("thinking") or bl.get("text") or ""
                         if txt.strip():
-                            out.append({"kind": "activity", "act": "think", "text": _clip(txt)})
+                            out.append(_act("think", _clip(txt), txt))
                     elif bt == "tool_use":
-                        out.append({"kind": "activity", "act": "tool",
-                                    "text": _clip(_tool_line(bl.get("name", "?"), bl.get("input") or {}))})
+                        name, inp = bl.get("name", "?"), bl.get("input") or {}
+                        out.append(_act("tool", _clip(_tool_line(name, inp)), _tool_full(name, inp)))
         elif t == "user":
             content = (o.get("message") or {}).get("content")
             if isinstance(content, list):
                 for bl in content:
                     if isinstance(bl, dict) and bl.get("type") == "tool_result":
-                        out.append({"kind": "activity", "act": "result",
-                                    "text": _clip(_result_line(bl.get("content")))})
+                        cont = bl.get("content")
+                        out.append(_act("result", _clip(_result_line(cont)), _result_full(cont)))
         elif t == "rate_limit_event":
             ri = o.get("rate_limit_info") or {}
             if ri.get("status") == "rejected":

@@ -296,8 +296,21 @@ def read_live(thread_id, offset=0):
             entries.append(json.loads(line))
         except ValueError:
             continue
-    if len(entries) > 400:
-        entries = entries[-400:]
+    # High cap — the detail/full-text view wants to scroll far back through a run.
+    if len(entries) > 1500:
+        entries = entries[-1500:]
+    # Full-text budget, handed out from the NEWEST entries backwards: the most recent
+    # keep their every-last-bit detail; the oldest fall back to compact on overflow.
+    # Guards a fresh full-history load of a long run (mobile) against a huge payload.
+    spent = 0
+    for e in reversed(entries):
+        f = e.get("full") if isinstance(e, dict) else None
+        if not f:
+            continue
+        if spent + len(f) > 3_000_000:
+            del e["full"]
+        else:
+            spent += len(f)
     return {"entries": entries, "offset": new_offset, "live": live}
 
 

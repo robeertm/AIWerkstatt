@@ -136,6 +136,25 @@ label.lbl { font-size: .8rem; color: var(--muted); font-weight: 600; }
 .liverow.result { color: var(--muted); }
 .liverow.tool { color: #c7c0ff; }
 .liverow.tool.bash { font-family: ui-monospace, monospace; color: #a7f3d0; }
+/* Full-text mode: taller feed, and each entry shown ungated, newlines preserved. */
+.livebox.full { max-height: 60vh; }
+.livefull {
+  white-space: pre-wrap; word-break: break-word; overflow-x: auto; max-width: 100%;
+  font-family: ui-monospace, monospace; font-size: .72rem; line-height: 1.45;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: .35rem .5rem; margin: .1rem 0;
+}
+.livefull.think { color: var(--muted); font-style: italic; }
+.livefull.result { color: var(--muted); }
+.livefull.tool { color: #a7f3d0; }
+.livefull.say { color: var(--text); }
+/* Full-screen live log (⤢): a big scroll area over everything, scroll through it all. */
+.liveoverlay {
+  position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: blur(6px); padding: .7rem;
+}
+.liveoverlay-box { flex: 1 1 auto; overflow: auto; display: flex; flex-direction: column; gap: .12rem; }
 
 .fadein { animation: fi .25s ease both; }
 @keyframes fi { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
