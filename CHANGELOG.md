@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.6.3 — 2026-08-11
+
+### Fixed
+
+- **A project no longer hangs "in progress" forever after a runner dies mid-task.** If an
+  agent container was hard-killed (OOM, host restart) or a transient provider/API error
+  ended a turn before any terminal event was written, its task stayed `queued`/`running`
+  and both the gallery and the thread status stuck on "working"/"queued" indefinitely.
+  - New self-healing sweep `engine.reap_stale_tasks` (runs in the ingest loop): finalizes a
+    task that is non-terminal while no runner container is alive, its queue descriptor has
+    already been claimed, and its last progress is older than 20 min
+    (`AIWERKSTATT_STALE_TASK_MIN`) → marks it `failed` and posts a terminal "please send the
+    request again" event. Idempotent, no auto-retry, paused while a usage limit is active.
+  - `_thread_status` now reports a genuinely failed task as `failed` instead of masking it
+    as `done`.
+
 ## 0.6.2 — 2026-08-10
 
 ### Fixed
