@@ -34,7 +34,7 @@ export type ActivityItem = {
   thread_id: number; title: string; status: string; session: Session
   last: { type: string; text: string; created_at: string } | null
 }
-export type LiveEntry = { seq?: number; act: string; text: string; at: number }
+export type LiveEntry = { seq?: number; act: string; text: string; full?: string; at: number }
 export type LiveFeed = { entries: LiveEntry[]; offset: number; live: boolean }
 
 // publish / release

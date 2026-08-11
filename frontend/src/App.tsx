@@ -193,41 +193,112 @@ function LiveLink({ project, building }: { project: { live_port: number | null; 
 }
 
 // ---------- Live agent feed (watch what it's doing, step by step) ----------
-function LiveRow({ e }: { e: LiveEntry }) {
+// Entry + stable client id: the list grows and is trimmed at the front (`slice`), so
+// array indices shift. The per-row "expanded" state hangs off a stable id, not the
+// index — otherwise a reload would expand the wrong row.
+type LiveRowT = LiveEntry & { _id: number }
+
+function LiveRow({ e, showFull, onToggle }: { e: LiveRowT; showFull: boolean; onToggle: () => void }) {
+  if (showFull && e.full) {
+    const cls = e.act === 'think' ? 'think' : e.act === 'result' ? 'result' : e.act === 'tool' ? 'tool' : 'say'
+    return <pre className={`livefull ${cls}`}>{e.full}</pre>
+  }
+  const more = e.full ? '  ▸' : ''
+  const click = e.full ? { onClick: onToggle, style: { cursor: 'pointer' as const }, title: 'show in full' } : {}
   if (e.act === 'tool') {
     const bash = e.text.startsWith('$ ')
-    return <div className={`liverow tool${bash ? ' bash' : ''}`}>{bash ? e.text : `🔧 ${e.text}`}</div>
+    return <div className={`liverow tool${bash ? ' bash' : ''}`} {...click}>{bash ? e.text : `🔧 ${e.text}`}{more}</div>
   }
-  if (e.act === 'think') return <div className="liverow think">💭 {e.text}</div>
-  if (e.act === 'result') return <div className="liverow result">↳ {e.text}</div>
-  return <div className="liverow say">💬 {e.text}</div>
+  if (e.act === 'think') return <div className="liverow think" {...click}>💭 {e.text}{more}</div>
+  if (e.act === 'result') return <div className="liverow result" {...click}>↳ {e.text}{more}</div>
+  return <div className="liverow say" {...click}>💬 {e.text}{more}</div>
 }
+
 function AgentLive({ tid }: { tid: number }) {
-  const [entries, setEntries] = useState<LiveEntry[]>([])
+  const [entries, setEntries] = useState<LiveRowT[]>([])
   const [live, setLive] = useState(false)
+  // "Full text" persists — flip it on once and every line stays ungated
+  // (for when you want to see every last bit of what the agent did).
+  const [full, setFull] = useState<boolean>(() => {
+    try { return localStorage.getItem('aiw-live-full') === '1' } catch { return false }
+  })
+  const [big, setBig] = useState(false)                    // full-screen overlay open?
+  const [openIds, setOpenIds] = useState<Set<number>>(() => new Set())
   const offset = useRef(0)
+  const nextId = useRef(0)
   const box = useRef<HTMLDivElement>(null)
-  useEffect(() => { setEntries([]); offset.current = 0 }, [tid])
+  const bigBox = useRef<HTMLDivElement>(null)
+  useEffect(() => { setEntries([]); offset.current = 0; nextId.current = 0; setOpenIds(new Set()) }, [tid])
   useEffect(() => {
     let alive = true; let timer: ReturnType<typeof setTimeout>
     const tick = () => api.getLive(tid, offset.current).then((d) => {
       if (!alive) return
       setLive(d.live)
-      if (d.entries.length) { offset.current = d.offset; setEntries((e) => [...e, ...d.entries].slice(-250)) }
+      if (d.entries.length) {
+        offset.current = d.offset
+        const tagged: LiveRowT[] = d.entries.map((e) => ({ ...e, _id: nextId.current++ }))
+        setEntries((prev) => [...prev, ...tagged].slice(-2000))
+      }
       timer = setTimeout(tick, d.live ? 1200 : 5000)
     }).catch(() => { timer = setTimeout(tick, 5000) })
     tick(); return () => { alive = false; clearTimeout(timer) }
   }, [tid])
-  useEffect(() => { box.current?.scrollTo({ top: box.current.scrollHeight }) }, [entries.length])
+  useEffect(() => {
+    box.current?.scrollTo({ top: box.current.scrollHeight })
+    bigBox.current?.scrollTo({ top: bigBox.current.scrollHeight })
+  }, [entries.length, full, big])
+  useEffect(() => {
+    if (!big) return
+    const onKey = (ev: KeyboardEvent) => { if (ev.key === 'Escape') setBig(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [big])
+  const persistFull = (v: boolean) => {
+    setFull(v)
+    try { localStorage.setItem('aiw-live-full', v ? '1' : '0') } catch { /* private mode */ }
+  }
+  const toggleId = (id: number) => setOpenIds((s) => {
+    const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n
+  })
+  const rows = (force: boolean) => entries.map((e) => (
+    <LiveRow key={e._id} e={e} showFull={!!e.full && (force || full || openIds.has(e._id))}
+             onToggle={() => toggleId(e._id)} />
+  ))
+  const fullBtn = (
+    <button type="button" className="chip" aria-pressed={full} onClick={() => persistFull(!full)}
+            title="Show every line in full (stays on)"
+            style={full ? { color: '#34d399', borderColor: '#34d39955' } : undefined}>
+      📜 {full ? 'Full text on' : 'Full text'}
+    </button>
+  )
   if (entries.length === 0) return null
   return (
     <div className="card pad stack live">
       <div className="between" style={{ fontSize: '.78rem' }}>
         <span className="row">{live ? <Working color="var(--accent)" /> : <span>🔎</span>}
           <b>What the agent is doing</b></span>
-        <span className="muted">{entries.length} steps</span>
+        <span className="row" style={{ gap: '.4rem' }}>
+          <span className="muted">{entries.length} steps</span>
+          {fullBtn}
+          <button type="button" className="chip" onClick={() => setBig(true)}
+                  title="Full screen — scroll through everything" aria-label="Full screen">⤢</button>
+        </span>
       </div>
-      <div className="livebox" ref={box}>{entries.map((e, i) => <LiveRow key={i} e={e} />)}</div>
+      <div className={`livebox${full ? ' full' : ''}`} ref={box}>{rows(false)}</div>
+      {big && (
+        <div className="liveoverlay" role="dialog" aria-modal="true" aria-label="What the agent is doing — full text">
+          <div className="between" style={{ fontSize: '.82rem', marginBottom: '.5rem' }}>
+            <span className="row">{live ? <Working color="var(--accent)" /> : <span>🔎</span>}
+              <b>What the agent is doing</b></span>
+            <span className="row" style={{ gap: '.4rem' }}>
+              {fullBtn}
+              <button type="button" className="chip" onClick={() => setBig(false)}
+                      title="close (Esc)" aria-label="close">✕</button>
+            </span>
+          </div>
+          <div className="liveoverlay-box" ref={bigBox}>{rows(true)}</div>
+        </div>
+      )}
     </div>
   )
 }
