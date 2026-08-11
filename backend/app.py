@@ -701,9 +701,9 @@ def _ingest_loop():
                     p = engine.get_project(project_id)
                     if p and ORCH.deploy(project_id, p["port"], thread_id):
                         engine.mark_live_ready(project_id)
-            # self-healing: finalize orphaned tasks whose runner died without a terminal
-            # event (e.g. transient API error) so no project hangs "in progress" forever.
-            engine.reap_stale_tasks(lambda pid: ORCH._alive(pid) is not None)
+            # self-healing: automatically re-queue orphaned/abandoned runs with backoff until
+            # they succeed (never give up; a task ends only on success or a manual stop).
+            engine.resurrect_stale_tasks(lambda pid: ORCH._alive(pid) is not None)
         except Exception:
             pass
         time.sleep(2)

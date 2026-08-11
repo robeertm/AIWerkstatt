@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.0 — 2026-08-11
+
+### Changed
+
+- **Self-healing now retries a stalled run until it succeeds, instead of giving up.** When a
+  run ends without completion (runner hard-killed, or a transient provider/API error mid-turn,
+  leaving no terminal event), `engine.resurrect_stale_tasks` (replacing `reap_stale_tasks`)
+  automatically re-queues it — with **no cap** — until it succeeds. Mars-grade watchdog
+  behaviour: never give up, but retry with a **growing cooldown** (90 s → 180 → 360 → 720 →
+  900 s cap; `AIWERKSTATT_RETRY_BASE_SEC` / `_CAP_SEC`) rather than hammering, and pause
+  entirely while a usage limit is active. A task ends only on **success** (`reply`) or a
+  **manual stop** (`cancelled`). A sane window (`AIWERKSTATT_RETRY_MAX_AGE_SEC`, default 12 h)
+  bounds "until success" so neither ancient tasks resurrect nor a genuinely broken one hammers
+  forever.
+- New thread status **`retrying`** in the UI + a timeline event per attempt; `_thread_status`
+  reports a stalled/failed run as `retrying` (self-healing) instead of `failed`/`done`, and the
+  gallery counts it as busy.
+
 ## 0.6.3 — 2026-08-11
 
 ### Fixed
