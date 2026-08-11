@@ -16,6 +16,7 @@ function relTime(iso: string): string {
 }
 const STATUS: Record<string, { label: string; color: string }> = {
   working: { label: 'working', color: 'var(--warn)' },
+  retrying: { label: 'retrying…', color: 'var(--warn)' },
   queued: { label: 'queued', color: 'var(--muted)' },
   waiting: { label: 'waiting for limit', color: 'var(--warn)' },
   done: { label: 'done', color: 'var(--good)' },
