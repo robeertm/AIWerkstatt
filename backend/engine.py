@@ -330,6 +330,10 @@ def _thread_status(thread_id):
         return "queued"
     if "waiting" in st:
         return "waiting"
+    # Newest task failed and nothing newer is running/queued → the run genuinely failed
+    # (e.g. a transient API error). Show it terminally instead of masquerading as 'done'.
+    if st and st[-1] == "failed":
+        return "failed"
     last = db.query_one("SELECT type FROM events WHERE thread_id=? ORDER BY id DESC LIMIT 1", (thread_id,))
     if last and last["type"] == "stopped":
         return "stopped"
@@ -467,3 +471,58 @@ def ingest_once():
         try: os.remove(p)
         except OSError: pass
     return reacted
+
+
+# How long a task may stay non-terminal without a live runner before the reaper finalizes
+# it (minutes). Short enough for a responsive UI, long enough for real runs.
+STALE_TASK_MIN = int(os.environ.get("AIWERKSTATT_STALE_TASK_MIN", "20") or 20)
+
+
+def reap_stale_tasks(is_alive, stale_min=None):
+    """Self-healing against a project stuck "in progress" forever.
+
+    Finalizes tasks that are non-terminal ('queued'/'running') while the project's agent
+    container is NOT alive, their queue descriptor has already been claimed (gone) and the
+    last progress is older than ``stale_min`` minutes. That is exactly what a hard-killed
+    runner (OOM, kill, host restart) or a transient API error mid-turn leaves behind — no
+    terminal event is ever written, so both the gallery (``project_active``) and the thread
+    status would otherwise hang forever.
+
+    Marks such tasks 'failed' + writes ONE terminal 'failed' event asking the user to
+    resend. Idempotent, self-limiting, NO auto-retry (during an API outage a fresh attempt
+    would only fail again — the user resends deliberately). Skips while a usage limit is
+    active. ``is_alive(project_id) -> bool`` reports whether a runner container is up.
+
+    Returns the finalized ``(project_id, thread_id, task_id)`` tuples."""
+    if stale_min is None:
+        stale_min = STALE_TASK_MIN
+    if limit_status().get("active"):
+        return []
+    cutoff_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - stale_min * 60))
+    reaped = []
+    rows = db.query_all(
+        "SELECT t.id AS id, t.thread_id AS thread_id, th.project_id AS project_id, "
+        "COALESCE(t.started_at, t.created_at) AS ts "
+        "FROM tasks t JOIN threads th ON th.id = t.thread_id "
+        "WHERE t.status IN ('queued', 'running')")
+    for r in rows:
+        try:
+            if is_alive(r["project_id"]):
+                continue                       # a runner for this project is alive → real work
+        except Exception:
+            continue                           # liveness unknown → stay conservative, skip
+        if (r["ts"] or "") > cutoff_iso:
+            continue                           # too recent — orchestrator may still claim/finish it
+        if os.path.exists(os.path.join(TASK_QUEUE, "%d.json" % r["id"])):
+            continue                           # descriptor still queued → not claimed yet, legit wait
+        cur = db.execute(
+            "UPDATE tasks SET status='failed', finished_at=?, "
+            "error=COALESCE(error, 'abandoned: runner ended without a terminal event "
+            "(transient API error or hard-killed container)') "
+            "WHERE id=? AND status IN ('queued', 'running')", (store.now(), r["id"]))
+        if cur.rowcount:
+            _add_event(r["thread_id"], r["id"], "failed",
+                       "The run ended without a reply (likely a transient API error). "
+                       "Please send the request again.", "System")
+            reaped.append((r["project_id"], r["thread_id"], r["id"]))
+    return reaped
