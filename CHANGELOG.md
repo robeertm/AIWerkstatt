@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.9.0 — 2026-08-13
+
+### Fixed — a project no longer shows as "working" after an old task is wrongly resurrected
+- The self-healer measured a task's age from `COALESCE(finished_at, started_at, created_at)` —
+  the **newest** timestamp, which moves forward with every retry. A long-abandoned task
+  therefore looked "fresh" (its `finished_at` was today) and got resurrected forever, defeating
+  the max-age window meant to stop zombie revivals — and lighting up a project as "in progress"
+  when nothing real was running. Age is now taken from the **immutable `created_at`** (the
+  original request time): once too old, it stays too old, so only genuinely recent tasks keep
+  self-healing.
+
+### Added — the live "What the agent is doing" view now shows model + intensity
+- New chip at the top of the live feed: **🧠 model · ⚡ intensity** (e.g. "Opus 4.8 · very
+  high"), so you can see which model and reasoning effort the run is actually using. The runner
+  writes both into its status file (`write_status`), `read_live` returns them, and the feed
+  renders a label per value.
+
 ## 0.8.0 — 2026-08-11
 
 ### Added — "What the agent is doing" now shows every last bit (full text + full screen)

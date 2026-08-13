@@ -119,10 +119,12 @@ def emit_activity(act, text):
 
 
 def write_status(ctx_pct, alive, pending, compacting=False):
+    # model/effort ride along so the live "what the agent is doing" view can show WHICH model
+    # and intensity this run actually uses (the values this session was launched with).
     _atomic_write(STATUS_FILE, json.dumps(
         {"alive": bool(alive), "ctx_pct": int(ctx_pct), "pending": int(pending),
          "compacting": bool(compacting), "thread_id": THREAD_ID, "slug": SLUG,
-         "updated": int(time.time())}, ensure_ascii=False))
+         "model": MODEL, "effort": EFFORT, "updated": int(time.time())}, ensure_ascii=False))
 
 
 def write_limit(until, since, known=False):

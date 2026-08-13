@@ -196,6 +196,19 @@ def thread_session(thread_id):
             "pending": int(d.get("pending", 0)), "compacting": bool(d.get("compacting"))}
 
 
+def _live_meta(thread_id):
+    """(model, effort) this thread's run uses — from the runner's status file, for the live
+    "what the agent is doing" label. Read regardless of `alive` so the chip stays while
+    scrolling a just-finished run. ('', '') when unknown."""
+    p = os.path.join(EVENTS_DIR, "status-%d.json" % thread_id)
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return "", ""
+    return (d.get("model") or ""), (d.get("effort") or "")
+
+
 # ---------- usage (aggregated from the runners' usage files) ----------
 
 def usage_summary():
@@ -311,7 +324,9 @@ def read_live(thread_id, offset=0):
             del e["full"]
         else:
             spent += len(f)
-    return {"entries": entries, "offset": new_offset, "live": live}
+    model, effort = _live_meta(thread_id)
+    return {"entries": entries, "offset": new_offset, "live": live,
+            "model": model, "effort": effort}
 
 
 # ---------- live activity (for the ticker) ----------
@@ -526,10 +541,15 @@ def resurrect_stale_tasks(is_alive):
     if limit_status().get("active"):
         return []
     started = []
+    # Age is measured from the ORIGINAL request (`created_at`), NOT the last attempt.
+    # COALESCE(finished_at, started_at, …) would be the NEWEST timestamp and moves forward
+    # with every retry, so a long-abandoned task looks "fresh" (finished_at is today) and
+    # resurrects forever — defeating the max-age window. `created_at` is immutable: once too
+    # old, it stays too old.
     rows = db.query_all(
         "SELECT t.id AS id, t.thread_id AS thread_id, t.kind AS kind, t.attempts AS attempts, "
         "t.status AS status, th.project_id AS project_id, th.session_id AS session_id, "
-        "COALESCE(t.finished_at, t.started_at, t.created_at) AS ts "
+        "t.created_at AS ts "
         "FROM tasks t JOIN threads th ON th.id = t.thread_id "
         "WHERE t.status IN ('queued', 'running', 'failed', 'retrying')")
     for r in rows:
