@@ -35,7 +35,7 @@ export type ActivityItem = {
   last: { type: string; text: string; created_at: string } | null
 }
 export type LiveEntry = { seq?: number; act: string; text: string; full?: string; at: number }
-export type LiveFeed = { entries: LiveEntry[]; offset: number; live: boolean }
+export type LiveFeed = { entries: LiveEntry[]; offset: number; live: boolean; model?: string; effort?: string }
 
 // publish / release
 export type ScanFinding = { file: string; line: number; severity: string; rule: string; snippet: string }

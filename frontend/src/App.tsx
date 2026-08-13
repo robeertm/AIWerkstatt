@@ -214,9 +214,20 @@ function LiveRow({ e, showFull, onToggle }: { e: LiveRowT; showFull: boolean; on
   return <div className="liverow say" {...click}>💬 {e.text}{more}</div>
 }
 
+// Short labels for the "which model / intensity" chip in the live view. Unknown ids fall
+// back to the raw id (other providers), effort '' → nothing.
+const MODEL_LABEL: Record<string, string> = {
+  'claude-opus-4-8': 'Opus 4.8', 'claude-opus-5': 'Opus 5', 'claude-sonnet-5': 'Sonnet 5',
+  'claude-haiku-4-5-20251001': 'Haiku 4.5', 'claude-fable-5': 'Fable 5',
+}
+const EFFORT_LABEL: Record<string, string> = {
+  low: 'low', medium: 'medium', high: 'high', xhigh: 'very high', max: 'max',
+}
+
 function AgentLive({ tid }: { tid: number }) {
   const [entries, setEntries] = useState<LiveRowT[]>([])
   const [live, setLive] = useState(false)
+  const [meta, setMeta] = useState<{ model: string; effort: string } | null>(null)  // model · intensity
   // "Full text" persists — flip it on once and every line stays ungated
   // (for when you want to see every last bit of what the agent did).
   const [full, setFull] = useState<boolean>(() => {
@@ -228,12 +239,14 @@ function AgentLive({ tid }: { tid: number }) {
   const nextId = useRef(0)
   const box = useRef<HTMLDivElement>(null)
   const bigBox = useRef<HTMLDivElement>(null)
-  useEffect(() => { setEntries([]); offset.current = 0; nextId.current = 0; setOpenIds(new Set()) }, [tid])
+  useEffect(() => { setEntries([]); offset.current = 0; nextId.current = 0; setOpenIds(new Set()); setMeta(null) }, [tid])
   useEffect(() => {
     let alive = true; let timer: ReturnType<typeof setTimeout>
     const tick = () => api.getLive(tid, offset.current).then((d) => {
       if (!alive) return
       setLive(d.live)
+      // Which model / intensity this run uses (comes with every poll from the status file).
+      if (d.model) setMeta({ model: MODEL_LABEL[d.model] || d.model, effort: d.effort ? (EFFORT_LABEL[d.effort] || d.effort) : '' })
       if (d.entries.length) {
         offset.current = d.offset
         const tagged: LiveRowT[] = d.entries.map((e) => ({ ...e, _id: nextId.current++ }))
@@ -271,6 +284,14 @@ function AgentLive({ tid }: { tid: number }) {
       📜 {full ? 'Full text on' : 'Full text'}
     </button>
   )
+  // "Which model / intensity is the agent using right now" — own line so the header row
+  // (toggle / full-screen) does not overflow on a phone.
+  const metaRow = meta && (
+    <div className="row" style={{ gap: '.35rem', fontSize: '.66rem', flexWrap: 'wrap' }}>
+      <span className="chip" style={{ color: '#a78bfa', borderColor: '#a78bfa55' }}>🧠 {meta.model}</span>
+      {meta.effort && <span className="chip" style={{ color: '#f59e0b', borderColor: '#f59e0b55' }}>⚡ {meta.effort}</span>}
+    </div>
+  )
   if (entries.length === 0) return null
   return (
     <div className="card pad stack live">
@@ -284,6 +305,7 @@ function AgentLive({ tid }: { tid: number }) {
                   title="Full screen — scroll through everything" aria-label="Full screen">⤢</button>
         </span>
       </div>
+      {metaRow}
       <div className={`livebox${full ? ' full' : ''}`} ref={box}>{rows(false)}</div>
       {big && (
         <div className="liveoverlay" role="dialog" aria-modal="true" aria-label="What the agent is doing — full text">
@@ -296,6 +318,7 @@ function AgentLive({ tid }: { tid: number }) {
                       title="close (Esc)" aria-label="close">✕</button>
             </span>
           </div>
+          {metaRow}
           <div className="liveoverlay-box" ref={bigBox}>{rows(true)}</div>
         </div>
       )}
