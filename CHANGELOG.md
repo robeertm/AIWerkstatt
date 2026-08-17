@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.10.0 — 2026-08-17
+
+### Added — 🤖 Auto mode: the AI picks the model + intensity per task
+- New model choice **🤖 Auto** (first option for the Claude provider). When a project is on Auto, the engine picks a concrete model + reasoning effort for **every** task and follow-up — cheap models for tiny tweaks, the strongest for hard work — resolved before the run container starts, so isolation/orchestrator/runner are unchanged.
+- **Transparent, provider-aware heuristic** (`backend/automode.py`): scores request length, bug/analysis/refactor keywords, breadth, attachments and new-vs-follow-up, then maps onto whatever models the selected provider exposes (strongest → weakest). No second AI round — no latency, no tokens spent just to decide.
+- **Effective switching across a thread:** the big first order gets the strongest model; a small "make the button blue" follow-up automatically drops to a cheaper one.
+- **Visible in the live view:** a 🤖 Auto chip with the **reason** (💡 why this model) and an expandable **plan** (which model at which step). The 🧠 model / ⚡ intensity chips show the concrete pick.
+- **Overview:** the Usage panel gains a **Model usage** breakdown — which model·intensity combo ran most, with the Auto share. New endpoint `GET /api/model-usage`.
+
+### Added — 📚 Project vault: shared knowledge that survives across runs
+- Every project now has a **persistent knowledge base** on a shared `vault` volume, mounted read/write into each agent run. The agent is told to read `/vault/<project>/knowledge.md` at the start of a run and append important facts, decisions and gotchas — so **future runs remember** the project instead of starting cold.
+- New **📚 Project knowledge** panel in the project view shows the accumulated notes; new endpoint `GET /api/projects/<id>/vault`.
+- The `web` container mounts the same volume to seed and serve it; the vault persists across redeploys.
+
 ## 0.9.0 — 2026-08-13
 
 ### Fixed — a project no longer shows as "working" after an old task is wrongly resurrected

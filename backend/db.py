@@ -49,9 +49,21 @@ CREATE TABLE IF NOT EXISTS pubmeta (
   visibility TEXT, version TEXT, release_url TEXT,
   published_at TEXT, released_at TEXT
 );
+-- 🤖 Auto mode: one row per dispatched task recording the chosen model/intensity
+-- (feeds the "which model ran most, with which intensity" overview), plus the latest
+-- auto decision per project (model/effort/reason/plan) for the live view.
+CREATE TABLE IF NOT EXISTS model_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT, provider TEXT,
+  model TEXT, effort TEXT, auto INTEGER DEFAULT 0, reason TEXT, at TEXT
+);
+CREATE TABLE IF NOT EXISTS auto_decision (
+  project_id TEXT PRIMARY KEY, model TEXT, effort TEXT, model_label TEXT,
+  effort_label TEXT, reason TEXT, tier TEXT, plan TEXT, at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_threads_project ON threads(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(thread_id);
 CREATE INDEX IF NOT EXISTS idx_events_thread ON events(thread_id);
+CREATE INDEX IF NOT EXISTS idx_model_usage_project ON model_usage(project_id);
 """
 
 

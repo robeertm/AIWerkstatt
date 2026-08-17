@@ -54,6 +54,11 @@ AGENTHOME_BIND = "/events/agenthome"
 VOL_WORKSPACES = os.environ.get("AIWERKSTATT_VOL_WORKSPACES", "aiwerkstatt-workspaces")
 VOL_EVENTS = os.environ.get("AIWERKSTATT_VOL_EVENTS", "aiwerkstatt-events")
 VOL_INBOX = os.environ.get("AIWERKSTATT_VOL_INBOX", "aiwerkstatt-inbox")
+# 📚 Shared project vault: a persistent per-project knowledge base the agent reads at the
+# start of every run and appends learnings to, so knowledge survives across runs. Mounted
+# read/write into every agent-runner (and into web, which seeds + serves it for the UI).
+VOL_VAULT = os.environ.get("AIWERKSTATT_VOL_VAULT", "aiwerkstatt-vault")
+VAULT_BIND = "/vault"
 
 MEM_LIMIT = os.environ.get("AIWERKSTATT_RUN_MEM", "2g")
 PIDS_LIMIT = int(os.environ.get("AIWERKSTATT_RUN_PIDS", "512"))
@@ -97,6 +102,33 @@ class Orchestrator:
         with open(p, "w", encoding="utf-8") as f:
             f.write(text or "")
         return p
+
+    def _ensure_vault(self, slug) -> str:
+        """Create the project's vault dir on the shared volume and seed a knowledge file.
+        Returns the container-side path (or '' if the vault volume isn't available)."""
+        try:
+            d = os.path.join(VAULT_BIND, slug)
+            os.makedirs(d, exist_ok=True)
+            kf = os.path.join(d, "knowledge.md")
+            if not os.path.exists(kf):
+                with open(kf, "w", encoding="utf-8") as f:
+                    f.write("# Project knowledge — %s\n\n"
+                            "> Shared, persistent notes for this project. The AI reads this at the\n"
+                            "> start of every run and appends what it learns, so knowledge survives\n"
+                            "> across runs. Keep it concise: architecture, decisions, gotchas.\n" % slug)
+            return "%s/%s" % (VAULT_BIND, slug)
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _vault_preamble(vault_path) -> str:
+        return ("📚 This project has a PERSISTENT knowledge base at %s/knowledge.md that "
+                "survives across runs.\n"
+                "- FIRST, read %s/knowledge.md for context from earlier runs (architecture, "
+                "decisions, gotchas).\n"
+                "- WHEN DONE, append any important new facts, decisions or gotchas to it so future "
+                "runs remember them. Keep it concise. You may add other .md files under %s/ too.\n\n"
+                % (vault_path, vault_path, vault_path))
 
     def _drop_inbox(self, thread_id, payload):
         d = self._thread_inbox(thread_id)
@@ -167,9 +199,17 @@ class Orchestrator:
             _log("resume store missing for %s/%s (sid=%s) — starting a fresh session on the "
                  "existing workspace" % (slug, thread_id, resume_sid))
             resume_sid = ""
-        first = self._write_first(thread_id, d.get("text", ""))
+        # 📚 Prepare the shared project vault and tell the agent about it. Only prepend the
+        # instruction on a NEW thread (a follow-up runs in the same live session that already
+        # heard it); the vault path is still exported for every run.
+        vault_path = self._ensure_vault(slug)
+        first_text = d.get("text", "")
+        if vault_path and d.get("kind") == "new":
+            first_text = self._vault_preamble(vault_path) + first_text
+        first = self._write_first(thread_id, first_text)
         env = {
             "WK_SLUG": slug,
+            "WK_VAULT": vault_path,
             "WK_THREAD_ID": str(thread_id),
             "WK_REPO": d.get("repo", ""),
             "WK_PROVIDER": provider,
@@ -196,6 +236,7 @@ class Orchestrator:
             VOL_WORKSPACES: {"bind": WORKSPACES_BIND, "mode": "rw"},
             VOL_EVENTS: {"bind": EVENTS_BIND, "mode": "rw"},
             VOL_INBOX: {"bind": INBOX_BIND, "mode": "rw"},
+            VOL_VAULT: {"bind": VAULT_BIND, "mode": "rw"},   # 📚 persistent project knowledge
         }
         name = "aiwerkstatt-run-%s-%d-%d" % (slug, thread_id, int(time.time()))
         _log("launch %s (provider=%s model=%s)" % (name, provider, d.get("model")))

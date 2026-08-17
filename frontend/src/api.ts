@@ -71,6 +71,8 @@ export const getLive = (tid: number, offset: number) => fetch(`/api/threads/${ti
 // visibility
 export const getActivity = (id: string) => fetch(`/api/projects/${id}/activity`).then(j<{ activity: ActivityItem[] }>)
 export const getUsage = () => fetch('/api/usage').then(j<UsageSummary>)
+export const getModelUsage = () => fetch('/api/model-usage').then(j<import('./types').ModelUsage>)
+export const getVault = (id: string) => fetch(`/api/projects/${id}/vault`).then(j<import('./types').VaultData>)
 export const getPlanLimit = () => fetch('/api/planlimit').then(j<import('./types').PlanLimit>)
 export const planLimitStart = () => req('/api/planlimit/connect/start', 'POST').then(j<{ url: string }>)
 export const planLimitFinish = (code: string) => req('/api/planlimit/connect/finish', 'POST', { code }).then(j<{ ok: boolean }>)

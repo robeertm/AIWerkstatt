@@ -217,8 +217,8 @@ function LiveRow({ e, showFull, onToggle }: { e: LiveRowT; showFull: boolean; on
 // Short labels for the "which model / intensity" chip in the live view. Unknown ids fall
 // back to the raw id (other providers), effort '' → nothing.
 const MODEL_LABEL: Record<string, string> = {
-  'claude-opus-4-8': 'Opus 4.8', 'claude-opus-5': 'Opus 5', 'claude-sonnet-5': 'Sonnet 5',
-  'claude-haiku-4-5-20251001': 'Haiku 4.5', 'claude-fable-5': 'Fable 5',
+  auto: '🤖 Auto', 'claude-opus-4-8': 'Opus 4.8', 'claude-opus-5': 'Opus 5', 'claude-sonnet-5': 'Sonnet 5',
+  'claude-haiku-4-5': 'Haiku 4.5', 'claude-haiku-4-5-20251001': 'Haiku 4.5', 'claude-fable-5': 'Fable 5',
 }
 const EFFORT_LABEL: Record<string, string> = {
   low: 'low', medium: 'medium', high: 'high', xhigh: 'very high', max: 'max',
@@ -227,7 +227,11 @@ const EFFORT_LABEL: Record<string, string> = {
 function AgentLive({ tid }: { tid: number }) {
   const [entries, setEntries] = useState<LiveRowT[]>([])
   const [live, setLive] = useState(false)
-  const [meta, setMeta] = useState<{ model: string; effort: string } | null>(null)  // model · intensity
+  // model · intensity — and on 🤖 Auto also the reason + plan behind the pick
+  const [meta, setMeta] = useState<
+    { model: string; effort: string; auto?: boolean; reason?: string;
+      plan?: { tier: string; steps: string[]; note?: string } | null } | null>(null)
+  const [planOpen, setPlanOpen] = useState(false)
   // "Full text" persists — flip it on once and every line stays ungated
   // (for when you want to see every last bit of what the agent did).
   const [full, setFull] = useState<boolean>(() => {
@@ -246,7 +250,10 @@ function AgentLive({ tid }: { tid: number }) {
       if (!alive) return
       setLive(d.live)
       // Which model / intensity this run uses (comes with every poll from the status file).
-      if (d.model) setMeta({ model: MODEL_LABEL[d.model] || d.model, effort: d.effort ? (EFFORT_LABEL[d.effort] || d.effort) : '' })
+      if (d.model || d.auto) setMeta({
+        model: MODEL_LABEL[d.model || ''] || d.model || '', effort: d.effort ? (EFFORT_LABEL[d.effort] || d.effort) : '',
+        auto: d.auto, reason: d.auto_reason, plan: d.auto_plan,
+      })
       if (d.entries.length) {
         offset.current = d.offset
         const tagged: LiveRowT[] = d.entries.map((e) => ({ ...e, _id: nextId.current++ }))
@@ -287,9 +294,24 @@ function AgentLive({ tid }: { tid: number }) {
   // "Which model / intensity is the agent using right now" — own line so the header row
   // (toggle / full-screen) does not overflow on a phone.
   const metaRow = meta && (
-    <div className="row" style={{ gap: '.35rem', fontSize: '.66rem', flexWrap: 'wrap' }}>
-      <span className="chip" style={{ color: '#a78bfa', borderColor: '#a78bfa55' }}>🧠 {meta.model}</span>
-      {meta.effort && <span className="chip" style={{ color: '#f59e0b', borderColor: '#f59e0b55' }}>⚡ {meta.effort}</span>}
+    <div className="stack" style={{ gap: '.3rem', fontSize: '.66rem' }}>
+      <div className="row" style={{ gap: '.35rem', flexWrap: 'wrap' }}>
+        {meta.auto && (
+          <button type="button" className="chip" aria-pressed={planOpen} onClick={() => setPlanOpen((v) => !v)}
+                  title="Show the auto-choice plan" style={{ color: '#34d399', borderColor: '#34d39955' }}>
+            🤖 Auto {meta.plan ? (planOpen ? '▾' : '▸') : ''}
+          </button>
+        )}
+        <span className="chip" style={{ color: '#a78bfa', borderColor: '#a78bfa55' }}>🧠 {meta.model}</span>
+        {meta.effort && <span className="chip" style={{ color: '#f59e0b', borderColor: '#f59e0b55' }}>⚡ {meta.effort}</span>}
+      </div>
+      {meta.auto && meta.reason && <div className="muted">💡 {meta.reason}</div>}
+      {meta.auto && planOpen && meta.plan && (
+        <div className="card pad stack" style={{ gap: '.2rem' }}>
+          {meta.plan.steps.map((s, i) => <div key={i}>{i + 1}. {s}</div>)}
+          {meta.plan.note && <div className="muted" style={{ marginTop: '.25rem' }}>{meta.plan.note}</div>}
+        </div>
+      )}
     </div>
   )
   if (entries.length === 0) return null
@@ -452,6 +474,8 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
 
       <ActivityStrip id={id} />
 
+      <VaultPanel id={id} />
+
       {(isAdmin || project.mine) && (
         <div className="card pad stack" style={{ marginBottom: '1rem' }}>
           <div className="row" style={{ flexWrap: 'wrap' }}>
@@ -466,7 +490,8 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
                 {spec.models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
               </select>
             )}
-            {spec && spec.efforts.length > 0 && (
+            {/* On 🤖 Auto the AI picks the intensity per task → hide the effort control. */}
+            {spec && spec.efforts.length > 0 && project.model !== 'auto' && (
               <select className="input" style={{ width: 'auto' }} value={project.effort} onChange={(e) => changeSettings(project.provider, project.model, e.target.value)}>
                 <option value="">default effort</option>
                 {spec.efforts.map((x) => <option key={x} value={x}>{x}</option>)}
@@ -475,6 +500,13 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
             <div className="spacer" />
             <button className="chip" onClick={() => setFiles(true)}>📁 Files</button>
           </div>
+          {project.model === 'auto' && (
+            <div className="muted" style={{ fontSize: '.72rem' }}>
+              🤖 <b>Auto:</b> the AI picks model + intensity for every task — cheap models for small
+              tweaks, the strongest for hard work. You can see each choice (and why) in the live
+              “what the agent is doing” view; overall usage in the workshop overview.
+            </div>
+          )}
         </div>
       )}
 
@@ -744,7 +776,8 @@ function PlanLimitSection() {
 // ---------- Usage ----------
 function UsageModal({ onClose }: { onClose: () => void }) {
   const [u, setU] = useState<UsageSummary | null>(null)
-  useEffect(() => { api.getUsage().then(setU).catch(() => {}) }, [])
+  const [mu, setMu] = useState<import('./types').ModelUsage | null>(null)
+  useEffect(() => { api.getUsage().then(setU).catch(() => {}); api.getModelUsage().then(setMu).catch(() => {}) }, [])
   const fmt = (n: number) => n.toLocaleString()
   const money = (n: number) => `$${n.toFixed(n < 1 ? 4 : 2)}`
   const Stat = ({ label, s }: { label: string; s: { tokens: number; cost: number; runs: number } }) => (
@@ -778,6 +811,29 @@ function UsageModal({ onClose }: { onClose: () => void }) {
             <div className="muted" style={{ fontSize: '.72rem' }}>Output-token usage as reported by each provider. Demo runs are free.</div>
           </>
         )}
+        {/* 🤖 Auto-mode overview: which model·intensity combo ran most */}
+        {mu?.available && mu.rows.length > 0 && (() => {
+          const maxN = Math.max(1, ...mu.rows.map((r) => r.count))
+          return (
+            <div className="stack" style={{ gap: '.3rem' }}>
+              <div className="between" style={{ fontSize: '.76rem' }}>
+                <span className="muted">🧠 Model usage (tasks)</span>
+                <span className="muted">{mu.top && <b>{mu.top.label}</b>} · {mu.total} total
+                  {mu.auto_total > 0 && ` · ${Math.round((mu.auto_total / mu.total) * 100)}% 🤖`}</span>
+              </div>
+              {mu.rows.slice(0, 6).map((r) => (
+                <div key={r.model + r.effort} className="row" style={{ gap: '.5rem', fontSize: '.8rem' }}>
+                  <span style={{ width: '8rem', flex: '0 0 auto' }} title={r.label}>{r.label}</span>
+                  <div style={{ flex: 1, height: 12, borderRadius: 6, background: 'var(--surface-2)', overflow: 'hidden' }}>
+                    <div style={{ width: `${(r.count / maxN) * 100}%`, height: '100%', background: 'var(--accent, #8b5cf6)' }} />
+                  </div>
+                  <span className="muted" style={{ width: '4rem', textAlign: 'right', flex: '0 0 auto' }}>
+                    {r.count}{r.auto > 0 ? ` · ${r.auto}🤖` : ''}</span>
+                </div>
+              ))}
+            </div>
+          )
+        })()}
       </div>
     </div>
   )
@@ -886,6 +942,56 @@ function ActivityStrip({ id }: { id: string }) {
           <span className="muted ticker">{i.last ? i.last.text : (STATUS[i.status]?.label || '')}</span>
         </div>
       ))}
+    </div>
+  )
+}
+
+// ---------- 📚 Project vault (knowledge the agents accumulate across runs) ----------
+function VaultPanel({ id }: { id: string }) {
+  const [open, setOpen] = useState(false)
+  const [data, setData] = useState<import('./types').VaultData | null>(null)
+  const [sel, setSel] = useState(0)
+  useEffect(() => {
+    if (!open) return
+    let alive = true
+    const f = () => api.getVault(id).then((d) => { if (alive) setData(d) }).catch(() => {})
+    f(); const t = setInterval(f, 5000); return () => { alive = false; clearInterval(t) }
+  }, [open, id])
+  const files = data?.files || []
+  const cur = files[Math.min(sel, Math.max(0, files.length - 1))]
+  return (
+    <div className="card pad stack" style={{ marginBottom: '1rem', gap: '.5rem' }}>
+      <button type="button" className="row between" onClick={() => setOpen((v) => !v)}
+              style={{ background: 'none', border: 0, cursor: 'pointer', width: '100%', textAlign: 'left' }}>
+        <span className="row" style={{ gap: '.4rem' }}><span>{open ? '▾' : '▸'}</span>
+          <b style={{ fontSize: '.9rem' }}>📚 Project knowledge</b>
+          <span className="muted" style={{ fontSize: '.74rem' }}>· what the AI remembers across runs</span></span>
+        {files.length > 0 && <span className="chip">{files.length} file{files.length !== 1 ? 's' : ''}</span>}
+      </button>
+      {open && (
+        files.length === 0 ? (
+          <div className="muted" style={{ fontSize: '.78rem' }}>
+            Empty for now — the AI reads and appends to this knowledge base as it works on the project,
+            so future runs remember the architecture, decisions and gotchas.
+          </div>
+        ) : (
+          <>
+            {files.length > 1 && (
+              <div className="row" style={{ gap: '.3rem', flexWrap: 'wrap' }}>
+                {files.map((f, i) => (
+                  <button key={f.name} type="button" className="chip" aria-pressed={i === sel}
+                          onClick={() => setSel(i)}
+                          style={i === sel ? { color: '#34d399', borderColor: '#34d39955' } : undefined}>
+                    {f.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            {cur && <pre className="vault-md" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                          fontSize: '.76rem', maxHeight: '22rem', overflowY: 'auto', margin: 0 }}>{cur.content}</pre>}
+          </>
+        )
+      )}
     </div>
   )
 }

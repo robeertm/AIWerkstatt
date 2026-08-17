@@ -2,7 +2,7 @@
 # and requires a matching `## X.Y.Z` section in CHANGELOG.md before tagging.
 [project]
 name = "aiwerkstatt"
-version = "0.9.0"
+version = "0.10.0"
 description = "Self-hosted AI app workshop — talk to a coding agent, watch it build and deploy live web apps. One docker compose up, any AI provider."
 readme = "README.md"
 license = { file = "LICENSE" }

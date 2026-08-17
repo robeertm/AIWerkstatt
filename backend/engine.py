@@ -16,9 +16,13 @@ import config
 import db
 import store
 import providers
+import automode   # 🤖 auto mode: pick model + intensity per task
 
 TASK_QUEUE = os.path.join(config.DATA, "task-queue")
 EVENTS_DIR = os.environ.get("AIWERKSTATT_EVENTS_DIR", "/events")
+# 📚 Shared project vault (per-project knowledge base). Web mounts it read-only-ish to seed
+# and to serve its contents to the UI; agents mount it read/write in their run containers.
+VAULT_DIR = os.environ.get("AIWERKSTATT_VAULT_DIR", "/vault")
 INGESTED_DIR = os.path.join(EVENTS_DIR, ".ingested")
 USAGE_DIR = os.path.join(EVENTS_DIR, "usage")
 LIMIT_FILE = os.path.join(EVENTS_DIR, "limit.json")
@@ -134,11 +138,38 @@ def _add_event(thread_id, task_id, etype, text, author):
                (thread_id, task_id, etype, text, author, store.now()))
 
 
-def _drop_descriptor(task_id, project, thread_id, kind, text, session_id=""):
+def _resolve_model(project, kind, text, log=True):
+    """Resolve the project's model/effort for one dispatch. On 🤖 Auto, pick a concrete
+    model+intensity per task (automode), store the decision for the live view, and log the
+    choice for the usage overview. The runner never sees "auto" — only a real model."""
+    provider = project["provider"]
+    model = project["model"]
+    effort = project["effort"]
+    extra = {}
+    if model == automode.AUTO_MODEL:
+        if kind in ("new", "followup"):
+            dec = automode.decide(provider=provider, prompt=text or "", kind=kind)
+            model, effort = dec["model"], dec["effort"]
+            store.set_auto_decision(project["id"], dec)
+            if log:
+                store.log_model_usage(project["id"], provider, model, effort, True, dec.get("reason", ""))
+            extra = {"auto": True, "auto_reason": dec.get("reason", ""), "auto_plan": dec.get("plan")}
+        else:
+            last = store.get_auto_decision(project["id"])
+            spec = providers.get_spec(provider)
+            model = last.get("model") or (spec.default_model if spec else "")
+            effort = last.get("effort") or ""
+    elif log and kind in ("new", "followup"):
+        store.log_model_usage(project["id"], provider, model, effort, False, "")
+    return provider, model, effort, extra
+
+
+def _drop_descriptor(task_id, project, thread_id, kind, text, session_id="", log=True):
     os.makedirs(TASK_QUEUE, exist_ok=True)
+    provider, model, effort, extra = _resolve_model(project, kind, text, log=log)
     d = {"id": task_id, "slug": project["id"], "thread_id": thread_id, "repo": "",
-         "kind": kind, "text": text, "provider": project["provider"],
-         "model": project["model"], "effort": project["effort"], "session_id": session_id or ""}
+         "kind": kind, "text": text, "provider": provider,
+         "model": model, "effort": effort, "session_id": session_id or "", **extra}
     p = os.path.join(TASK_QUEUE, "%d.json" % task_id)
     tmp = p + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -253,6 +284,28 @@ def usage_summary():
     }
 
 
+def vault_read(project_id):
+    """Read the project's vault files (markdown/text/json) for the UI. The agents write
+    these across runs; here the web side just surfaces them read-only."""
+    d = os.path.join(VAULT_DIR, project_id)
+    files = []
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return {"available": False, "files": []}
+    for n in names:
+        fp = os.path.join(d, n)
+        if not os.path.isfile(fp) or not n.lower().endswith((".md", ".txt", ".json")):
+            continue
+        try:
+            with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(200_000)
+            files.append({"name": n, "content": content, "size": os.path.getsize(fp)})
+        except OSError:
+            continue
+    return {"available": True, "files": files}
+
+
 # ---------- rate-limit status (written by a runner when it hits a limit) ----------
 
 def limit_status():
@@ -325,8 +378,22 @@ def read_live(thread_id, offset=0):
         else:
             spent += len(f)
     model, effort = _live_meta(thread_id)
-    return {"entries": entries, "offset": new_offset, "live": live,
-            "model": model, "effort": effort}
+    out = {"entries": entries, "offset": new_offset, "live": live,
+           "model": model, "effort": effort}
+    # 🤖 Auto: if this thread's project runs on auto, add the chosen model/intensity
+    # (the status file's effort isn't populated) plus the reason + plan for the UI.
+    th = db.query_one("SELECT project_id FROM threads WHERE id=?", (thread_id,))
+    if th:
+        proj = get_project(th["project_id"])
+        if proj and proj["model"] == automode.AUTO_MODEL:
+            dec = store.get_auto_decision(proj["id"])
+            if not out["model"]:
+                out["model"] = dec.get("model", "")
+            out["effort"] = dec.get("effort", "") or out["effort"]
+            out["auto"] = True
+            out["auto_reason"] = dec.get("reason", "")
+            out["auto_plan"] = dec.get("plan")
+    return out
 
 
 # ---------- live activity (for the ticker) ----------
@@ -588,7 +655,7 @@ def resurrect_stale_tasks(is_alive):
             kind, text, sess = "followup", utext, (r["session_id"] or "")
         db.execute("UPDATE tasks SET status='queued', attempts=?, error=NULL, finished_at=NULL "
                    "WHERE id=? AND status NOT IN ('done','cancelled')", (n, r["id"]))
-        _drop_descriptor(r["id"], proj, r["thread_id"], kind, text, sess)
+        _drop_descriptor(r["id"], proj, r["thread_id"], kind, text, sess, log=False)
         _add_event(r["thread_id"], r["id"], "retrying",
                    "🔁 Self-healing: retry (%d) — the previous run ended without a reply." % n, "System")
         started.append((r["project_id"], r["thread_id"], r["id"], n))

@@ -11,6 +11,7 @@ register(ProviderSpec(
     label="Anthropic Claude",
     cli="claude",
     models=(
+        ModelChoice("auto", "🤖 Auto (AI picks model + intensity)", 1_000_000),
         ModelChoice("claude-opus-4-8", "Claude Opus 4.8 (most capable)", 1_000_000),
         ModelChoice("claude-sonnet-5", "Claude Sonnet 5 (balanced)", 200_000),
         ModelChoice("claude-haiku-4-5", "Claude Haiku 4.5 (fast & cheap)", 200_000),
