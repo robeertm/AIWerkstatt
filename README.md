@@ -54,6 +54,8 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 
 - **🖱️ One-click install.** Download the release zip, unzip, and **double-click the launcher for your OS** — it builds everything, starts it, and opens your browser. No command line. (Prefer the terminal? `docker compose up -d --build` still works.) Windows, macOS, Linux.
 - **🔌 Bring any AI provider.** Anthropic Claude, OpenAI, and Google Gemini out of the box — pick per project. Adding another is a small plug-in.
+- **🤖 Auto mode — let it pick the model.** Set a project to **Auto** and the AI chooses the model and reasoning effort for every task: cheap models for tiny tweaks, the strongest for hard work. See exactly what it picked, why, and its plan — right in the live view.
+- **📚 It remembers your project.** Each project has a persistent knowledge base the agent reads at the start of every run and appends to as it learns — so the next run knows the architecture, decisions and gotchas instead of starting cold.
 - **💬 Chat, don’t prompt-engineer.** Describe what you want like you’d tell a person. Follow up mid-run — the agent folds your note into what it’s already doing.
 - **👀 Watch it work, step by step.** A live feed shows what the agent says, thinks, and does — every file it writes, every command it runs — as it happens. Jump in or hit Stop any time.
 - **📦 Isolated by design.** Every agent run and every app it builds runs in its **own container**. The agent can’t touch your machine, only its workspace.
