@@ -485,10 +485,13 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
               {providers.filter((p) => p.id !== 'demo' || p.available || p.id === project.provider)
                 .map((p) => <option key={p.id} value={p.id} disabled={!p.connected}>{p.label}{p.connected ? '' : ' (not connected)'}</option>)}
             </select>
-            {spec && spec.models.length > 0 && (
-              <select className="input" style={{ width: 'auto' }} value={project.model} onChange={(e) => changeSettings(project.provider, e.target.value, project.effort)}>
-                {spec.models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-              </select>
+            {spec && spec.models.length > 1 && (
+              <>
+                <label className="lbl">Model</label>
+                <select className="input" style={{ width: 'auto' }} value={project.model} onChange={(e) => changeSettings(project.provider, e.target.value, project.effort)}>
+                  {spec.models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                </select>
+              </>
             )}
             {/* On 🤖 Auto the AI picks the intensity per task → hide the effort control. */}
             {spec && spec.efforts.length > 0 && project.model !== 'auto' && (
@@ -555,7 +558,7 @@ function Gallery({ onOpen }: { onOpen: (id: string) => void }) {
   const [providers, setProviders] = useState<Provider[]>([])
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState(''); const [emoji, setEmoji] = useState('✨'); const [idea, setIdea] = useState('')
-  const [provider, setProvider] = useState('demo'); const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null)
+  const [provider, setProvider] = useState('demo'); const [model, setModel] = useState(''); const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null)
   const load = useCallback(() => {
     api.getProjects().then((r) => setProjects(r.projects)).catch(() => {})
     api.getProviders().then((r) => setProviders(r.providers)).catch(() => {})
@@ -572,9 +575,15 @@ function Gallery({ onOpen }: { onOpen: (id: string) => void }) {
       if (best && best.id !== provider) setProvider(best.id)
     }
   }, [providers, provider])
+  // Keep the model valid for the chosen provider: default to its default model
+  // (users can switch to 🤖 Auto or a specific model right here before creating).
+  useEffect(() => {
+    const spec = providers.find((p) => p.id === provider)
+    if (spec && !spec.models.some((m) => m.id === model)) setModel(spec.default_model || '')
+  }, [provider, providers, model])
   const create = async () => {
     if (!name.trim()) return; setBusy(true); setErr(null)
-    try { const r = await api.createProject({ name: name.trim(), emoji, desc: '', idea: idea.trim(), provider }); setCreating(false); setName(''); setIdea(''); onOpen(r.project.id) }
+    try { const r = await api.createProject({ name: name.trim(), emoji, desc: '', idea: idea.trim(), provider, model }); setCreating(false); setName(''); setIdea(''); onOpen(r.project.id) }
     catch (e) { setErr(String((e as Error).message)) } finally { setBusy(false) }
   }
   return (
@@ -590,6 +599,23 @@ function Gallery({ onOpen }: { onOpen: (id: string) => void }) {
             {providers.filter((p) => p.id !== 'demo' || p.available)
               .map((p) => <option key={p.id} value={p.id} disabled={!p.connected}>{p.label}{p.connected ? '' : ' (connect first)'}</option>)}
           </select>
+          {/* Model — including 🤖 Auto — right at creation. Hidden for the demo (single builder). */}
+          {(() => {
+            const spec = providers.find((p) => p.id === provider)
+            if (!spec || spec.models.length <= 1) return null
+            return (
+              <>
+                <select className="input" value={model} onChange={(e) => setModel(e.target.value)}>
+                  {spec.models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                </select>
+                {model === 'auto' && (
+                  <div className="muted" style={{ fontSize: '.72rem', marginTop: '-.3rem' }}>
+                    🤖 The AI picks model + intensity for every task. You can change this anytime in the project.
+                  </div>
+                )}
+              </>
+            )
+          })()}
           <textarea className="area" rows={3} placeholder="First idea (optional) — the agent starts on it right away" value={idea} onChange={(e) => setIdea(e.target.value)} />
           {err && <div style={{ color: 'var(--bad)', fontSize: '.85rem' }}>{err}</div>}
           <div className="row"><button className="btn primary" disabled={busy || !name.trim()} onClick={create}>{busy ? 'creating…' : 'Create'}</button>
