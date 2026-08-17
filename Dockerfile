@@ -17,6 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu git \
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./
+# The version single-source: config.py reads it at runtime so the self-update
+# check always reports the version the build actually shipped.
+COPY pyproject.toml ./
 COPY --from=build /fe/dist ./dist
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

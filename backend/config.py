@@ -5,9 +5,26 @@ purpose — this is a personal, self-hosted install).
 """
 import os
 
-# Version of this build. Kept in sync with pyproject.toml / CHANGELOG.md; the
-# self-update check compares it against the latest published GitHub release.
-VERSION = "0.9.0"
+# Version of this build — read from pyproject.toml, the SINGLE source of truth
+# (the release pipeline tags from the same file). Parsing it at runtime keeps the
+# self-update check honest: a bumped pyproject can never drift from what the app
+# reports, so the "update available" banner clears once a build actually ships.
+# Falls back to the literal below only if pyproject isn't bundled (bump both on release).
+def _read_version(fallback="0.10.1"):
+    here = os.path.dirname(__file__)
+    for p in (os.path.join(here, "pyproject.toml"),        # bundled next to backend (in the image)
+              os.path.join(here, "..", "pyproject.toml")):  # repo root (running from source)
+        try:
+            import tomllib  # Python 3.11+
+            with open(p, "rb") as f:
+                v = tomllib.load(f).get("project", {}).get("version")
+            if v:
+                return v
+        except (OSError, KeyError, ValueError, ImportError):
+            continue
+    return fallback
+
+VERSION = _read_version()
 # GitHub repository this build is distributed from (owner/name).
 REPO_SLUG = os.environ.get("AIWERKSTATT_REPO", "robeertm/AIWerkstatt")
 

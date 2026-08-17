@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.10.1 — 2026-08-17
+
+### Fixed — self-update no longer loops on a stale version
+- The app reported its version from a hard-coded constant in `backend/config.py` that could drift from `pyproject.toml`. When it did, the update check compared the old constant against the latest release and kept offering an update that never “took” — and because installing recreates the web container mid-request, the button appeared to hang. **`config.py` now reads the version from `pyproject.toml`** (bundled into the image), the documented single source of truth, so a shipped build always reports its real version and the “update available” banner clears after updating.
+
 ## 0.10.0 — 2026-08-17
 
 ### Added — 🤖 Auto mode: the AI picks the model + intensity per task
