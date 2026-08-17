@@ -429,10 +429,26 @@ def project_activity(pid):
     return jsonify(activity=engine.project_activity(pid))
 
 
+@app.get("/api/projects/<pid>/vault")
+@login_required
+def project_vault(pid):
+    """📚 The project's shared knowledge base (what agents accumulate across runs)."""
+    if not engine.get_project(pid):
+        abort(404)
+    return jsonify(engine.vault_read(pid))
+
+
 @app.get("/api/usage")
 @login_required
 def usage():
     return jsonify(engine.usage_summary())
+
+
+@app.get("/api/model-usage")
+@login_required
+def model_usage():
+    """🤖 Auto-mode overview: which model·intensity combo ran most (incl. auto share)."""
+    return jsonify(store.model_usage_stats())
 
 
 @app.get("/api/limit")

@@ -37,6 +37,7 @@ services:
       AIWERKSTATT_VOL_WORKSPACES: aiwerkstatt-workspaces
       AIWERKSTATT_VOL_EVENTS: aiwerkstatt-events
       AIWERKSTATT_VOL_INBOX: aiwerkstatt-inbox
+      AIWERKSTATT_VOL_VAULT: aiwerkstatt-vault
       AIWERKSTATT_APP_UID: "10001"
     volumes:
       # SQLite, provider credentials (0600), queues, journal — persists across redeploys.
@@ -45,6 +46,8 @@ services:
       - workspaces:/workspaces
       - events:/events
       - inbox:/inbox
+      # 📚 Persistent per-project knowledge base the agents read/append across runs.
+      - vault:/vault
     depends_on:
       - dockerproxy
     networks:
@@ -114,3 +117,5 @@ volumes:
     name: aiwerkstatt-events
   inbox:
     name: aiwerkstatt-inbox
+  vault:
+    name: aiwerkstatt-vault

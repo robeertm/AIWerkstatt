@@ -5,6 +5,7 @@ tokens) live in the `secrets` table inside the private data volume — never in 
 repo, never in a container image; they are handed to a run only as that ephemeral
 container's environment.
 """
+import json
 import os
 import secrets as pysecrets
 import time
@@ -121,3 +122,73 @@ def delete_secret(key):
 def provider_connected(provider_id):
     return bool(get_secret("provider:%s:key" % provider_id)) or \
         bool(get_secret("provider:%s:oauth" % provider_id))
+
+
+# ---------- 🤖 auto mode: model-usage log + latest decision per project ----------
+
+_MODEL_LABEL = {
+    "auto": "🤖 Auto", "claude-opus-4-8": "Opus 4.8", "claude-opus-5": "Opus 5",
+    "claude-sonnet-5": "Sonnet 5", "claude-haiku-4-5": "Haiku 4.5",
+    "claude-haiku-4-5-20251001": "Haiku 4.5",
+}
+_EFFORT_LABEL = {"low": "low", "medium": "medium", "high": "high",
+                 "xhigh": "very high", "max": "max", "": "default"}
+
+
+def log_model_usage(project_id, provider, model, effort, auto=False, reason=""):
+    """Record one dispatched task's model/intensity (for the usage overview). Never raises."""
+    try:
+        db.execute("INSERT INTO model_usage(project_id,provider,model,effort,auto,reason,at)"
+                   " VALUES(?,?,?,?,?,?,?)",
+                   (project_id, provider, model, effort or "", 1 if auto else 0,
+                    (reason or "")[:300], now()))
+    except Exception:
+        pass
+
+
+def set_auto_decision(project_id, dec):
+    """Upsert the latest auto decision for a project (drives the live 🤖 badge)."""
+    try:
+        db.execute(
+            "INSERT INTO auto_decision(project_id,model,effort,model_label,effort_label,reason,tier,plan,at)"
+            " VALUES(?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(project_id) DO UPDATE SET model=excluded.model, effort=excluded.effort,"
+            " model_label=excluded.model_label, effort_label=excluded.effort_label,"
+            " reason=excluded.reason, tier=excluded.tier, plan=excluded.plan, at=excluded.at",
+            (project_id, dec.get("model", ""), dec.get("effort", ""),
+             dec.get("model_label", ""), dec.get("effort_label", ""), dec.get("reason", ""),
+             dec.get("tier", ""), json.dumps(dec.get("plan") or None), now()))
+    except Exception:
+        pass
+
+
+def get_auto_decision(project_id):
+    r = db.query_one("SELECT * FROM auto_decision WHERE project_id=?", (project_id,))
+    if not r:
+        return {}
+    d = dict(r)
+    try:
+        d["plan"] = json.loads(d.get("plan") or "null")
+    except (ValueError, TypeError):
+        d["plan"] = None
+    return d
+
+
+def model_usage_stats():
+    """Aggregate the model-usage log → which model·intensity combo ran most (incl. auto share)."""
+    rows = db.query_all(
+        "SELECT model, effort, COUNT(*) c, SUM(auto) a FROM model_usage"
+        " GROUP BY model, effort ORDER BY c DESC")
+    out = []
+    total = auto_total = 0
+    for r in rows:
+        ml = _MODEL_LABEL.get(r["model"], r["model"])
+        el = _EFFORT_LABEL.get(r["effort"] or "", r["effort"] or "default")
+        c = int(r["c"] or 0)
+        a = int(r["a"] or 0)
+        total += c
+        auto_total += a
+        out.append({"model": r["model"], "effort": r["effort"] or "",
+                    "label": "%s · %s" % (ml, el), "count": c, "auto": a})
+    return {"available": total > 0, "total": total, "auto_total": auto_total,
+            "rows": out, "top": out[0] if out else None}

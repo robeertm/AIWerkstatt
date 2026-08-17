@@ -35,7 +35,19 @@ export type ActivityItem = {
   last: { type: string; text: string; created_at: string } | null
 }
 export type LiveEntry = { seq?: number; act: string; text: string; full?: string; at: number }
-export type LiveFeed = { entries: LiveEntry[]; offset: number; live: boolean; model?: string; effort?: string }
+export type AutoPlan = { tier: string; steps: string[]; note?: string }
+export type LiveFeed = {
+  entries: LiveEntry[]; offset: number; live: boolean; model?: string; effort?: string
+  auto?: boolean; auto_reason?: string; auto_plan?: AutoPlan | null   // 🤖 Auto mode
+}
+
+// 🤖 Auto-mode overview: which model·intensity combo ran most.
+export type ModelUsageRow = { model: string; effort: string; label: string; count: number; auto: number }
+export type ModelUsage = { available: boolean; total: number; auto_total: number; rows: ModelUsageRow[]; top?: ModelUsageRow | null }
+
+// 📚 Shared project vault (knowledge the agents accumulate across runs).
+export type VaultFile = { name: string; content: string; size: number }
+export type VaultData = { available: boolean; files: VaultFile[] }
 
 // publish / release
 export type ScanFinding = { file: string; line: number; severity: string; rule: string; snippet: string }
