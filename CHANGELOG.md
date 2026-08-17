@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.10.2 — 2026-08-17
+
+### Changed — pick the model (and 🤖 Auto) right when you create a project
+- The **New project** dialog now has a **model selector** next to the provider — so you can choose **🤖 Auto** (or a specific model) up front, instead of only being able to set the provider at creation and having to open the project afterwards. It defaults to the provider’s default model and resets sensibly when you switch providers; hidden for the keyless Demo (which has a single builder).
+- The in-project settings bar gained a **“Model”** label so the per-project model/intensity control is easier to find, and it no longer shows a pointless single-option dropdown for the Demo provider.
+- Note: **🤖 Auto and specific models require a real provider** (connect Claude/OpenAI/Gemini). The zero-key Demo only builds a small sample page, so it has no model choice.
+
 ## 0.10.1 — 2026-08-17
 
 ### Fixed — self-update no longer loops on a stale version
