@@ -138,12 +138,20 @@ def save_session_id(sid):
     _atomic_write(SESS_STATE, sid)
 
 
-def start_agent():
+# 🔴 A dropped stream is not a failed order. When the provider aborts OUR stream with an
+# API error, the session still exists on their side — so we resume it instead of letting the
+# self-healer restart the whole order from scratch (which is slow, wastes tokens and can
+# redo work that was already done).
+STREAM_RETRY_MAX = int(os.environ.get("WK_STREAM_RETRY_MAX", "4"))
+
+
+def start_agent(resume_id=None):
     """Start the provider CLI as a child process: stdin = pipe (we feed messages),
     stdout+stderr → runlog file (we tail it). The container is the isolation
-    boundary."""
+    boundary. ``resume_id`` continues the RUNNING session after a stream abort."""
     argv = adapter.build_argv(RunContext(model=MODEL, effort=EFFORT,
-                                         resume_id=RESUME_SID, allowed_tools=ALLOWED))
+                                         resume_id=resume_id or RESUME_SID,
+                                         allowed_tools=ALLOWED))
     log("exec: %s" % " ".join(argv))
     runlog_fh = open(RUNLOG, "wb")
     proc = subprocess.Popen(argv, cwd=WT, stdin=subprocess.PIPE,
@@ -175,14 +183,17 @@ def main():
     expected.append(("task", FIRST_TASK))
 
     # tail the runlog
-    rlf = None
-    for _ in range(200):
-        if os.path.exists(RUNLOG):
-            rlf = open(RUNLOG, "r", encoding="utf-8", errors="replace")
-            break
-        time.sleep(0.05)
-    if rlf is None:
-        rlf = open(RUNLOG, "a+", encoding="utf-8", errors="replace"); rlf.seek(0)
+    def open_runlog():
+        """Open the runlog for tailing. Each (re)start truncates the file, so a stale
+        file offset would silently swallow the whole output of the restarted agent."""
+        for _ in range(200):
+            if os.path.exists(RUNLOG):
+                return open(RUNLOG, "r", encoding="utf-8", errors="replace")
+            time.sleep(0.05)
+        h = open(RUNLOG, "a+", encoding="utf-8", errors="replace"); h.seek(0)
+        return h
+
+    rlf = open_runlog()
 
     start = time.time()
     last_activity = start
@@ -194,6 +205,8 @@ def main():
     sess_cost = 0.0
     sess_turns = 0
     stopped = False
+    stream_retries = 0        # stream aborts (API) since the last real answer
+    restart_request = None    # (task_id, reason) — handled in the main loop, not in the parser
     controls_since_compact = 0
     should_close = False
     limited_close = None   # (task_id, reset)
@@ -202,13 +215,20 @@ def main():
 
     def handle_result(ev):
         nonlocal ctx_pct, last_activity, should_close, limited_close, controls_since_compact
-        nonlocal ctx_window, sess_out, sess_cost, sess_turns
+        nonlocal ctx_window, sess_out, sess_cost, sess_turns, restart_request, stream_retries
         sess_out += int(ev.get("out_tokens", 0) or 0)
         sess_cost = max(sess_cost, float(ev.get("cost", 0) or 0))
         sess_turns += 1
         if ev.get("window"):
             ctx_window = ev["window"]
         head = expected.popleft() if expected else ("task", None)
+        # 🔴 Transient stream abort → keep the task open and resume (handled in the main loop).
+        if (ev.get("transient") and head[0] == "task" and head[1] is not None
+                and sid and stream_retries < STREAM_RETRY_MAX):
+            expected.appendleft(head)
+            restart_request = (head[1], ev.get("reason") or "API error")
+            last_activity = time.time()
+            return
         if ev.get("limited"):
             reset = int(ev.get("reset", 0) or 0)
             tid = head[1] if head[0] == "task" else None
@@ -225,6 +245,7 @@ def main():
             emit(tid, "failed", "The run ended without a reply. Your workspace is unchanged — "
                                 "send your message again to try once more.")
         else:
+            stream_retries = 0      # a real answer resets the stream-abort counter
             emit(tid, "reply", text[:6000])
         # One result = the agent processed everything fed so far. A mid-turn
         # follow-up folded into this turn → resolve the remaining expected tasks.
@@ -320,6 +341,36 @@ def main():
         write_status(ctx_pct, 1, len(expected))
 
         # 4) exit conditions
+        # 🔴 Stream abort (API) → resume THE SAME session. Done here, not in the parser:
+        # we swap both the process and the file handle we are reading from.
+        if restart_request:
+            tid, why = restart_request
+            restart_request = None
+            stream_retries += 1
+            emit(tid, "progress",
+                 "🔁 The stream to the agent dropped (%s) — resuming automatically "
+                 "(%d/%d). Your task stays open." % (why, stream_retries, STREAM_RETRY_MAX))
+            log("stream abort (%s) → resume %d/%d, session=%s"
+                % (why, stream_retries, STREAM_RETRY_MAX, sid))
+            try:
+                proc.terminate(); proc.wait(timeout=15)
+            except Exception:
+                try: proc.kill()
+                except Exception: pass
+            try: rlf.close()
+            except Exception: pass
+            time.sleep(min(30, 5 * stream_retries))   # let the hiccup settle
+            proc = start_agent(resume_id=sid)
+            rlf = open_runlog()
+            # --resume reloads the history; a short nudge continues the interrupted turn.
+            # Do NOT re-send the order — it is already in the transcript.
+            feed("The stream dropped because of an API error. Continue exactly where you "
+                 "left off — do not start over and do not repeat steps you already "
+                 "completed. Check the current state briefly, then finish the task.")
+            now = time.time()
+            last_activity = last_output = now
+            continue
+
         if should_close:
             break
         if proc.poll() is not None:

@@ -4,6 +4,37 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.11.0 — 2026-08-24
+### Fixed — reliability: dropped streams, retry runaway, misleading order status
+
+**Resume a dropped stream instead of restarting the order.** When the provider aborts the
+stream with an API error (Claude reports `subtype=error_during_execution` /
+`terminal_reason=aborted_streaming`; the runlog then shows "[Request interrupted by user]"),
+the session still exists on the provider's side. Previously the task was marked `failed` and
+the self-healer restarted the whole order from scratch — slow, expensive, and it could redo
+work that was already finished. Now the runner keeps the task open, restarts the CLI with
+`--resume <session_id>` and nudges it to continue where it left off. Visible to the user as
+"🔁 The stream to the agent dropped — resuming automatically (n/N)." At most
+`WK_STREAM_RETRY_MAX` (default 4) resumes per answer, with a growing pause; after that the
+normal self-heal path takes over. The provider adapter now reports `transient` + `reason`, so
+every provider can opt into this.
+
+**The self-healing backoff only worked for a task's first few minutes.** `resurrect_stale_tasks()`
+compared the cooldown against `now - created_at`. `created_at` is deliberately immutable (it
+guards the max-age window against zombie revival), but it grows monotonically — so once a task
+was older than the cooldown cap, the check was permanently false and every poll re-queued it
+immediately. A failing task could therefore hammer the provider indefinitely. There are now two
+separate clocks: age from `created_at` (max-age window, unchanged), cooldown from
+`COALESCE(finished_at, started_at, created_at)` — the last attempt. The backoff
+(90 → 180 → 360 → 720 → 900 s) now holds for the whole life of a task. Retries are still
+unlimited; only their rate is capped.
+
+**A finished order could show as "stopped".** `_thread_status()` judged by the newest task and,
+failing that, by the newest event. If an order completed and a duplicate follow-up run was
+stopped afterwards, the thread showed "stopped" even though the work was done. Now success beats
+cancellation, and only tasks belonging to the current request (since the last user message) are
+considered — so an older completed task can never make a fresh request look finished either.
+
 ## 0.10.2 — 2026-08-17
 
 ### Changed — pick the model (and 🤖 Auto) right when you create a project

@@ -230,8 +230,18 @@ class ClaudeAdapter(AgentAdapter):
                 cost = float(o.get("total_cost_usd", 0) or 0)
             except (TypeError, ValueError):
                 cost = 0.0
+            # 🔴 Transient stream abort: the provider dropped OUR stream, but the session
+            # lives on server-side. Observed as subtype="error_during_execution" with
+            # terminal_reason="aborted_streaming" (the runlog then shows
+            # "[Request interrupted by user]"). This is NOT a failed task — the session
+            # manager resumes it instead of starting the whole order over.
+            reason = str(o.get("terminal_reason") or o.get("subtype") or "")
+            transient = (is_err and not limited
+                         and (str(o.get("subtype", "")) == "error_during_execution"
+                              or reason in ("aborted_streaming", "api_error")))
             out.append({"kind": "result", "text": o.get("result") or "",
                         "error": is_err, "limited": limited, "reset": reset,
+                        "transient": transient, "reason": reason,
                         "out_tokens": out_tokens, "cost": cost,
                         "window": self._window(o)})
         return out

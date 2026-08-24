@@ -418,7 +418,17 @@ def project_activity(project_id):
 
 
 def _thread_status(thread_id):
-    tasks = db.query_all("SELECT status FROM tasks WHERE thread_id=? ORDER BY id", (thread_id,))
+    # 🔴 Only tasks belonging to the CURRENT request count. An older, long-finished task of
+    # the same thread must not make a fresh request look "done".
+    since = db.query_one("SELECT created_at FROM events WHERE thread_id=? AND type='user' "
+                         "ORDER BY id DESC LIMIT 1", (thread_id,))
+    if since and since["created_at"]:
+        tasks = db.query_all("SELECT status FROM tasks WHERE thread_id=? AND created_at>=? "
+                             "ORDER BY id", (thread_id, since["created_at"]))
+        if not tasks:      # request accepted, no task recorded yet
+            tasks = db.query_all("SELECT status FROM tasks WHERE thread_id=? ORDER BY id", (thread_id,))
+    else:
+        tasks = db.query_all("SELECT status FROM tasks WHERE thread_id=? ORDER BY id", (thread_id,))
     st = [t["status"] for t in tasks]
     if "running" in st:
         return "working"
@@ -430,6 +440,13 @@ def _thread_status(thread_id):
     # it automatically → show "retrying", not a dead "failed" (and not a misleading "done").
     if st and st[-1] in ("retrying", "failed"):
         return "retrying"
+    # 🔴 SUCCESS BEATS CANCELLATION. If any task of this request finished, the request is
+    # done — even when a duplicate follow-up run was stopped afterwards. Judging by the
+    # newest event (or the newest task) instead showed a completed order as "stopped".
+    if "done" in st:
+        return "done"
+    if "cancelled" in st:
+        return "stopped"
     last = db.query_one("SELECT type FROM events WHERE thread_id=? ORDER BY id DESC LIMIT 1", (thread_id,))
     if last and last["type"] == "stopped":
         return "stopped"
@@ -608,15 +625,20 @@ def resurrect_stale_tasks(is_alive):
     if limit_status().get("active"):
         return []
     started = []
-    # Age is measured from the ORIGINAL request (`created_at`), NOT the last attempt.
-    # COALESCE(finished_at, started_at, …) would be the NEWEST timestamp and moves forward
-    # with every retry, so a long-abandoned task looks "fresh" (finished_at is today) and
-    # resurrects forever — defeating the max-age window. `created_at` is immutable: once too
-    # old, it stays too old.
+    # 🔴 TWO SEPARATE CLOCKS — they used to be the same field, and that is exactly how a
+    # failing task turns into a runaway (observed: 18 attempts in 25 minutes):
+    #   `ts`      = `created_at`, IMMUTABLE → only for the max-age window. A long-abandoned
+    #               task must not look "fresh" again just because it was retried today.
+    #   `last_ts` = the most recent attempt (`finished_at`/`started_at`, else `created_at`)
+    #               → ONLY for the cooldown. Measured against `created_at` the gap grows
+    #               monotonically, so `age < cooldown` is PERMANENTLY false once the task is
+    #               older than the cap — every poll re-queues immediately and the backoff
+    #               effectively exists only during a task's first few minutes.
     rows = db.query_all(
         "SELECT t.id AS id, t.thread_id AS thread_id, t.kind AS kind, t.attempts AS attempts, "
         "t.status AS status, th.project_id AS project_id, th.session_id AS session_id, "
-        "t.created_at AS ts "
+        "t.created_at AS ts, "
+        "COALESCE(t.finished_at, t.started_at, t.created_at) AS last_ts "
         "FROM tasks t JOIN threads th ON th.id = t.thread_id "
         "WHERE t.status IN ('queued', 'running', 'failed', 'retrying')")
     for r in rows:
@@ -636,12 +658,15 @@ def resurrect_stale_tasks(is_alive):
                            "error=COALESCE(error,'abandoned: no completion within the self-heal window') "
                            "WHERE id=? AND status NOT IN ('done','cancelled')", (store.now(), r["id"]))
             continue
-        if age < _retry_cooldown(r["attempts"]):
+        # 🔴 Always measure the cooldown against the LAST ATTEMPT, never against `created_at`.
+        if _iso_age(r["last_ts"] or r["ts"] or "") < _retry_cooldown(r["attempts"]):
             if r["status"] != "retrying":       # in cooldown → show "retrying" (self-healing, not dead)
                 db.execute("UPDATE tasks SET status='retrying' WHERE id=? AND status NOT IN ('done','cancelled')",
                            (r["id"],))
             continue
-        # cooldown elapsed → next attempt (no cap — only success or a manual stop ends it)
+        # cooldown elapsed → next attempt (no cap — only success or a manual stop ends it;
+        # the backoff caps the RATE at 90 → 180 → 360 → 720 → 900 s, i.e. at most a handful
+        # of attempts per hour instead of one per poll)
         proj = get_project(r["project_id"])
         if not proj:
             continue
