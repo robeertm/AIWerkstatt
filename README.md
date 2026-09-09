@@ -26,6 +26,30 @@ It’s the friendly front-end you wish coding agents came with: a project galler
 task threads with a live activity ticker, a file browser, and — critically — **it’s yours**.
 No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 
+> ### ⚠️ Please read before installing
+>
+> **This project is written with AI assistance.** Code, documentation and this
+> README are largely AI-generated and reviewed by a human, not the other way
+> round. Treat it as a hobby project, not as audited software.
+>
+> **It is provided "as is", with no warranty and no liability of any kind** —
+> for errors, for lost or corrupted data, for what the agent does on your
+> machine, for costs incurred at your AI provider, or for anything that follows
+> from using it. **You use it at your own risk.**
+>
+> Three things deserve saying plainly, because this tool writes and runs code:
+>
+> - **The agent generates code and then runs it.** Nobody reviews it before it
+>   executes. Treat every app it builds as untrusted until you have read it
+>   yourself — especially before exposing one to a network.
+> - **It spends your money at your AI provider.** Requests are billed to the
+>   key you configure, and a long-running or looping task can spend more than
+>   you expect. Set limits on the provider's side, not only here.
+> - **Generated apps are not secure by default.** Authentication, input
+>   validation and secret handling are only as good as what the agent happened
+>   to write. Do not put anything that matters behind one without checking it.
+
+
 ## 📸 See it in action
 
 <div align="center">
