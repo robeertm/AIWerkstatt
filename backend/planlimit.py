@@ -22,9 +22,10 @@ import urllib.request
 from urllib.parse import urlencode
 
 import store
+from config import CLAUDE_CLI_VERSION
 
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"      # public Claude Code OAuth client
-_UA = "claude-cli/2.1.220 (external, cli)"
+_UA = f"claude-cli/{CLAUDE_CLI_VERSION} (external, cli)"
 _BETA = "oauth-2025-04-20"
 _AUTHORIZE = "https://claude.com/cai/oauth/authorize"
 _TOKEN_URL = "https://api.anthropic.com/v1/oauth/token"

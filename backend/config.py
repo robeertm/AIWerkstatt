@@ -25,6 +25,22 @@ def _read_version(fallback="0.10.1"):
     return fallback
 
 VERSION = _read_version()
+
+# Claude CLI version pinned in the agent-runner image (pyproject.toml [tool.aiwerkstatt]).
+def _read_cli_version(fallback="2.1.310"):
+    here = os.path.dirname(__file__)
+    for p in (os.path.join(here, "pyproject.toml"), os.path.join(here, "..", "pyproject.toml")):
+        try:
+            import tomllib
+            with open(p, "rb") as f:
+                v = tomllib.load(f).get("tool", {}).get("aiwerkstatt", {}).get("claude_cli")
+            if v:
+                return v
+        except (OSError, KeyError, ValueError, ImportError):
+            continue
+    return fallback
+
+CLAUDE_CLI_VERSION = _read_cli_version()
 # GitHub repository this build is distributed from (owner/name).
 REPO_SLUG = os.environ.get("AIWERKSTATT_REPO", "robeertm/AIWerkstatt")
 

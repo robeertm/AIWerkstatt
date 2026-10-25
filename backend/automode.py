@@ -43,7 +43,7 @@ def _ladder(spec):
     """From a provider spec build (strong, mid, weak) model ids + effort picks.
     Falls back gracefully for providers with 1–2 real models."""
     # Skip the synthetic "auto" entry itself when ranking real models.
-    models = [m.id for m in spec.models if m.id != AUTO_MODEL] if spec else []
+    models = [m.id for m in spec.models if m.id != AUTO_MODEL and m.in_auto] if spec else []
     if not models:
         return None
     strong = models[0]
@@ -58,7 +58,8 @@ def _ladder(spec):
         return efforts[-1] if efforts else ""
     return {
         "trivial":  (weak,   eff("low")),
-        "light":    (mid,    eff("low", "medium")),
+        # With three or more models the cheapest also takes small, clear changes.
+        "light":    (weak if len(models) >= 3 else mid, eff("low", "medium")),
         "standard": (mid,    eff("high", "medium")),
         "hard":     (strong, eff("high", "xhigh")),
         "max":      (strong, eff("max", "xhigh", "high")),

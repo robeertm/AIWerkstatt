@@ -334,6 +334,11 @@ def project_delete(pid):
 
 # ---------- threads ----------
 
+def _requested(d, key):
+    """Per-task model/effort are admin-only (like the project setting); ignored for members."""
+    return d.get(key) if current_user()["role"] == "admin" else None
+
+
 @app.post("/api/projects/<pid>/threads")
 @login_required
 def thread_create(pid):
@@ -347,7 +352,8 @@ def thread_create(pid):
         return jsonify(error="Title and request are required."), 400
     if not provider_connected(p["provider"]):
         return jsonify(error="Connect this project's AI provider first."), 409
-    res = engine.create_thread(p, title, body, current_user()["name"])
+    res = engine.create_thread(p, title, body, current_user()["name"],
+                               model=_requested(d, "model"), effort=_requested(d, "effort"))
     return jsonify(number=res["thread_id"], id=res["thread_id"]), 201
 
 
@@ -376,7 +382,8 @@ def thread_comment(tid):
     text = (d.get("text") or "").strip()
     if not text:
         return jsonify(error="Empty message."), 400
-    engine.create_comment(engine.get_project(th["project_id"]), tid, text, current_user()["name"])
+    engine.create_comment(engine.get_project(th["project_id"]), tid, text, current_user()["name"],
+                          model=_requested(d, "model"), effort=_requested(d, "effort"))
     return jsonify(ok=True), 201
 
 

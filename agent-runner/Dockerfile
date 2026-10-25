@@ -8,13 +8,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Provider CLIs. Package names are verified at build time; pin versions before
-# a release. Each is optional at runtime — only the selected provider is used.
-RUN npm install -g \
-      @anthropic-ai/claude-code \
+# Provider CLIs. Each is optional at runtime — only the selected provider is used.
+# The Claude CLI is pinned: the 5.5 model family needs claude-code >= 2.1.280.
+# A failed install or a wrong version fails the build (no `|| echo` fallback).
+RUN set -eu; \
+    npm install -g \
+      @anthropic-ai/claude-code@2.1.310 \
       @openai/codex \
-      @google/gemini-cli \
-    || echo "note: pin/adjust provider CLI packages before release"
+      @google/gemini-cli; \
+    got="$(claude --version | cut -d' ' -f1)"; \
+    [ "$got" = "2.1.310" ] || { echo "claude CLI version mismatch: got '$got', expected 2.1.310" >&2; exit 1; }
 
 WORKDIR /runner
 COPY . /runner

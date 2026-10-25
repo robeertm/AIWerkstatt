@@ -12,9 +12,14 @@ register(ProviderSpec(
     cli="claude",
     models=(
         ModelChoice("auto", "🤖 Auto (AI picks model + intensity)", 1_000_000),
-        ModelChoice("claude-opus-4-8", "Claude Opus 4.8 (most capable)", 1_000_000),
-        ModelChoice("claude-sonnet-5", "Claude Sonnet 5 (balanced)", 200_000),
-        ModelChoice("claude-haiku-4-5", "Claude Haiku 4.5 (fast & cheap)", 200_000),
+        ModelChoice("claude-opus-5-5", "Claude Opus 5.5 (most capable)", 1_000_000),
+        ModelChoice("claude-sonnet-5-5", "Claude Sonnet 5.5 (balanced)", 200_000),
+        ModelChoice("claude-haiku-5-5", "Claude Haiku 5.5 (fast & cheap)", 200_000),
+        ModelChoice("claude-fable-5-1", "Claude Fable 5.1", 200_000, in_auto=False),
+        # Older IDs stay valid so existing project settings keep working.
+        ModelChoice("claude-opus-4-8", "Claude Opus 4.8 (default)", 1_000_000, in_auto=False),
+        ModelChoice("claude-sonnet-5", "Claude Sonnet 5 (older)", 200_000, in_auto=False),
+        ModelChoice("claude-haiku-4-5", "Claude Haiku 4.5 (older)", 200_000, in_auto=False),
     ),
     default_model="claude-opus-4-8",
     efforts=("low", "medium", "high", "xhigh", "max"),

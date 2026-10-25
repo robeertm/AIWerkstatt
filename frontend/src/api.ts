@@ -52,8 +52,8 @@ export const setProjectSettings = (id: string, provider: string, model: string, 
   req(`/api/projects/${id}/settings`, 'POST', { provider, model, effort }).then(j<{ ok: boolean; project: Project }>)
 
 // threads
-export const createThread = (id: string, title: string, request: string) =>
-  req(`/api/projects/${id}/threads`, 'POST', { title, request }).then(j<{ id: number }>)
+export const createThread = (id: string, title: string, request: string, model?: string) =>
+  req(`/api/projects/${id}/threads`, 'POST', model ? { title, request, model } : { title, request }).then(j<{ id: number }>)
 export const getThread = (tid: number) => fetch(`/api/threads/${tid}`).then(j<ThreadDetail>)
 export const addComment = (tid: number, text: string) => req(`/api/threads/${tid}/comment`, 'POST', { text }).then(j<{ ok: boolean }>)
 export const compactThread = (tid: number) => req(`/api/threads/${tid}/compact`, 'POST').then(j<{ ok: boolean }>)

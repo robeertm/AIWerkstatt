@@ -138,7 +138,18 @@ def _add_event(thread_id, task_id, etype, text, author):
                (thread_id, task_id, etype, text, author, store.now()))
 
 
-def _resolve_model(project, kind, text, log=True):
+def _clean_override(provider, model=None, effort=None):
+    """Validate a requester-chosen model/effort against the provider's lists.
+    Invalid, empty or "auto" -> None (= previous behaviour). Never raises."""
+    spec = providers.get_spec(provider)
+    m = model.strip() if isinstance(model, str) else ""
+    e = effort.strip() if isinstance(effort, str) else ""
+    ok_m = {x.id for x in spec.models if x.id != automode.AUTO_MODEL} if spec else set()
+    ok_e = set(spec.efforts) if spec else set()
+    return (m if m in ok_m else None), (e if e in ok_e else None)
+
+
+def _resolve_model(project, kind, text, log=True, req_model=None, req_effort=None):
     """Resolve the project's model/effort for one dispatch. On 🤖 Auto, pick a concrete
     model+intensity per task (automode), store the decision for the live view, and log the
     choice for the usage overview. The runner never sees "auto" — only a real model."""
@@ -146,7 +157,10 @@ def _resolve_model(project, kind, text, log=True):
     model = project["model"]
     effort = project["effort"]
     extra = {}
-    if model == automode.AUTO_MODEL:
+    req_m, req_e = _clean_override(provider, req_model, req_effort)
+    if req_m and req_e:
+        model, effort = req_m, req_e
+    elif model == automode.AUTO_MODEL and not req_m:
         if kind in ("new", "followup"):
             dec = automode.decide(provider=provider, prompt=text or "", kind=kind)
             model, effort = dec["model"], dec["effort"]
@@ -159,14 +173,28 @@ def _resolve_model(project, kind, text, log=True):
             spec = providers.get_spec(provider)
             model = last.get("model") or (spec.default_model if spec else "")
             effort = last.get("effort") or ""
-    elif log and kind in ("new", "followup"):
+    elif log and kind in ("new", "followup") and not (req_m or req_e):
         store.log_model_usage(project["id"], provider, model, effort, False, "")
+    if model == automode.AUTO_MODEL:           # only the effort was pinned on an auto project
+        spec = providers.get_spec(provider)
+        model = spec.default_model if spec else ""
+    if (req_m or req_e) and kind in ("new", "followup"):
+        if req_m:
+            model = req_m
+        if req_e:
+            effort = req_e
+        reason = "chosen by the requester: %s / %s" % (model, effort or "default")
+        extra = {"requested": True, "auto_reason": reason}
+        if log:
+            store.log_model_usage(project["id"], provider, model, effort, False, reason)
     return provider, model, effort, extra
 
 
-def _drop_descriptor(task_id, project, thread_id, kind, text, session_id="", log=True):
+def _drop_descriptor(task_id, project, thread_id, kind, text, session_id="", log=True,
+                     req_model=None, req_effort=None):
     os.makedirs(TASK_QUEUE, exist_ok=True)
-    provider, model, effort, extra = _resolve_model(project, kind, text, log=log)
+    provider, model, effort, extra = _resolve_model(project, kind, text, log=log,
+                                                    req_model=req_model, req_effort=req_effort)
     d = {"id": task_id, "slug": project["id"], "thread_id": thread_id, "repo": "",
          "kind": kind, "text": text, "provider": provider,
          "model": model, "effort": effort, "session_id": session_id or "", **extra}
@@ -177,27 +205,34 @@ def _drop_descriptor(task_id, project, thread_id, kind, text, session_id="", log
     os.replace(tmp, p)
 
 
-def create_thread(project, title, body, author):
+def create_thread(project, title, body, author, model=None, effort=None):
+    """``model``/``effort`` (optional) override project settings and Auto mode for this task."""
+    req_m, req_e = _clean_override(project["provider"], model, effort)
     cur = db.execute("INSERT INTO threads(project_id,title,state,created_at) VALUES(?,?, 'open', ?)",
                      (project["id"], title.strip(), store.now()))
     thread_id = cur.lastrowid
-    cur = db.execute("INSERT INTO tasks(thread_id,kind,status,created_at) VALUES(?, 'new','queued', ?)",
-                     (thread_id, store.now()))
+    cur = db.execute("INSERT INTO tasks(thread_id,kind,status,created_at,req_model,req_effort)"
+                     " VALUES(?, 'new','queued', ?, ?, ?)",
+                     (thread_id, store.now(), req_m, req_e))
     task_id = cur.lastrowid
     _add_event(thread_id, task_id, "user", body.strip(), author)
-    _drop_descriptor(task_id, project, thread_id, "new", PREAMBLE + body.strip())
+    _drop_descriptor(task_id, project, thread_id, "new", PREAMBLE + body.strip(),
+                     req_model=req_m, req_effort=req_e)
     return {"thread_id": thread_id}
 
 
-def create_comment(project, thread_id, text, author):
+def create_comment(project, thread_id, text, author, model=None, effort=None):
+    req_m, req_e = _clean_override(project["provider"], model, effort)
     th = db.query_one("SELECT * FROM threads WHERE id=?", (thread_id,))
     if not th:
         raise ValueError("No such thread.")
-    cur = db.execute("INSERT INTO tasks(thread_id,kind,status,created_at) VALUES(?, 'followup','queued', ?)",
-                     (thread_id, store.now()))
+    cur = db.execute("INSERT INTO tasks(thread_id,kind,status,created_at,req_model,req_effort)"
+                     " VALUES(?, 'followup','queued', ?, ?, ?)",
+                     (thread_id, store.now(), req_m, req_e))
     task_id = cur.lastrowid
     _add_event(thread_id, task_id, "user", text.strip(), author)
-    _drop_descriptor(task_id, project, thread_id, "followup", text.strip(), th["session_id"] or "")
+    _drop_descriptor(task_id, project, thread_id, "followup", text.strip(), th["session_id"] or "",
+                     req_model=req_m, req_effort=req_e)
 
 
 def enqueue_compact(project, thread_id):
@@ -637,6 +672,7 @@ def resurrect_stale_tasks(is_alive):
     rows = db.query_all(
         "SELECT t.id AS id, t.thread_id AS thread_id, t.kind AS kind, t.attempts AS attempts, "
         "t.status AS status, th.project_id AS project_id, th.session_id AS session_id, "
+        "t.req_model AS req_model, t.req_effort AS req_effort, "
         "t.created_at AS ts, "
         "COALESCE(t.finished_at, t.started_at, t.created_at) AS last_ts "
         "FROM tasks t JOIN threads th ON th.id = t.thread_id "
@@ -680,7 +716,8 @@ def resurrect_stale_tasks(is_alive):
             kind, text, sess = "followup", utext, (r["session_id"] or "")
         db.execute("UPDATE tasks SET status='queued', attempts=?, error=NULL, finished_at=NULL "
                    "WHERE id=? AND status NOT IN ('done','cancelled')", (n, r["id"]))
-        _drop_descriptor(r["id"], proj, r["thread_id"], kind, text, sess, log=False)
+        _drop_descriptor(r["id"], proj, r["thread_id"], kind, text, sess, log=False,
+                         req_model=r["req_model"], req_effort=r["req_effort"])
         _add_event(r["thread_id"], r["id"], "retrying",
                    "🔁 Self-healing: retry (%d) — the previous run ended without a reply." % n, "System")
         started.append((r["project_id"], r["thread_id"], r["id"], n))

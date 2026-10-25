@@ -18,6 +18,7 @@ class ModelChoice:
     id: str
     label: str
     context_window: int = 200_000
+    in_auto: bool = True        # False = valid choice, but never picked by the Auto ladder
 
 
 @dataclass(frozen=True)

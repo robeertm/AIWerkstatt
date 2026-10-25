@@ -17,6 +17,15 @@ jobs:
       - name: Leak scan
         run: python backend/scrub/scan.py .
 
+  cli-pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Claude CLI pin matches pyproject
+        run: |
+          v=$(grep -E '^claude_cli *=' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          grep -q "@anthropic-ai/claude-code@$v" agent-runner/Dockerfile
+
   backend:
     runs-on: ubuntu-latest
     steps:

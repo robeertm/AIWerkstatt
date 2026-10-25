@@ -71,6 +71,8 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 | <img src="docs/screenshots/10-publish.png" alt="Publish panel: scan for secrets, download a zip, or push to GitHub" width="410"> | <img src="docs/screenshots/08-usage.png" alt="Usage: tokens and cost, today and all-time, per provider" width="410"> |
 | **Manage your household or team** | **Your account &amp; PIN** |
 | <img src="docs/screenshots/09-users.png" alt="Admin user manager" width="410"> | <img src="docs/screenshots/11-account.png" alt="Change your PIN" width="410"> |
+| **Pick a model for a single task** | **A task in progress** |
+| <img src="docs/screenshots/12-task-model.png" alt="New task form with the optional Model field, set to Sonnet 5.5 for this one task" width="410"> | <img src="docs/screenshots/12-working.png" alt="A running task with the live feed, model and effort chips and a Stop button" width="410"> |
 | **A short first-run guide** | **Simple PIN sign-in** |
 | <img src="docs/screenshots/07-onboarding.png" alt="Onboarding overlay" width="410"> | <img src="docs/screenshots/01-login.png" alt="PIN login screen" width="410"> |
 
@@ -78,7 +80,7 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 
 - **🖱️ One-click install.** Download the release zip, unzip, and **double-click the launcher for your OS** — it builds everything, starts it, and opens your browser. No command line. (Prefer the terminal? `docker compose up -d --build` still works.) Windows, macOS, Linux.
 - **🔌 Bring any AI provider.** Anthropic Claude, OpenAI, and Google Gemini out of the box — pick per project. Adding another is a small plug-in.
-- **🤖 Auto mode — let it pick the model.** Set a project to **Auto** and the AI chooses the model and reasoning effort for every task: cheap models for tiny tweaks, the strongest for hard work. See exactly what it picked, why, and its plan — right in the live view.
+- **🤖 Auto mode — let it pick the model.** Set a project to **Auto** and the AI chooses the model and reasoning effort for every task: cheap models for tiny tweaks, the strongest for hard work. See exactly what it picked, why, and its plan — right in the live view. Admins can also pick a model for a single task when writing it, which beats both the project setting and Auto.
 - **📚 It remembers your project.** Each project has a persistent knowledge base the agent reads at the start of every run and appends to as it learns — so the next run knows the architecture, decisions and gotchas instead of starting cold.
 - **💬 Chat, don’t prompt-engineer.** Describe what you want like you’d tell a person. Follow up mid-run — the agent folds your note into what it’s already doing.
 - **👀 Watch it work, step by step.** A live feed shows what the agent says, thinks, and does — every file it writes, every command it runs — as it happens. Jump in or hit Stop any time.

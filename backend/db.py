@@ -77,6 +77,13 @@ def conn():
         _conn.execute("PRAGMA busy_timeout=5000")
         _conn.executescript(_SCHEMA)
         _conn.commit()
+        # Per-task model/effort chosen by the requester (kept across retries).
+        for col in ("req_model", "req_effort"):
+            try:
+                _conn.execute("ALTER TABLE tasks ADD COLUMN %s TEXT" % col)
+                _conn.commit()
+            except sqlite3.OperationalError:
+                pass   # column already exists
     return _conn
 
 

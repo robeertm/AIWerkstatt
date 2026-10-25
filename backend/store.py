@@ -130,6 +130,8 @@ _MODEL_LABEL = {
     "auto": "🤖 Auto", "claude-opus-4-8": "Opus 4.8", "claude-opus-5": "Opus 5",
     "claude-sonnet-5": "Sonnet 5", "claude-haiku-4-5": "Haiku 4.5",
     "claude-haiku-4-5-20251001": "Haiku 4.5",
+    "claude-opus-5-5": "Opus 5.5", "claude-sonnet-5-5": "Sonnet 5.5",
+    "claude-haiku-5-5": "Haiku 5.5", "claude-fable-5-1": "Fable 5.1", "claude-fable-5": "Fable 5",
 }
 _EFFORT_LABEL = {"low": "low", "medium": "medium", "high": "high",
                  "xhigh": "very high", "max": "max", "": "default"}

@@ -4,6 +4,37 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.12.0 — 2026-10-25
+### Added — pick the model per task, Claude 5.5 model family
+
+**Model (and effort) per task.** Admins can choose a model for a single new task from an optional
+"Model" field in the task form (default: as the project setting). A valid choice wins over both the
+project setting and 🤖 Auto for exactly that task, survives self-heal retries and limit re-queues,
+and is recorded in the model usage log. An invalid or empty value falls back to the previous
+behaviour and never errors. `POST /api/projects/<id>/threads` and `POST /api/threads/<id>/comment`
+accept optional `model` and `effort`; they are validated against the project provider's model and
+effort lists and silently ignored for non-admins. The field is hidden for providers that expose
+fewer than two models.
+
+**Claude model family.** Added Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1; the older IDs
+stay valid (marked "older") so existing project settings keep working, and Opus 4.8 remains the
+default. 🤖 Auto now runs tiny and small tasks on Haiku 5.5, ordinary work on Sonnet 5.5 and hard or
+large work on Opus 5.5. Models can be flagged `in_auto=False` so they stay selectable but are never
+picked by the Auto ladder.
+
+### Changed
+- The agent-runner image pins the Claude CLI to 2.1.310 instead of installing the latest release;
+  the 5.5 models require claude-code 2.1.280 or newer.
+  The version lives in `pyproject.toml` (`[tool.aiwerkstatt] claude_cli`); the plan-limit client
+  derives its User-Agent from it, and CI fails if the Dockerfile pin drifts from it.
+  The image build now fails if a provider CLI install fails or if `claude --version` differs from the
+  pin, instead of silently continuing without the CLI.
+- Drop-down lists (`select`) get one look in every browser: same height as the text fields, own
+  chevron, readable options. WebKit used to draw them thin and without a border.
+- On narrow screens the header buttons wrap instead of making the page scroll sideways.
+- The "Check for updates" line lines up with the page content (it hugged the left screen edge on
+  phones), and long pages no longer show a seam where the background gradient started over.
+
 ## 0.11.0 — 2026-08-24
 ### Fixed — reliability: dropped streams, retry runaway, misleading order status
 

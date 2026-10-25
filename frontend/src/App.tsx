@@ -217,7 +217,9 @@ function LiveRow({ e, showFull, onToggle }: { e: LiveRowT; showFull: boolean; on
 // Short labels for the "which model / intensity" chip in the live view. Unknown ids fall
 // back to the raw id (other providers), effort '' → nothing.
 const MODEL_LABEL: Record<string, string> = {
-  auto: '🤖 Auto', 'claude-opus-4-8': 'Opus 4.8', 'claude-opus-5': 'Opus 5', 'claude-sonnet-5': 'Sonnet 5',
+  auto: '🤖 Auto', 'claude-opus-5-5': 'Opus 5.5', 'claude-sonnet-5-5': 'Sonnet 5.5',
+  'claude-haiku-5-5': 'Haiku 5.5', 'claude-fable-5-1': 'Fable 5.1',
+  'claude-opus-4-8': 'Opus 4.8', 'claude-opus-5': 'Opus 5', 'claude-sonnet-5': 'Sonnet 5',
   'claude-haiku-4-5': 'Haiku 4.5', 'claude-haiku-4-5-20251001': 'Haiku 4.5', 'claude-fable-5': 'Fable 5',
 }
 const EFFORT_LABEL: Record<string, string> = {
@@ -437,6 +439,7 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
   const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
   const [title, setTitle] = useState(''); const [body, setBody] = useState(''); const [composing, setComposing] = useState(false)
+  const [taskModel, setTaskModel] = useState('')   // '' = as the project setting
   const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null); const [files, setFiles] = useState(false)
   const [pub, setPub] = useState<PublishStatus>({})
   useEffect(() => {
@@ -447,7 +450,7 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
   useEffect(() => { api.getProviders().then((r) => setProviders(r.providers)).catch(() => {}) }, [])
   const submit = async () => {
     if (!title.trim() || !body.trim()) return; setBusy(true); setErr(null)
-    try { const r = await api.createThread(id, title.trim(), body.trim()); setTitle(''); setBody(''); setComposing(false); onOpenThread(r.id) }
+    try { const r = await api.createThread(id, title.trim(), body.trim(), isAdmin ? (taskModel || undefined) : undefined); setTitle(''); setBody(''); setTaskModel(''); setComposing(false); onOpenThread(r.id) }
     catch (e) { setErr(String((e as Error).message)) } finally { setBusy(false) }
   }
   const changeSettings = async (provider: string, model: string, effort: string) => {
@@ -460,6 +463,7 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
   if (!project) return <div className="wrap"><div className="muted pad">{err ? `Error: ${err}` : 'Loading…'}</div></div>
   const active = threads.some((t) => t.status === 'working' || t.status === 'queued')
   const spec = providers.find((p) => p.id === project.provider)
+  const taskModels = (spec?.models || []).filter((m) => m.id !== 'auto')
   return (
     <div className="wrap fadein">
       <button className="chip" onClick={onBack}>← all projects</button>
@@ -519,6 +523,15 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
           <div className="card pad stack">
             <input className="input" placeholder="Short title (e.g. “a habit tracker”)" value={title} maxLength={120} onChange={(e) => setTitle(e.target.value)} />
             <textarea className="area" rows={4} placeholder="Describe what you'd like, in plain words…" value={body} onChange={(e) => setBody(e.target.value)} />
+            {isAdmin && taskModels.length > 1 && (
+              <label className="row" style={{ gap: '.5rem', alignItems: 'center' }}>
+                <span className="muted" style={{ fontSize: '.85rem' }}>Model</span>
+                <select className="input" style={{ flex: 1 }} value={taskModel} onChange={(e) => setTaskModel(e.target.value)}>
+                  <option value="">as project setting</option>
+                  {taskModels.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                </select>
+              </label>
+            )}
             {err && <div style={{ color: 'var(--bad)', fontSize: '.85rem' }}>{err}</div>}
             <div className="row">
               <button className="btn primary" disabled={busy || !title.trim() || !body.trim()} onClick={submit}>{busy ? 'sending…' : '🚀 Send task'}</button>
@@ -917,7 +930,7 @@ function UpdateBanner() {
   // No update pending (fresh, dismissed, or not yet checked): always offer an active,
   // live check — a plain reload uses the 1-hour cache, this asks GitHub right now.
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '.6rem', padding: '.35rem .1rem', fontSize: '.85rem' }}>
+    <div style={{ maxWidth: 940, margin: '0 auto', display: 'flex', alignItems: 'center', gap: '.6rem', padding: '.45rem 1rem .5rem', fontSize: '.85rem' }}>
       <button className="chip" onClick={check} disabled={state === 'checking'} title="Ask GitHub for the latest release right now">
         {state === 'checking' ? 'Checking…' : '⟳ Check for updates'}
       </button>

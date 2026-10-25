@@ -13,7 +13,7 @@ sent to the provider you chose. You pick **which provider and model per project*
 - **Auth:** an Anthropic **API key** (`ANTHROPIC_API_KEY`) **or** a Claude
   **subscription token** via `claude setup-token` (OAuth).
 - **Get a key:** [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
-- **Models:** Opus (most capable), Sonnet (balanced), Haiku (fast & cheap), with
+- **Models:** Opus 5.5 (most capable), Sonnet 5.5 (balanced), Haiku 5.5 (fast & cheap), Fable 5.1 (older IDs stay valid; needs claude-code >= 2.1.280), with
   selectable reasoning effort.
 
 Claude is the **reference implementation** — the adapter the others are modelled
