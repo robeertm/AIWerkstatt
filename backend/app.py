@@ -38,8 +38,33 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
 
 # ---------- auth helpers ----------
 
+# Optional service access via `Authorization: Bearer <token>`. Deliberately narrow: list/view
+# projects, view/create tasks, create projects. Everything else (publish, release, delete,
+# settings, users, comments ...) stays sign-in only. Projects listed in
+# AIWERKSTATT_API_BLOCKLIST (comma-separated ids, default empty) are invisible to tokens.
+API_ENDPOINTS = {"projects_list", "projects_create", "project_detail", "thread_create", "thread_get"}
+API_BLOCKLIST = {s.strip() for s in os.environ.get("AIWERKSTATT_API_BLOCKLIST", "").split(",") if s.strip()}
+
+
+def _api_user():
+    h = request.headers.get("Authorization", "")
+    if not h.startswith("Bearer ") or request.endpoint not in API_ENDPOINTS:
+        return None
+    name = store.api_token_name(h[7:].strip())
+    if not name:
+        return None
+    return {"name": name.capitalize(), "role": "member", "emoji": "🤖", "api": True}
+
+
 def current_user():
-    return store.get_user(session.get("user")) if session.get("user") else None
+    if session.get("user"):
+        return store.get_user(session.get("user"))
+    return _api_user()
+
+
+def _blocked(pid):
+    u = current_user()
+    return bool(u and u.get("api") and pid in API_BLOCKLIST)
 
 
 def login_required(fn):
@@ -265,6 +290,8 @@ def projects_list():
     me_name = current_user()["name"]
     out = []
     for p in engine.list_projects():
+        if _blocked(p["id"]):
+            continue
         d = _shape_project(p)
         threads = engine.list_threads(p["id"])
         d["threads"] = len(threads)
@@ -298,6 +325,8 @@ def project_detail(pid):
     p = engine.get_project(pid)
     if not p:
         abort(404)
+    if _blocked(pid):
+        abort(403)
     return jsonify(project=_shape_project(p),
                    threads=engine.list_threads(pid, current_user()["name"]),
                    publish=publish.pub_status(pid))
@@ -345,6 +374,8 @@ def thread_create(pid):
     p = engine.get_project(pid)
     if not p:
         abort(404)
+    if _blocked(pid):
+        abort(403)
     d = request.get_json(force=True) or {}
     title = (d.get("title") or "").strip()
     body = (d.get("request") or d.get("body") or "").strip()
@@ -364,6 +395,8 @@ def thread_get(tid):
     if not tl:
         abort(404)
     th = db.query_one("SELECT project_id FROM threads WHERE id=?", (tid,))
+    if th and _blocked(th["project_id"]):
+        abort(403)
     p = engine.get_project(th["project_id"]) if th else None
     tl["project_id"] = th["project_id"] if th else None
     tl["live_port"] = p.get("port") if p else None

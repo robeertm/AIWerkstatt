@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+### Added — optional service access (bearer token)
+- `Authorization: Bearer <token>` can replace the sign-in for exactly five endpoints: list projects, view a project, view a task, create a task, create a project. Release, publish, delete, settings, users, comments and everything else still require signing in (401 with a token). Service users act with member rights and appear by their service name as the task author.
+- Tokens are stored only as a SHA-256 hash in the database; `store.api_token_create(name)` returns the plain token once. No token exists by default, so nothing changes unless you create one.
+- `AIWERKSTATT_API_BLOCKLIST` (comma-separated project ids, default empty): those projects are hidden from tokens and answer 403.
+- Tests: `backend/tests/test_service_token.py` (`cd backend && python3 -m unittest discover -s tests`).
+
 ## 0.12.0 — 2026-10-25
 ### Added — pick the model per task, Claude 5.5 model family
 

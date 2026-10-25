@@ -5,6 +5,8 @@ tokens) live in the `secrets` table inside the private data volume — never in 
 repo, never in a container image; they are handed to a run only as that ephemeral
 container's environment.
 """
+import hashlib
+import hmac
 import json
 import os
 import secrets as pysecrets
@@ -122,6 +124,35 @@ def delete_secret(key):
 def provider_connected(provider_id):
     return bool(get_secret("provider:%s:key" % provider_id)) or \
         bool(get_secret("provider:%s:oauth" % provider_id))
+
+
+# ---------- service tokens (optional bearer access for assistants/scripts) ----------
+# Only the SHA-256 of a token is stored (secrets table, key "api_token:<name>").
+
+def _hash_token(token):
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def api_token_create(name):
+    """Create (or replace) the bearer token of a service. Returns the plain token ONCE."""
+    name = (name or "").strip().lower()
+    if not name:
+        raise ValueError("Name required.")
+    token = pysecrets.token_urlsafe(32)
+    set_secret("api_token:" + name, _hash_token(token))
+    return token
+
+
+def api_token_name(token):
+    """Service name for a bearer token, or None (constant-time comparison)."""
+    if not token:
+        return None
+    h = _hash_token(token)
+    found = None
+    for r in db.query_all("SELECT key, value FROM secrets WHERE key LIKE 'api_token:%'"):
+        if hmac.compare_digest(str(r["value"]), h):
+            found = r["key"][len("api_token:"):]
+    return found
 
 
 # ---------- 🤖 auto mode: model-usage log + latest decision per project ----------
