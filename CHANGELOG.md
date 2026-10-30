@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.14.0 — 2026-10-30
+### Added — service token profiles (restricted and coordinator)
+- Every service token now has a **profile**. `restricted` is the default and is exactly the behaviour of 0.13.0; tokens created before this release stay restricted (their stored value is unchanged).
+- New profile **`coordinator`** for a trusted orchestrator: list and view projects, create tasks, send follow-ups (`POST /api/threads/<id>/comment`) and read task status and history, in every project (the token blocklist does not apply). Its tasks run like those of a signed-in user: no snapshot, no review gate, normal deploys. It may choose model and effort per task like an admin.
+- Still refused for every token (401): release, publish, project create (coordinator) and delete, settings, users, providers, updates, review decisions and token management.
+- **Origin:** tasks carry `origin = "api:<token name>"`, set only on the server after the token check, never from the request body; follow-ups record the sending token on the task. The task list and the task view show a **via &lt;name&gt;** badge, with or without a review card.
+- **Audit log:** every request with a known token (also refused or switched-off ones) is appended to `<data>/service-token-audit.jsonl`: time, token name, profile, method, route, path, project, HTTP status. Never the token, its hash or headers.
+- **Rate limit:** new tasks and follow-ups of a coordinator token are limited to `AIWERKSTATT_API_WRITE_LIMIT` per hour per token (default 30, `0` = unlimited); beyond that 429 with `Retry-After`.
+- **Kill switch:** the file `<data>/service-token-disabled/<name>` disables a token immediately (401), without a restart.
+- **CLI** `backend/service_token.py` (run inside the web container): `list`, `create` (prints the token once), `register` (stores an externally generated token by its SHA-256, given with `--sha256` or hashed from stdin; never prints it), `disable`, `enable`, `remove`.
+- Docs: service token section in `docs/security.md`, README updated.
+- Tests: `backend/tests/test_coordinator_token.py` (16 cases).
+
+### Fixed
+- The version fallback in `backend/config.py` (used only when `pyproject.toml` is not bundled) had been left at 0.10.1.
+
 ## 0.13.0 — 2026-10-30
 ### Added — optional service access (bearer token)
 - `Authorization: Bearer <token>` can replace the sign-in for exactly five endpoints: list projects, view a project, view a task, create a task, create a project. Release, publish, delete, settings, users, comments and everything else still require signing in (401 with a token). Service users act with member rights and appear by their service name as the task author.

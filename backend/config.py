@@ -10,7 +10,7 @@ import os
 # self-update check honest: a bumped pyproject can never drift from what the app
 # reports, so the "update available" banner clears once a build actually ships.
 # Falls back to the literal below only if pyproject isn't bundled (bump both on release).
-def _read_version(fallback="0.10.1"):
+def _read_version(fallback="0.14.0"):
     here = os.path.dirname(__file__)
     for p in (os.path.join(here, "pyproject.toml"),        # bundled next to backend (in the image)
               os.path.join(here, "..", "pyproject.toml")):  # repo root (running from source)
