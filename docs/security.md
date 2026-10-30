@@ -100,6 +100,70 @@ If you want true vulnerability scanning, add it as a step (e.g. an image scan su
 Trivy, or a SAST pass) — the boundary here is deliberately *isolation-first*, not
 verification.
 
+## Service tokens
+
+Signing in is the normal way in. Optionally, another local service (an assistant, a script,
+an orchestrator) can call a small part of the API with `Authorization: Bearer <token>`.
+No token exists by default.
+
+**Storage.** Only the SHA-256 of a token is stored, in the database in the private data
+volume. Manage tokens with the CLI inside the web container (run it as the app user so
+the files in the data volume keep their owner):
+
+```bash
+docker compose exec -u app web python3 service_token.py list
+docker compose exec -u app web python3 service_token.py create helper                  # restricted, prints the token once
+docker compose exec -u app web python3 service_token.py create orchestrator --profile coordinator
+docker compose exec -T -u app web python3 service_token.py register orchestrator --profile coordinator < token.txt
+docker compose exec -u app web python3 service_token.py register orchestrator --profile coordinator --sha256 <hex digest>
+docker compose exec -u app web python3 service_token.py remove helper
+```
+
+`register` is for tokens generated elsewhere: it takes the SHA-256 hex digest, or reads the
+token from stdin (hidden on a terminal), hashes it and never prints it. Token names use
+`a-z`, `0-9`, `.`, `_` and `-`.
+
+**Profiles.**
+
+| | restricted (default) | coordinator |
+|---|---|---|
+| List / view projects | ✅ (not the blocklisted ones) | ✅ all projects |
+| View a task (status, history) | ✅ | ✅ |
+| Create a task | ✅, restricted (review gate) | ✅, runs and deploys normally |
+| Send a follow-up | ❌ | ✅ |
+| Create a project | ✅ | ❌ |
+| Choose model / effort per task | ❌ (member rights) | ✅ |
+| Write rate limit | — | 30 per hour per token |
+| Release, publish, delete, settings, users, tokens, review decision | ❌ | ❌ |
+
+Every other route treats a token as no user at all and answers **401**. Tokens created
+before profiles existed are restricted and behave exactly as before.
+
+- **Restricted tasks** never go live by themselves: the project workspace is snapshotted,
+  the project is held (no deploy, publish or release) and a signed-in admin approves or
+  rejects the task in the task view. `AIWERKSTATT_API_BLOCKLIST` (comma-separated project
+  ids) hides projects from restricted tokens (403).
+- **Coordinator tasks** are meant for a trusted orchestrator. They skip the review gate and
+  the blocklist. A follow-up on a restricted task stays restricted, whoever sends it.
+
+**Origin.** A task created with a token carries `origin = "api:<token name>"`, set on the
+server from the verified token and never from the request body. Follow-ups record the
+sending token too. The task list and the task view show it as a **via &lt;name&gt;** badge.
+
+**Rate limit.** New tasks and follow-ups of a coordinator token are limited per token to
+`AIWERKSTATT_API_WRITE_LIMIT` per hour (default 30, `0` = unlimited). Beyond that the API
+answers **429** with `Retry-After`. The window is kept in memory, so a restart resets it.
+
+**Kill switch.** Create the file `<data>/service-token-disabled/<token name>` (in Docker:
+`/data/service-token-disabled/<token name>`) and the token answers **401** from the next
+request on, without a restart. Delete the file to switch it back on. The CLI does the same
+with `service_token.py disable <name>` / `enable <name>`.
+
+**Audit log.** Every request that presents a known token, including refused and switched-off
+ones, is appended to `<data>/service-token-audit.jsonl` (file mode 0600): time, token name,
+profile, method, route, path, project and HTTP status. The token itself, its hash and the
+request headers are never written.
+
 ## Honest residual risk
 
 Two things you should hold in mind:

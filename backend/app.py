@@ -13,7 +13,7 @@ import time
 from functools import wraps
 
 import requests
-from flask import Flask, jsonify, request, send_from_directory, send_file, abort, session
+from flask import Flask, g, jsonify, request, send_from_directory, send_file, abort, session
 
 import config
 import db
@@ -22,6 +22,7 @@ import engine
 import providers
 import publish
 import review
+import service_token
 import planlimit
 import orchestrator as orch
 
@@ -39,22 +40,91 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
 
 # ---------- auth helpers ----------
 
-# Optional service access via `Authorization: Bearer <token>`. Deliberately narrow: list/view
-# projects, view/create tasks, create projects. Everything else (publish, release, delete,
-# settings, users, comments ...) stays sign-in only. Projects listed in
-# AIWERKSTATT_API_BLOCKLIST (comma-separated ids, default empty) are invisible to tokens.
-API_ENDPOINTS = {"projects_list", "projects_create", "project_detail", "thread_create", "thread_get"}
+# Optional service access via `Authorization: Bearer <token>`. Deliberately narrow, and per
+# token profile (see store.TOKEN_PROFILES):
+#   restricted  (default) list/view projects, view/create tasks, create projects. Its tasks
+#               are restricted (review gate). Projects listed in AIWERKSTATT_API_BLOCKLIST
+#               (comma-separated ids, default empty) are invisible to it.
+#   coordinator list/view projects, view/create tasks and send follow-ups, in every project
+#               (no blocklist); its tasks run like those of a signed-in user (no review).
+#               Writes (new task, follow-up) are rate limited per token.
+# Everything else (publish, release, delete, settings, users, reviews ...) stays sign-in only:
+# a token there is not a user at all (401).
+API_ENDPOINTS = {
+    "restricted": frozenset({"projects_list", "projects_create", "project_detail",
+                             "thread_create", "thread_get"}),
+    "coordinator": frozenset({"projects_list", "project_detail", "thread_create", "thread_get",
+                              "thread_comment"}),
+}
+API_WRITES = {"coordinator": frozenset({"thread_create", "thread_comment"})}
 API_BLOCKLIST = {s.strip() for s in os.environ.get("AIWERKSTATT_API_BLOCKLIST", "").split(",") if s.strip()}
+WRITE_LIMIT = service_token.WriteLimiter()
+
+
+@app.before_request
+def _service_token_gate():
+    """Resolve a bearer token once per request (a signed-in session always wins). Unknown
+    tokens leave the request anonymous. Known ones are remembered for the audit log; a
+    coordinator's writes beyond the hourly limit answer 429 before anything happens."""
+    g.api_token = None
+    h = request.headers.get("Authorization", "")
+    if not h.startswith("Bearer ") or session.get("user"):
+        return None
+    tok = store.api_token_lookup(h[7:].strip())
+    if not tok:
+        return None
+    g.api_token = tok
+    if tok["disabled"] or request.endpoint not in API_ENDPOINTS.get(tok["profile"], ()):
+        return None   # the route itself answers 401: a token is no user here
+    if request.endpoint in API_WRITES.get(tok["profile"], ()):
+        ok, retry = WRITE_LIMIT.allow(tok["name"])
+        if not ok:
+            resp = jsonify(error="Too many requests from this service token. Try again later.")
+            resp.status_code = 429
+            resp.headers["Retry-After"] = str(retry)
+            return resp
+    return None
+
+
+def _audit_project():
+    va = request.view_args or {}
+    if va.get("pid"):
+        return va["pid"]
+    if va.get("tid") is not None:
+        th = db.query_one("SELECT project_id FROM threads WHERE id=?", (va["tid"],))
+        return th["project_id"] if th else None
+    return None
+
+
+@app.after_request
+def _service_token_audit(resp):
+    """Append every request made with a known token to the audit log (never the token)."""
+    tok = getattr(g, "api_token", None)
+    if tok:
+        try:
+            project = _audit_project()
+        except Exception:   # the audit must never turn a response into an error
+            project = None
+        service_token.audit({
+            "at": store.now(), "token": tok["name"], "profile": tok["profile"],
+            "disabled": bool(tok["disabled"]), "method": request.method,
+            "route": request.url_rule.rule if request.url_rule else None,
+            "path": request.path, "project": project, "status": resp.status_code})
+    return resp
 
 
 def _api_user():
-    h = request.headers.get("Authorization", "")
-    if not h.startswith("Bearer ") or request.endpoint not in API_ENDPOINTS:
+    tok = getattr(g, "api_token", None)
+    if not tok or tok["disabled"] or request.endpoint not in API_ENDPOINTS.get(tok["profile"], ()):
         return None
-    name = store.api_token_name(h[7:].strip())
-    if not name:
-        return None
-    return {"name": name.capitalize(), "role": "member", "emoji": "🤖", "api": True, "service": name}
+    name = tok["name"]
+    return {"name": name.capitalize(), "role": "member", "emoji": "🤖", "api": True,
+            "service": name, "profile": tok["profile"]}
+
+
+def _coordinator():
+    u = current_user()
+    return bool(u and u.get("api") and u.get("profile") == "coordinator")
 
 
 def _origin():
@@ -64,6 +134,11 @@ def _origin():
     if u and u.get("api"):
         return "api:%s" % (u.get("service") or u["name"]).strip().lower()
     return None
+
+
+def _restricted_origin():
+    """The origin when this request creates a restricted task (restricted token), else None."""
+    return None if _coordinator() else _origin()
 
 
 def _snapshot_or_none(pid):
@@ -84,8 +159,9 @@ def current_user():
 
 
 def _blocked(pid):
+    """The blocklist applies to restricted tokens only; a coordinator sees every project."""
     u = current_user()
-    return bool(u and u.get("api") and pid in API_BLOCKLIST)
+    return bool(u and u.get("api") and u.get("profile") != "coordinator" and pid in API_BLOCKLIST)
 
 
 def login_required(fn):
@@ -392,8 +468,9 @@ def project_delete(pid):
 # ---------- threads ----------
 
 def _requested(d, key):
-    """Per-task model/effort are admin-only (like the project setting); ignored for members."""
-    return d.get(key) if current_user()["role"] == "admin" else None
+    """Per-task model/effort are admin-only (like the project setting); ignored for members.
+    A coordinator token may choose them too (it dispatches work like an admin would)."""
+    return d.get(key) if current_user()["role"] == "admin" or _coordinator() else None
 
 
 @app.post("/api/projects/<pid>/threads")
@@ -411,14 +488,13 @@ def thread_create(pid):
         return jsonify(error="Title and request are required."), 400
     if not provider_connected(p["provider"]):
         return jsonify(error="Connect this project's AI provider first."), 409
-    origin = _origin()
-    if origin:
+    if _restricted_origin():
         err = _snapshot_or_none(pid)
         if err:
             return err
     res = engine.create_thread(p, title, body, current_user()["name"],
                                model=_requested(d, "model"), effort=_requested(d, "effort"),
-                               origin=origin)
+                               origin=_origin(), profile=current_user().get("profile"))
     return jsonify(number=res["thread_id"], id=res["thread_id"]), 201
 
 
@@ -454,7 +530,8 @@ def thread_comment(tid):
         if err:
             return err
     engine.create_comment(engine.get_project(th["project_id"]), tid, text, current_user()["name"],
-                          model=_requested(d, "model"), effort=_requested(d, "effort"))
+                          model=_requested(d, "model"), effort=_requested(d, "effort"),
+                          origin=_origin())
     return jsonify(ok=True), 201
 
 

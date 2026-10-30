@@ -79,9 +79,13 @@ def conn():
         _conn.commit()
         # Per-task model/effort chosen by the requester (kept across retries), and the
         # review gate of restricted tasks: origin ("api:<service>", bound to the token)
-        # plus the review state as JSON.
+        # plus the review state as JSON. ``origin_profile`` is the token profile that
+        # created the thread; only the explicit value "coordinator" exempts a thread with
+        # an origin from review (NULL = restricted, as before). ``tasks.origin`` records
+        # which token sent each task (new task or follow-up).
         for table, col in (("tasks", "req_model"), ("tasks", "req_effort"),
-                           ("threads", "origin"), ("threads", "review")):
+                           ("threads", "origin"), ("threads", "review"),
+                           ("threads", "origin_profile"), ("tasks", "origin")):
             try:
                 _conn.execute("ALTER TABLE %s ADD COLUMN %s TEXT" % (table, col))
                 _conn.commit()

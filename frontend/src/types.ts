@@ -17,7 +17,8 @@ export type Project = {
   mine?: boolean; threads?: number; active?: boolean; created_by?: string; unread?: number
 }
 
-export type ThreadSummary = { id: number; title: string; status: string; snippet: string; created_at: string; unread?: number }
+// origin: "api:<token name>" when a service token created the task, else null.
+export type ThreadSummary = { id: number; title: string; status: string; snippet: string; created_at: string; unread?: number; origin?: string | null }
 
 // visibility / self-management
 export type UsageSummary = {
@@ -66,6 +67,7 @@ export type Review = {
 export type ThreadDetail = {
   id: number; title: string; status: string; timeline: TimelineEntry[]; session: Session
   review?: Review | null
+  origin?: string | null
   project_id: string; live_port: number | null; live_url: string | null; live_ready: boolean
 }
 

@@ -165,7 +165,8 @@ class ReviewGate(unittest.TestCase):
         r = self.c.post("/api/threads/%d/review" % tid, headers=self.token_h(),
                         json={"decision": "approve"})
         self.assertEqual(r.status_code, 401)
-        self.assertNotIn("thread_review", wk.API_ENDPOINTS)
+        for profile, endpoints in wk.API_ENDPOINTS.items():
+            self.assertNotIn("thread_review", endpoints, profile)
         r = self.sign_in("reviewmember").post("/api/threads/%d/review" % tid,
                                               json={"decision": "approve"})
         self.assertEqual(r.status_code, 403)

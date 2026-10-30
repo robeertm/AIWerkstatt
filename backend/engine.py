@@ -205,19 +205,27 @@ def _drop_descriptor(task_id, project, thread_id, kind, text, session_id="", log
     os.replace(tmp, p)
 
 
-def create_thread(project, title, body, author, model=None, effort=None, origin=None):
+COORDINATOR = "coordinator"
+
+
+def create_thread(project, title, body, author, model=None, effort=None, origin=None,
+                  profile=None):
     """``model``/``effort`` (optional) override project settings and Auto mode for this task.
-    ``origin`` ("api:<service>", set by the caller from the token only) makes it a restricted
-    task: it starts in review state ``running`` and never deploys by itself."""
+    ``origin`` ("api:<service>", set by the caller from the token only) records which service
+    token created the task. With any ``profile`` other than "coordinator" it is a restricted
+    task: it starts in review state ``running`` and never deploys by itself. A coordinator
+    task carries the origin but runs like a task from a signed-in user (no review)."""
     req_m, req_e = _clean_override(project["provider"], model, effort)
-    cur = db.execute("INSERT INTO threads(project_id,title,state,created_at,origin,review)"
-                     " VALUES(?,?, 'open', ?, ?, ?)",
+    restricted = bool(origin) and profile != COORDINATOR
+    cur = db.execute("INSERT INTO threads(project_id,title,state,created_at,origin,review,"
+                     "origin_profile) VALUES(?,?, 'open', ?, ?, ?, ?)",
                      (project["id"], title.strip(), store.now(), origin or None,
-                      json.dumps({"state": "running"}) if origin else None))
+                      json.dumps({"state": "running"}) if restricted else None,
+                      (COORDINATOR if not restricted else "restricted") if origin else None))
     thread_id = cur.lastrowid
-    cur = db.execute("INSERT INTO tasks(thread_id,kind,status,created_at,req_model,req_effort)"
-                     " VALUES(?, 'new','queued', ?, ?, ?)",
-                     (thread_id, store.now(), req_m, req_e))
+    cur = db.execute("INSERT INTO tasks(thread_id,kind,status,created_at,req_model,req_effort,"
+                     "origin) VALUES(?, 'new','queued', ?, ?, ?, ?)",
+                     (thread_id, store.now(), req_m, req_e, origin or None))
     task_id = cur.lastrowid
     _add_event(thread_id, task_id, "user", body.strip(), author)
     _drop_descriptor(task_id, project, thread_id, "new", PREAMBLE + body.strip(),
@@ -225,16 +233,18 @@ def create_thread(project, title, body, author, model=None, effort=None, origin=
     return {"thread_id": thread_id}
 
 
-def create_comment(project, thread_id, text, author, model=None, effort=None):
+def create_comment(project, thread_id, text, author, model=None, effort=None, origin=None):
+    """A follow-up. ``origin`` ("api:<service>", from the token only) is recorded on the task;
+    whether the thread is restricted depends on the thread, never on who follows up."""
     req_m, req_e = _clean_override(project["provider"], model, effort)
     th = db.query_one("SELECT * FROM threads WHERE id=?", (thread_id,))
     if not th:
         raise ValueError("No such thread.")
-    if th["origin"]:
+    if _restricted_row(th):
         set_review(thread_id, "running")   # a follow-up on a restricted task stays restricted
-    cur = db.execute("INSERT INTO tasks(thread_id,kind,status,created_at,req_model,req_effort)"
-                     " VALUES(?, 'followup','queued', ?, ?, ?)",
-                     (thread_id, store.now(), req_m, req_e))
+    cur = db.execute("INSERT INTO tasks(thread_id,kind,status,created_at,req_model,req_effort,"
+                     "origin) VALUES(?, 'followup','queued', ?, ?, ?, ?)",
+                     (thread_id, store.now(), req_m, req_e, origin or None))
     task_id = cur.lastrowid
     _add_event(thread_id, task_id, "user", text.strip(), author)
     _drop_descriptor(task_id, project, thread_id, "followup", text.strip(), th["session_id"] or "",
@@ -260,11 +270,17 @@ HOLD_STATES = ("running", "pending")
 _ACTIVE_TASK = ("queued", "running", "retrying", "waiting")
 
 
+def _restricted_row(th):
+    """A thread with an origin is restricted unless its profile is explicitly "coordinator"
+    (fail closed: a missing or unknown profile counts as restricted)."""
+    return bool(th and th["origin"]) and th["origin_profile"] != COORDINATOR
+
+
 def get_review(thread_id):
-    """The review object of a restricted thread, or None for an ordinary one. An unreadable
-    state counts as ``running`` (held), never as decided."""
-    th = db.query_one("SELECT origin, review FROM threads WHERE id=?", (thread_id,))
-    if not th or not th["origin"]:
+    """The review object of a restricted thread, or None for an ordinary (or coordinator)
+    one. An unreadable state counts as ``running`` (held), never as decided."""
+    th = db.query_one("SELECT origin, origin_profile, review FROM threads WHERE id=?", (thread_id,))
+    if not _restricted_row(th):
         return None
     try:
         rv = json.loads(th["review"] or "{}")
@@ -280,8 +296,8 @@ def set_review(thread_id, state, decided_by=None):
     rv = {"state": state}
     if decided_by:
         rv.update(decided_by=decided_by, decided_at=store.now())
-    db.execute("UPDATE threads SET review=? WHERE id=? AND origin IS NOT NULL AND origin<>''",
-               (json.dumps(rv), thread_id))
+    db.execute("UPDATE threads SET review=? WHERE id=? AND origin IS NOT NULL AND origin<>''"
+               " AND COALESCE(origin_profile,'')<>?", (json.dumps(rv), thread_id, COORDINATOR))
 
 
 def review_settle(thread_id):
@@ -300,7 +316,8 @@ def project_held(project_id):
     """True while any restricted task of the project is running or awaiting review: the
     workspace then holds unreviewed changes, so nothing of it may go live or be published."""
     for th in db.query_all("SELECT id FROM threads WHERE project_id=? AND origin IS NOT NULL "
-                           "AND origin<>''", (project_id,)):
+                           "AND origin<>'' AND COALESCE(origin_profile,'')<>?",
+                           (project_id, COORDINATOR)):
         rv = get_review(th["id"])
         if rv and rv["state"] in HOLD_STATES:
             return True
@@ -617,7 +634,8 @@ def list_threads(project_id, user=None):
                                (th["id"],))
         out.append({"id": th["id"], "title": th["title"], "status": _thread_status(th["id"]),
                     "snippet": (snippet["text"][:160] if snippet else ""),
-                    "created_at": th["created_at"], "unread": thread_unread(th["id"], user)})
+                    "created_at": th["created_at"], "unread": thread_unread(th["id"], user),
+                    "origin": th["origin"] or None})
     return out
 
 
@@ -630,7 +648,7 @@ def thread_timeline(thread_id):
                  "text": e["text"], "created_at": e["created_at"]} for e in evs]
     return {"id": thread_id, "title": th["title"], "status": _thread_status(thread_id),
             "timeline": timeline, "session": thread_session(thread_id),
-            "review": get_review(thread_id)}
+            "review": get_review(thread_id), "origin": th["origin"] or None}
 
 
 # ---------- ingest events written by agent-runners ----------

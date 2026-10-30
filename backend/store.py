@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets as pysecrets
 import time
 
@@ -128,31 +129,125 @@ def provider_connected(provider_id):
 
 # ---------- service tokens (optional bearer access for assistants/scripts) ----------
 # Only the SHA-256 of a token is stored (secrets table, key "api_token:<name>").
+# The value is the bare hex digest for a "restricted" token (the original format, so tokens
+# created before profiles existed stay restricted), or JSON {"sha256": ..., "profile": ...}
+# for any other profile. Kill switch: a file <DATA>/service-token-disabled/<name> makes the
+# token answer 401 immediately, without a restart.
+
+TOKEN_PROFILES = ("restricted", "coordinator")
+DISABLED_DIR = os.path.join(config.DATA, "service-token-disabled")
+_TOKEN_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+
 
 def _hash_token(token):
     return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
 
 
-def api_token_create(name):
-    """Create (or replace) the bearer token of a service. Returns the plain token ONCE."""
+def _token_name(name):
     name = (name or "").strip().lower()
     if not name:
         raise ValueError("Name required.")
+    if not _TOKEN_NAME.match(name):
+        raise ValueError("Token names use a-z, 0-9, '.', '_' and '-' (at most 64 characters).")
+    return name
+
+
+def _token_value(digest, profile):
+    if profile not in TOKEN_PROFILES:
+        raise ValueError("Profile must be one of: %s." % ", ".join(TOKEN_PROFILES))
+    if profile == "restricted":
+        return digest
+    return json.dumps({"sha256": digest, "profile": profile})
+
+
+def _parse_token_value(value):
+    """(digest, profile) of a stored token. Anything unreadable stays restricted."""
+    value = str(value or "")
+    if value.startswith("{"):
+        try:
+            d = json.loads(value)
+        except ValueError:
+            return "", "restricted"
+        if not isinstance(d, dict):
+            return "", "restricted"
+        profile = d.get("profile")
+        return str(d.get("sha256") or ""), (profile if profile in TOKEN_PROFILES else "restricted")
+    return value, "restricted"
+
+
+def api_token_create(name, profile="restricted"):
+    """Create (or replace) the bearer token of a service. Returns the plain token ONCE."""
+    name = _token_name(name)
     token = pysecrets.token_urlsafe(32)
-    set_secret("api_token:" + name, _hash_token(token))
+    set_secret("api_token:" + name, _token_value(_hash_token(token), profile))
     return token
 
 
-def api_token_name(token):
-    """Service name for a bearer token, or None (constant-time comparison)."""
+def api_token_register(name, sha256_hex, profile="restricted"):
+    """Register (or replace) a token generated elsewhere by its SHA-256 hex digest only.
+    The plain token never reaches this process."""
+    name = _token_name(name)
+    digest = (sha256_hex or "").strip().lower()
+    if not _SHA256_HEX.match(digest):
+        raise ValueError("Expected a SHA-256 hex digest (64 characters 0-9a-f).")
+    set_secret("api_token:" + name, _token_value(digest, profile))
+    return name
+
+
+def api_token_delete(name):
+    name = (name or "").strip().lower()
+    delete_secret("api_token:" + name)
+
+
+def api_token_disabled(name):
+    """True while the kill-switch file <DATA>/service-token-disabled/<name> exists."""
+    if not name or "/" in name or name in (".", ".."):
+        return False
+    return os.path.exists(os.path.join(DISABLED_DIR, name))
+
+
+def api_token_set_disabled(name, disabled=True):
+    name = _token_name(name)
+    path = os.path.join(DISABLED_DIR, name)
+    if disabled:
+        os.makedirs(DISABLED_DIR, exist_ok=True)
+        with open(path, "a", encoding="utf-8"):
+            pass
+    elif os.path.exists(path):
+        os.remove(path)
+
+
+def api_token_list():
+    """Names, profiles and kill-switch state of all tokens (never a hash)."""
+    out = []
+    for r in db.query_all("SELECT key, value FROM secrets WHERE key LIKE 'api_token:%' ORDER BY key"):
+        name = r["key"][len("api_token:"):]
+        out.append({"name": name, "profile": _parse_token_value(r["value"])[1],
+                    "disabled": api_token_disabled(name)})
+    return out
+
+
+def api_token_lookup(token):
+    """{"name", "profile", "disabled"} for a bearer token, or None (constant-time
+    comparison against every stored digest)."""
     if not token:
         return None
     h = _hash_token(token)
     found = None
     for r in db.query_all("SELECT key, value FROM secrets WHERE key LIKE 'api_token:%'"):
-        if hmac.compare_digest(str(r["value"]), h):
-            found = r["key"][len("api_token:"):]
+        digest, profile = _parse_token_value(r["value"])
+        if digest.isascii() and hmac.compare_digest(digest, h):
+            found = {"name": r["key"][len("api_token:"):], "profile": profile}
+    if found:
+        found["disabled"] = api_token_disabled(found["name"])
     return found
+
+
+def api_token_name(token):
+    """Service name for a usable bearer token, or None (unknown or switched off)."""
+    t = api_token_lookup(token)
+    return t["name"] if t and not t["disabled"] else None
 
 
 # ---------- 🤖 auto mode: model-usage log + latest decision per project ----------

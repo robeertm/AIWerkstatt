@@ -29,6 +29,12 @@ function Pill({ status }: { status: string }) {
   return <span className="pill" style={{ color: s.color, background: 'currentColor' }}>
     <span style={{ color: '#0f1020', mixBlendMode: 'normal' }}>{s.label}</span></span>
 }
+// Service token that created a task ("api:<name>" → "via <name>"); nothing for ordinary tasks.
+function OriginBadge({ origin }: { origin?: string | null }) {
+  if (!origin) return null
+  const name = origin.startsWith('api:') ? origin.slice(4) : origin
+  return <span className="origin-badge" title={`Created through the service token "${name}"`}>🤖 <span className="origin-name">via {name}</span></span>
+}
 function Working({ color }: { color: string }) {
   return <span className="dots" style={{ color }}><span /><span /><span /></span>
 }
@@ -410,9 +416,10 @@ function ThreadView({ tid, accent, isAdmin, onBack }: { tid: number; accent: str
   const s = t.session
   return (
     <div className="wrap fadein">
-      <div className="row" style={{ marginBottom: '.8rem' }}>
+      <div className="row" style={{ marginBottom: '.8rem', flexWrap: 'wrap' }}>
         <button className="chip" onClick={onBack}>← back</button>
         <Pill status={t.status} />
+        <OriginBadge origin={t.origin} />
         <div className="spacer" />
         <LiveLink project={t} building={working} />
       </div>
@@ -580,7 +587,8 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
             <div className="between"><b>{t.title}</b>
               <span className="row">{!!t.unread && <span className="badge">{t.unread}</span>}<Pill status={t.status} /></span></div>
             {t.snippet && <div className="muted" style={{ fontSize: '.88rem', marginTop: '.2rem' }}>{t.snippet}</div>}
-            <div className="muted" style={{ fontSize: '.75rem', marginTop: '.4rem' }}>{relTime(t.created_at)}</div>
+            <div className="row muted" style={{ fontSize: '.75rem', marginTop: '.4rem', gap: '.5rem' }}>
+              <span>{relTime(t.created_at)}</span><OriginBadge origin={t.origin} /></div>
           </button>
         ))}
       </div>

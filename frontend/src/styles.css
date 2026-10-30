@@ -177,6 +177,11 @@ label.lbl { font-size: .8rem; color: var(--muted); font-weight: 600; }
 pre.code { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, monospace; font-size: .8rem; margin: 0; }
 
 /* Review gate: a restricted task (service token) waits for an admin before anything goes live. */
+/* service-token origin of a task ("via <name>") */
+.origin-badge { display: inline-flex; align-items: center; gap: .25rem; font-size: .72rem; font-weight: 700;
+  border: 1px solid #7c6cf066; background: #7c6cf01f; color: #cfc8ff; border-radius: 999px;
+  padding: .14rem .55rem; white-space: nowrap; max-width: 100%; min-width: 0; }
+.origin-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .review-card { margin-top: 1rem; border-color: #fbbf2466; background: #fbbf240f; gap: .7rem; }
 .review-title { font-weight: 800; color: var(--warn); }
 .review-text { font-size: .86rem; line-height: 1.45; margin-top: .25rem; }

@@ -163,12 +163,21 @@ The agent is contained, the Docker socket is proxied down to a minimal surface, 
 deterministic leak scanner guards anything you choose to publish. Read
 [docs/security.md](docs/security.md) before exposing it beyond localhost.
 
-**Service tokens (optional).** Another local service can use a bearer token
-for a narrow set of endpoints (list and view projects, view and create tasks, create
-projects). Tasks it creates are **restricted**: the workspace is snapshotted first, nothing
-of that project is deployed, published or released while such a task is open, and a
-signed-in admin approves (deploy) or rejects (restore the snapshot) it in the task view.
-A token can never make that decision.
+**Service tokens (optional).** Another local service can use a bearer token for a narrow
+set of endpoints. Each token has a **profile**:
+
+- **restricted** (default): list and view projects, view and create tasks, create projects.
+  Tasks it creates are **restricted**: the workspace is snapshotted first, nothing of that
+  project is deployed, published or released while such a task is open, and a signed-in
+  admin approves (deploy) or rejects (restore the snapshot) it in the task view.
+- **coordinator**: for a trusted orchestrator. List and view projects, create tasks, send
+  follow-ups and read task status and history in every project; its tasks run and deploy
+  like those of a signed-in user. Writes are rate limited (30 per hour by default).
+
+No token can release, publish, create or delete projects, change settings, manage users or
+tokens, or decide a review. Every task shows which token created it (**via &lt;name&gt;**),
+every token request is written to an audit log, and a kill-switch file disables a token at
+once. Details: [docs/security.md](docs/security.md#service-tokens).
 
 ## 💬 Feedback
 
