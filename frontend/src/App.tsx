@@ -19,6 +19,7 @@ const STATUS: Record<string, { label: string; color: string }> = {
   retrying: { label: 'retrying…', color: 'var(--warn)' },
   queued: { label: 'queued', color: 'var(--muted)' },
   waiting: { label: 'waiting for limit', color: 'var(--warn)' },
+  review: { label: 'awaiting review', color: 'var(--warn)' },
   done: { label: 'done', color: 'var(--good)' },
   stopped: { label: 'stopped', color: 'var(--bad)' },
   failed: { label: 'failed', color: 'var(--bad)' },
@@ -350,8 +351,37 @@ function AgentLive({ tid }: { tid: number }) {
   )
 }
 
+// Restricted task (created with a service token) that finished: nothing went live yet.
+function ReviewCard({ tid, isAdmin, onDone }: { tid: number; isAdmin: boolean; onDone: () => void }) {
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null)
+  const decide = async (d: 'approve' | 'reject') => {
+    const q = d === 'approve'
+      ? 'Approve these changes and deploy them live now?'
+      : 'Reject these changes? The project files go back to the state before this task started.'
+    if (!confirm(q)) return
+    setBusy(true); setErr(null)
+    try { await api.reviewThread(tid, d); onDone() } catch (e) { setErr(String((e as Error).message)) } finally { setBusy(false) }
+  }
+  return (
+    <div className="card pad stack review-card">
+      <div>
+        <div className="review-title">⏸️ Awaiting review — nothing went live</div>
+        <div className="muted review-text">This task came in through a service token. Its changes stay in the
+          workspace, but nothing of this project is deployed, published or released until an admin decides.</div>
+      </div>
+      {err && <div className="b-bad bub" style={{ maxWidth: '100%' }}>Error: {err}</div>}
+      {isAdmin
+        ? <div className="review-actions">
+            <button className="btn primary" disabled={busy} onClick={() => decide('approve')}>✅ Approve &amp; deploy</button>
+            <button className="btn danger" disabled={busy} onClick={() => decide('reject')}>↩️ Reject (restore previous state)</button>
+          </div>
+        : <div className="muted review-text">An admin approves or rejects it.</div>}
+    </div>
+  )
+}
+
 // ---------- Thread view ----------
-function ThreadView({ tid, accent, onBack }: { tid: number; accent: string; onBack: () => void }) {
+function ThreadView({ tid, accent, isAdmin, onBack }: { tid: number; accent: string; isAdmin: boolean; onBack: () => void }) {
   const [t, setT] = useState<ThreadDetail | null>(null)
   const [text, setText] = useState(''); const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null); const [files, setFiles] = useState(false)
@@ -400,6 +430,8 @@ function ThreadView({ tid, accent, onBack }: { tid: number; accent: string; onBa
         {working && <div className="bub b-agent"><Working color={STATUS[t.status].color} /> <span className="muted">Agent {STATUS[t.status].label}…</span></div>}
         <div ref={bottom} />
       </div>
+      {t.review?.state === 'pending' && !working &&
+        <ReviewCard tid={tid} isAdmin={isAdmin} onDone={() => { api.getThread(tid).then(setT).catch(() => {}) }} />}
 
       <div className="stack" style={{ position: 'sticky', bottom: '.6rem', marginTop: '1rem' }}>
         <AgentLive tid={tid} />
@@ -1171,7 +1203,7 @@ export default function App() {
       {view.v === 'gallery' && <Gallery onOpen={(id) => setView({ v: 'project', id })} />}
       {view.v === 'project' && <ProjectView id={view.id} isAdmin={isAdmin} onBack={() => setView({ v: 'gallery' })}
         onOpenThread={(tid) => setView({ v: 'thread', tid, accent: '#7c6cf0' })} />}
-      {view.v === 'thread' && <ThreadView tid={view.tid} accent={view.accent} onBack={() => { const cur = view; setView({ v: 'gallery' }); void cur }} />}
+      {view.v === 'thread' && <ThreadView tid={view.tid} accent={view.accent} isAdmin={isAdmin} onBack={() => { const cur = view; setView({ v: 'gallery' }); void cur }} />}
       {showProviders && <ProvidersModal onClose={() => setShowProviders(false)} isAdmin={isAdmin} />}
       {showUsage && <UsageModal onClose={() => setShowUsage(false)} />}
       {showUsers && isAdmin && <AdminUsersModal meName={user.name} onClose={() => setShowUsers(false)} />}

@@ -77,10 +77,13 @@ def conn():
         _conn.execute("PRAGMA busy_timeout=5000")
         _conn.executescript(_SCHEMA)
         _conn.commit()
-        # Per-task model/effort chosen by the requester (kept across retries).
-        for col in ("req_model", "req_effort"):
+        # Per-task model/effort chosen by the requester (kept across retries), and the
+        # review gate of restricted tasks: origin ("api:<service>", bound to the token)
+        # plus the review state as JSON.
+        for table, col in (("tasks", "req_model"), ("tasks", "req_effort"),
+                           ("threads", "origin"), ("threads", "review")):
             try:
-                _conn.execute("ALTER TABLE tasks ADD COLUMN %s TEXT" % col)
+                _conn.execute("ALTER TABLE %s ADD COLUMN %s TEXT" % (table, col))
                 _conn.commit()
             except sqlite3.OperationalError:
                 pass   # column already exists

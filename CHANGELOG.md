@@ -11,6 +11,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `AIWERKSTATT_API_BLOCKLIST` (comma-separated project ids, default empty): those projects are hidden from tokens and answer 403.
 - Tests: `backend/tests/test_service_token.py` (`cd backend && python3 -m unittest discover -s tests`).
 
+### Security — restricted service tokens
+- A task created with a service token is a **restricted task** and never goes live by itself. Its origin (`api:<service name>`) is bound to the token and stored on the task; no request field can set or clear it. Tasks created by signed-in users behave as before.
+- Before a restricted task runs, the project workspace is copied to a snapshot under the data volume (`review-snapshots/<project>`, without `node_modules` and `.venv`; symlinks are copied, never followed). If the snapshot fails, the task is refused and nothing changes.
+- While any restricted task of a project is running or awaiting review, the project is **held**: no reply deploys it (not even the reply of an ordinary task, because the workspace holds unreviewed changes), and publish and release answer 409. Follow-ups on a restricted task, by anyone, stay restricted and put it back under review.
+- When the agent replies (or the task is stopped), the task shows **awaiting review**. A signed-in admin decides with `POST /api/threads/<id>/review` (`{"decision": "approve" | "reject"}`), which is never reachable with a token: approve deploys once nothing holds the project any more; reject restores the snapshot (the state before the first restricted task still under review) and deploys nothing. The task view shows a card with both choices.
+- Tests: `backend/tests/test_review_gate.py`. The workspace root follows `AIWERKSTATT_WORKSPACES` on the orchestrator side too (default `/workspaces`, unchanged).
+
 ## 0.12.0 — 2026-10-25
 ### Added — pick the model per task, Claude 5.5 model family
 

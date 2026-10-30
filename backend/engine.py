@@ -205,11 +205,15 @@ def _drop_descriptor(task_id, project, thread_id, kind, text, session_id="", log
     os.replace(tmp, p)
 
 
-def create_thread(project, title, body, author, model=None, effort=None):
-    """``model``/``effort`` (optional) override project settings and Auto mode for this task."""
+def create_thread(project, title, body, author, model=None, effort=None, origin=None):
+    """``model``/``effort`` (optional) override project settings and Auto mode for this task.
+    ``origin`` ("api:<service>", set by the caller from the token only) makes it a restricted
+    task: it starts in review state ``running`` and never deploys by itself."""
     req_m, req_e = _clean_override(project["provider"], model, effort)
-    cur = db.execute("INSERT INTO threads(project_id,title,state,created_at) VALUES(?,?, 'open', ?)",
-                     (project["id"], title.strip(), store.now()))
+    cur = db.execute("INSERT INTO threads(project_id,title,state,created_at,origin,review)"
+                     " VALUES(?,?, 'open', ?, ?, ?)",
+                     (project["id"], title.strip(), store.now(), origin or None,
+                      json.dumps({"state": "running"}) if origin else None))
     thread_id = cur.lastrowid
     cur = db.execute("INSERT INTO tasks(thread_id,kind,status,created_at,req_model,req_effort)"
                      " VALUES(?, 'new','queued', ?, ?, ?)",
@@ -226,6 +230,8 @@ def create_comment(project, thread_id, text, author, model=None, effort=None):
     th = db.query_one("SELECT * FROM threads WHERE id=?", (thread_id,))
     if not th:
         raise ValueError("No such thread.")
+    if th["origin"]:
+        set_review(thread_id, "running")   # a follow-up on a restricted task stays restricted
     cur = db.execute("INSERT INTO tasks(thread_id,kind,status,created_at,req_model,req_effort)"
                      " VALUES(?, 'followup','queued', ?, ?, ?)",
                      (thread_id, store.now(), req_m, req_e))
@@ -244,7 +250,61 @@ def enqueue_stop(project, thread_id):
     db.execute("UPDATE tasks SET status='cancelled' WHERE thread_id=? AND status IN ('queued','running')",
                (thread_id,))
     _add_event(thread_id, None, "stopped", "⏹️ Stop requested.", "System")
+    review_settle(thread_id)
     _drop_descriptor(int(time.time()), project, thread_id, "stop", "")
+
+
+# ---------- review gate (restricted tasks, see review.py) ----------
+
+HOLD_STATES = ("running", "pending")
+_ACTIVE_TASK = ("queued", "running", "retrying", "waiting")
+
+
+def get_review(thread_id):
+    """The review object of a restricted thread, or None for an ordinary one. An unreadable
+    state counts as ``running`` (held), never as decided."""
+    th = db.query_one("SELECT origin, review FROM threads WHERE id=?", (thread_id,))
+    if not th or not th["origin"]:
+        return None
+    try:
+        rv = json.loads(th["review"] or "{}")
+    except ValueError:
+        rv = {}
+    if not isinstance(rv, dict):
+        rv = {}
+    return {"state": rv.get("state") or "running", "origin": th["origin"],
+            "decided_by": rv.get("decided_by"), "decided_at": rv.get("decided_at")}
+
+
+def set_review(thread_id, state, decided_by=None):
+    rv = {"state": state}
+    if decided_by:
+        rv.update(decided_by=decided_by, decided_at=store.now())
+    db.execute("UPDATE threads SET review=? WHERE id=? AND origin IS NOT NULL AND origin<>''",
+               (json.dumps(rv), thread_id))
+
+
+def review_settle(thread_id):
+    """A restricted thread whose work has ended (reply or stop) waits for review."""
+    rv = get_review(thread_id)
+    if not rv or rv["state"] != "running":
+        return
+    ph = ",".join("?" * len(_ACTIVE_TASK))
+    busy = db.query_one("SELECT COUNT(*) c FROM tasks WHERE thread_id=? AND status IN (%s)" % ph,
+                        (thread_id, *_ACTIVE_TASK))
+    if not busy or not busy["c"]:
+        set_review(thread_id, "pending")
+
+
+def project_held(project_id):
+    """True while any restricted task of the project is running or awaiting review: the
+    workspace then holds unreviewed changes, so nothing of it may go live or be published."""
+    for th in db.query_all("SELECT id FROM threads WHERE project_id=? AND origin IS NOT NULL "
+                           "AND origin<>''", (project_id,)):
+        rv = get_review(th["id"])
+        if rv and rv["state"] in HOLD_STATES:
+            return True
+    return False
 
 
 # ---------- session state (from the shared events volume) ----------
@@ -453,6 +513,15 @@ def project_activity(project_id):
 
 
 def _thread_status(thread_id):
+    st = _task_status(thread_id)
+    if st in ("done", "stopped"):
+        rv = get_review(thread_id)
+        if rv and rv["state"] == "pending":
+            return "review"
+    return st
+
+
+def _task_status(thread_id):
     # 🔴 Only tasks belonging to the CURRENT request count. An older, long-finished task of
     # the same thread must not make a fresh request look "done".
     since = db.query_one("SELECT created_at FROM events WHERE thread_id=? AND type='user' "
@@ -560,7 +629,8 @@ def thread_timeline(thread_id):
     timeline = [{"id": "e-%d" % e["id"], "type": e["type"], "author": e["author"],
                  "text": e["text"], "created_at": e["created_at"]} for e in evs]
     return {"id": thread_id, "title": th["title"], "status": _thread_status(thread_id),
-            "timeline": timeline, "session": thread_session(thread_id)}
+            "timeline": timeline, "session": thread_session(thread_id),
+            "review": get_review(thread_id)}
 
 
 # ---------- ingest events written by agent-runners ----------

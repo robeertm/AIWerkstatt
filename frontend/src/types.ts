@@ -58,8 +58,14 @@ export type PublishStatus = {
 }
 export type TimelineEntry = { id: string; type: string; author: string; text: string; created_at: string }
 export type Session = { alive: boolean; ctx_pct: number; pending: number; compacting: boolean } | null
+// Review gate of a restricted task (created with a service token); null for ordinary tasks.
+export type Review = {
+  state: 'running' | 'pending' | 'approved' | 'rejected'; origin: string
+  decided_by: string | null; decided_at: string | null
+}
 export type ThreadDetail = {
   id: number; title: string; status: string; timeline: TimelineEntry[]; session: Session
+  review?: Review | null
   project_id: string; live_port: number | null; live_url: string | null; live_ready: boolean
 }
 

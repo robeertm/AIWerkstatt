@@ -40,7 +40,8 @@ APP_UID = os.environ.get("AIWERKSTATT_APP_UID", "10001")
 TASK_QUEUE = os.path.join(config.DATA, "task-queue")
 FIRST_DIR = "/inbox"          # per-thread subdir created here
 EVENTS_BIND = "/events"
-WORKSPACES_BIND = "/workspaces"
+# Same variable the web side already reads (app.py, publish.py); only tests change it.
+WORKSPACES_BIND = os.environ.get("AIWERKSTATT_WORKSPACES", "/workspaces")
 INBOX_BIND = "/inbox"
 # Claude's session store (~/.claude) otherwise lives INSIDE the ephemeral runner and is lost
 # when the container exits — so `--resume <sid>` in the next follow-up's fresh container always

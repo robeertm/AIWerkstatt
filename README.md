@@ -163,6 +163,13 @@ The agent is contained, the Docker socket is proxied down to a minimal surface, 
 deterministic leak scanner guards anything you choose to publish. Read
 [docs/security.md](docs/security.md) before exposing it beyond localhost.
 
+**Service tokens (optional).** Another local service can use a bearer token
+for a narrow set of endpoints (list and view projects, view and create tasks, create
+projects). Tasks it creates are **restricted**: the workspace is snapshotted first, nothing
+of that project is deployed, published or released while such a task is open, and a
+signed-in admin approves (deploy) or rejects (restore the snapshot) it in the task view.
+A token can never make that decision.
+
 ## 💬 Feedback
 
 Bug reports and feature ideas are very welcome — please [open an issue](https://github.com/robeertm/AIWerkstatt/issues).

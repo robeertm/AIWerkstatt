@@ -175,3 +175,10 @@ label.lbl { font-size: .8rem; color: var(--muted); font-weight: 600; }
 .filerow { display: flex; align-items: center; gap: .6rem; padding: .5rem .5rem; border-radius: 10px; cursor: pointer; }
 .filerow:hover { background: #ffffff0d; }
 pre.code { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, monospace; font-size: .8rem; margin: 0; }
+
+/* Review gate: a restricted task (service token) waits for an admin before anything goes live. */
+.review-card { margin-top: 1rem; border-color: #fbbf2466; background: #fbbf240f; gap: .7rem; }
+.review-title { font-weight: 800; color: var(--warn); }
+.review-text { font-size: .86rem; line-height: 1.45; margin-top: .25rem; }
+.review-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+.review-actions .btn { flex: 1 1 14rem; min-width: 0; white-space: normal; }

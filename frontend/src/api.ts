@@ -58,6 +58,8 @@ export const getThread = (tid: number) => fetch(`/api/threads/${tid}`).then(j<Th
 export const addComment = (tid: number, text: string) => req(`/api/threads/${tid}/comment`, 'POST', { text }).then(j<{ ok: boolean }>)
 export const compactThread = (tid: number) => req(`/api/threads/${tid}/compact`, 'POST').then(j<{ ok: boolean }>)
 export const stopThread = (tid: number) => req(`/api/threads/${tid}/stop`, 'POST').then(j<{ ok: boolean }>)
+export const reviewThread = (tid: number, decision: 'approve' | 'reject') =>
+  req(`/api/threads/${tid}/review`, 'POST', { decision }).then(j<{ ok: boolean; deploying: boolean }>)
 
 // files
 export const getFiles = (id: string, path: string) =>

@@ -21,6 +21,7 @@ import store
 import engine
 import providers
 import publish
+import review
 import planlimit
 import orchestrator as orch
 
@@ -53,7 +54,27 @@ def _api_user():
     name = store.api_token_name(h[7:].strip())
     if not name:
         return None
-    return {"name": name.capitalize(), "role": "member", "emoji": "🤖", "api": True}
+    return {"name": name.capitalize(), "role": "member", "emoji": "🤖", "api": True, "service": name}
+
+
+def _origin():
+    """Origin of a task created in this request: "api:<service>" for a token, else None.
+    Bound to the token alone; no request field can set or clear it."""
+    u = current_user()
+    if u and u.get("api"):
+        return "api:%s" % (u.get("service") or u["name"]).strip().lower()
+    return None
+
+
+def _snapshot_or_none(pid):
+    """Take the review snapshot of a project before a restricted task may change it.
+    Returns an error response when that fails (the caller then refuses: fail closed)."""
+    try:
+        review.ensure_snapshot(pid)
+    except OSError:
+        return jsonify(error="Could not snapshot the project workspace for review, so the "
+                             "task was not created. Nothing was changed."), 500
+    return None
 
 
 def current_user():
@@ -315,7 +336,13 @@ def projects_create():
                               provider=provider, model=d.get("model"), effort=d.get("effort", ""))
     idea = (d.get("idea") or "").strip()
     if idea:
-        engine.create_thread(p, "Let's go 🚀", idea, current_user()["name"])
+        origin = _origin()
+        if origin:
+            err = _snapshot_or_none(p["id"])
+            if err:
+                engine.delete_project(p["id"])
+                return err
+        engine.create_thread(p, "Let's go 🚀", idea, current_user()["name"], origin=origin)
     return jsonify(project=_shape_project(p)), 201
 
 
@@ -358,6 +385,7 @@ def project_delete(pid):
         return jsonify(error="Only the owner or an admin can delete this."), 403
     tids = engine.delete_project(pid)
     ORCH.purge_project(pid, tids)
+    review.drop_snapshot(pid)
     return jsonify(ok=True)
 
 
@@ -383,8 +411,14 @@ def thread_create(pid):
         return jsonify(error="Title and request are required."), 400
     if not provider_connected(p["provider"]):
         return jsonify(error="Connect this project's AI provider first."), 409
+    origin = _origin()
+    if origin:
+        err = _snapshot_or_none(pid)
+        if err:
+            return err
     res = engine.create_thread(p, title, body, current_user()["name"],
-                               model=_requested(d, "model"), effort=_requested(d, "effort"))
+                               model=_requested(d, "model"), effort=_requested(d, "effort"),
+                               origin=origin)
     return jsonify(number=res["thread_id"], id=res["thread_id"]), 201
 
 
@@ -415,9 +449,59 @@ def thread_comment(tid):
     text = (d.get("text") or "").strip()
     if not text:
         return jsonify(error="Empty message."), 400
+    if engine.get_review(tid):   # restricted task: the follow-up is restricted too
+        err = _snapshot_or_none(th["project_id"])
+        if err:
+            return err
     engine.create_comment(engine.get_project(th["project_id"]), tid, text, current_user()["name"],
                           model=_requested(d, "model"), effort=_requested(d, "effort"))
     return jsonify(ok=True), 201
+
+
+@app.post("/api/threads/<int:tid>/review")
+@admin_required
+def thread_review(tid):
+    """Approve or reject a restricted task. Sign-in only: never in API_ENDPOINTS, and a
+    token user is refused explicitly as well."""
+    u = current_user()
+    if u.get("api"):
+        return jsonify(error="Reviews need a signed-in admin."), 403
+    th = db.query_one("SELECT project_id FROM threads WHERE id=?", (tid,))
+    if not th:
+        abort(404)
+    pid = th["project_id"]
+    decision = ((request.get_json(force=True, silent=True) or {}).get("decision") or "").strip()
+    if decision not in ("approve", "reject"):
+        return jsonify(error="Decision must be approve or reject."), 400
+    with _review_lock:   # one decision at a time (a double click must not decide twice)
+        return _decide(tid, pid, decision, u)
+
+
+_review_lock = threading.Lock()
+
+
+def _decide(tid, pid, decision, u):
+    rv = engine.get_review(tid)
+    if not rv or rv["state"] != "pending":
+        return jsonify(error="This task is not awaiting review."), 409
+    deploying = False
+    if decision == "approve":
+        engine.set_review(tid, "approved", u["name"])
+        if not engine.project_held(pid):
+            review.drop_snapshot(pid)
+            threading.Thread(target=_deploy_now, args=(pid, tid), daemon=True,
+                             name="review-deploy").start()
+            deploying = True
+    else:
+        try:
+            review.restore_snapshot(pid)
+        except OSError:
+            return jsonify(error="Could not restore the previous state. The task is still "
+                                 "awaiting review and nothing went live."), 500
+        engine.set_review(tid, "rejected", u["name"])
+        if not engine.project_held(pid):
+            review.drop_snapshot(pid)
+    return jsonify(ok=True, review=engine.get_review(tid), deploying=deploying)
 
 
 @app.post("/api/threads/<int:tid>/compact")
@@ -623,12 +707,19 @@ def publish_export(pid):
                      download_name="%s.zip" % pid, max_age=0)
 
 
+_HELD = "A task from a service token is awaiting review in this project. Approve or reject it first."
+
+
 @app.post("/api/projects/<pid>/publish")
 @login_required
 def publish_go(pid):
+    if current_user().get("api"):
+        return jsonify(error="Publishing needs a signed-in user."), 403
     p = _may_publish(pid)
     if not p:
         return jsonify(error="Only the owner or an admin can publish."), 403
+    if engine.project_held(pid):
+        return jsonify(error=_HELD), 409
     if not publish.github_connected():
         return jsonify(error="Connect a GitHub account first (⚙️ Providers → GitHub)."), 409
     d = request.get_json(force=True) or {}
@@ -644,8 +735,12 @@ def publish_go(pid):
 @app.post("/api/projects/<pid>/release")
 @login_required
 def release_go(pid):
+    if current_user().get("api"):
+        return jsonify(error="Releasing needs a signed-in user."), 403
     if not _may_publish(pid):
         return jsonify(error="Only the owner or an admin can release."), 403
+    if engine.project_held(pid):
+        return jsonify(error=_HELD), 409
     d = request.get_json(force=True) or {}
     try:
         res = publish.release_project(pid, d.get("version", ""), d.get("notes", ""))
@@ -748,15 +843,40 @@ def static_proxy(path):
 ORCH = orch.Orchestrator(provider_creds)
 
 
+def _deploy_now(project_id, thread_id=None):
+    """Build and run the project's app, unless a restricted task holds it (checked again
+    right before the build, so a task that started meanwhile still blocks it)."""
+    if engine.project_held(project_id):
+        return False
+    p = engine.get_project(project_id)
+    if p and ORCH.deploy(project_id, p["port"], thread_id):
+        engine.mark_live_ready(project_id)
+        return True
+    return False
+
+
+def _on_event(project_id, thread_id, etype):
+    """React to one ingested agent event. A reply deploys the app, except while the project
+    is held by a restricted task (then the workspace holds unreviewed changes and nothing
+    goes live until an admin approves). Returns True when a deploy happened."""
+    if etype in ("reply", "stopped"):
+        engine.review_settle(thread_id)
+    if etype != "reply":
+        return False
+    if engine.project_held(project_id):
+        ORCH._note_live(thread_id, "⏸️ Not deployed: a task from a service token is awaiting "
+                                   "review in this project. An admin approves or rejects it "
+                                   "in the task view.")
+        return False
+    return _deploy_now(project_id, thread_id)
+
+
 def _ingest_loop():
     time.sleep(2)
     while True:
         try:
             for project_id, thread_id, etype in engine.ingest_once():
-                if etype == "reply":
-                    p = engine.get_project(project_id)
-                    if p and ORCH.deploy(project_id, p["port"], thread_id):
-                        engine.mark_live_ready(project_id)
+                _on_event(project_id, thread_id, etype)
             # self-healing: automatically re-queue orphaned/abandoned runs with backoff until
             # they succeed (never give up; a task ends only on success or a manual stop).
             engine.resurrect_stale_tasks(lambda pid: ORCH._alive(pid) is not None)
