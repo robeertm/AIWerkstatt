@@ -255,10 +255,24 @@ def enqueue_compact(project, thread_id):
     _drop_descriptor(int(time.time()), project, thread_id, "compact", "")
 
 
+# Tasks the self-healer would still pick up (``failed`` without ``error`` = not given up yet).
+_STOPPABLE = ("(status IN ('queued','running','retrying','waiting') "
+              "OR (status='failed' AND error IS NULL))")
+
+
 def enqueue_stop(project, thread_id):
-    # Cancel not-yet-run tasks immediately; the live agent (if any) gets a stop signal.
-    db.execute("UPDATE tasks SET status='cancelled' WHERE thread_id=? AND status IN ('queued','running')",
-               (thread_id,))
+    # Cancel every task of the thread that could still run — including one that is waiting for
+    # its next automatic retry, otherwise a stopped task would be re-queued by the self-healer.
+    # A descriptor that was not claimed yet is removed; the live agent (if any) gets a stop signal.
+    ids = [r["id"] for r in db.query_all(
+        "SELECT id FROM tasks WHERE thread_id=? AND " + _STOPPABLE, (thread_id,))]
+    db.execute("UPDATE tasks SET status='cancelled', finished_at=COALESCE(finished_at, ?) "
+               "WHERE thread_id=? AND " + _STOPPABLE, (store.now(), thread_id))
+    for tid in ids:
+        try:
+            os.remove(os.path.join(TASK_QUEUE, "%d.json" % tid))
+        except OSError:
+            pass
     _add_event(thread_id, None, "stopped", "⏹️ Stop requested.", "System")
     review_settle(thread_id)
     _drop_descriptor(int(time.time()), project, thread_id, "stop", "")
@@ -544,13 +558,15 @@ def _task_status(thread_id):
     since = db.query_one("SELECT created_at FROM events WHERE thread_id=? AND type='user' "
                          "ORDER BY id DESC LIMIT 1", (thread_id,))
     if since and since["created_at"]:
-        tasks = db.query_all("SELECT status FROM tasks WHERE thread_id=? AND created_at>=? "
+        tasks = db.query_all("SELECT status, error FROM tasks WHERE thread_id=? AND created_at>=? "
                              "ORDER BY id", (thread_id, since["created_at"]))
         if not tasks:      # request accepted, no task recorded yet
-            tasks = db.query_all("SELECT status FROM tasks WHERE thread_id=? ORDER BY id", (thread_id,))
+            tasks = db.query_all("SELECT status, error FROM tasks WHERE thread_id=? ORDER BY id",
+                                 (thread_id,))
     else:
-        tasks = db.query_all("SELECT status FROM tasks WHERE thread_id=? ORDER BY id", (thread_id,))
+        tasks = db.query_all("SELECT status, error FROM tasks WHERE thread_id=? ORDER BY id", (thread_id,))
     st = [t["status"] for t in tasks]
+    errors = [t["error"] for t in tasks]
     if "running" in st:
         return "working"
     if "queued" in st:
@@ -559,7 +575,10 @@ def _task_status(thread_id):
         return "waiting"
     # Newest task is retrying/failed and nothing newer runs/queues → the self-healer retries
     # it automatically → show "retrying", not a dead "failed" (and not a misleading "done").
+    # Once the self-healer has given up (``error`` set), it is a real, terminal "failed".
     if st and st[-1] in ("retrying", "failed"):
+        if st[-1] == "failed" and errors[-1]:
+            return "failed"
         return "retrying"
     # 🔴 SUCCESS BEATS CANCELLATION. If any task of this request finished, the request is
     # done — even when a duplicate follow-up run was stopped afterwards. Judging by the
@@ -685,7 +704,8 @@ def ingest_once():
         _add_event(thread_id, task_id, etype, text, d.get("author", "Agent"))
         # update task/thread state
         if etype == "ack" and task_id:
-            db.execute("UPDATE tasks SET status='running' WHERE id=? AND status='queued'", (task_id,))
+            db.execute("UPDATE tasks SET status='running', started_at=? WHERE id=? AND status='queued'",
+                       (store.now(), task_id))
         elif etype == "reply" and task_id:
             db.execute("UPDATE tasks SET status='done', finished_at=? WHERE id=?", (store.now(), task_id))
         elif etype == "failed" and task_id:
@@ -709,13 +729,18 @@ def ingest_once():
     return reacted
 
 
-# Self-healing backoff (Mars pattern): never give up, retry with a growing cooldown instead
-# of hammering during a provider/API outage.
+# Self-healing backoff (Mars pattern): retry with a growing cooldown instead of hammering
+# during a provider/API outage.
 RETRY_BASE_SEC = int(os.environ.get("AIWERKSTATT_RETRY_BASE_SEC", "90") or 90)
 RETRY_CAP_SEC = int(os.environ.get("AIWERKSTATT_RETRY_CAP_SEC", "900") or 900)
-# "Until success" needs a sane window: within it, retry unboundedly (with backoff); past it,
-# go terminal (the user has moved on — no resurrection of ancient tasks, no forever-hammering).
+# Two hard bounds, whichever comes first ends the self-healing for a task:
+#   RETRY_MAX_AGE_SEC  window since the original request (the user has moved on — no
+#                      resurrection of ancient tasks)
+#   MAX_RETRIES        automatic attempts per task (``AIWERKSTATT_MAX_RETRIES``, default 5;
+#                      0 = no attempt limit, the age window still applies). Every attempt
+#                      costs provider tokens, so a task that keeps failing must stop.
 RETRY_MAX_AGE_SEC = int(os.environ.get("AIWERKSTATT_RETRY_MAX_AGE_SEC", "43200") or 43200)  # 12h
+MAX_RETRIES = max(0, int(config.MAX_RETRIES))
 
 
 def _iso_age(iso):
@@ -731,14 +756,27 @@ def _retry_cooldown(attempts):
     return min(RETRY_CAP_SEC, RETRY_BASE_SEC * (2 ** min(int(attempts or 0), 4)))
 
 
+def _give_up(task_id, thread_id, reason, announce=True):
+    """Make a task terminal for the self-healer: ``failed`` with ``error`` set. A task with
+    ``error`` set is never retried again, so this runs (and announces) once per task."""
+    db.execute("UPDATE tasks SET status='failed', finished_at=COALESCE(finished_at, ?), error=? "
+               "WHERE id=? AND status NOT IN ('done','cancelled')", (store.now(), reason, task_id))
+    if announce:
+        _add_event(thread_id, task_id, "failed",
+                   "⏹️ Automatic retries stopped: %s. Please send the request again." % reason,
+                   "System")
+
+
 def resurrect_stale_tasks(is_alive):
     """Self-healing: a run that ended WITHOUT completion (runner hard-killed, or a transient
-    provider/API error mid-turn, leaving no terminal event) is AUTOMATICALLY re-queued, with
-    no cap, until it succeeds. Mars pattern (like a watchdog): never give up, but retry with a
-    growing cooldown instead of hammering; skip entirely while a usage limit is active (the
-    task waits for the reset). A task ends only on success (``reply``→done) or a manual stop
-    (``cancelled``). Within ``RETRY_MAX_AGE_SEC`` it retries unboundedly; past it, it goes
-    terminal so neither ancient tasks resurrect nor a genuinely broken one hammers forever.
+    provider/API error mid-turn, leaving no terminal event, or a ``failed`` run) is
+    AUTOMATICALLY re-queued with a growing cooldown instead of hammering; skipped entirely
+    while a usage limit is active (the task waits for the reset).
+
+    Bounded twice — no endless loop, whatever the provider does: at most ``MAX_RETRIES``
+    automatic attempts per task, and only within ``RETRY_MAX_AGE_SEC`` of the original
+    request. Whichever bound is reached first makes the task terminal (``failed`` with
+    ``error`` set, one visible event); such a task is never picked up again.
 
     Per orphan (``queued``/``running``/``failed``/``retrying``, no live runner, descriptor
     already claimed): during the cooldown → status ``retrying`` (UI shows "retrying"); after
@@ -764,7 +802,8 @@ def resurrect_stale_tasks(is_alive):
         "t.created_at AS ts, "
         "COALESCE(t.finished_at, t.started_at, t.created_at) AS last_ts "
         "FROM tasks t JOIN threads th ON th.id = t.thread_id "
-        "WHERE t.status IN ('queued', 'running', 'failed', 'retrying')")
+        "WHERE t.status IN ('queued', 'running', 'failed', 'retrying') "
+        "AND (t.status != 'failed' OR t.error IS NULL)")
     for r in rows:
         try:
             if is_alive(r["project_id"]):
@@ -773,14 +812,18 @@ def resurrect_stale_tasks(is_alive):
             continue                           # liveness unknown → stay conservative, skip
         if os.path.exists(os.path.join(TASK_QUEUE, "%d.json" % r["id"])):
             continue                           # descriptor still queued → not claimed yet, legit wait
-        age = _iso_age(r["ts"] or "")
-        if age > RETRY_MAX_AGE_SEC:
-            # too old for auto-resume → clear a lingering non-terminal to a terminal 'failed'
-            # (no forever-hang, no zombie revive), but do NOT retry.
-            if r["status"] in ("queued", "running", "retrying"):
-                db.execute("UPDATE tasks SET status='failed', finished_at=?, "
-                           "error=COALESCE(error,'abandoned: no completion within the self-heal window') "
-                           "WHERE id=? AND status NOT IN ('done','cancelled')", (store.now(), r["id"]))
+        attempts = int(r["attempts"] or 0)
+        if _iso_age(r["ts"] or "") > RETRY_MAX_AGE_SEC:
+            # too old for auto-resume → terminal, no zombie revive. A run that was already shown
+            # as failed is closed silently; one still shown as working/queued gets a visible
+            # note, otherwise the thread would claim "retrying" forever.
+            _give_up(r["id"], r["thread_id"],
+                     "no reply within %d h of the request" % max(1, RETRY_MAX_AGE_SEC // 3600),
+                     announce=r["status"] != "failed")
+            continue
+        if MAX_RETRIES and attempts >= MAX_RETRIES:
+            _give_up(r["id"], r["thread_id"],
+                     "still no reply after %d automatic %s" % (attempts, "retry" if attempts == 1 else "retries"))
             continue
         # 🔴 Always measure the cooldown against the LAST ATTEMPT, never against `created_at`.
         if _iso_age(r["last_ts"] or r["ts"] or "") < _retry_cooldown(r["attempts"]):
@@ -788,13 +831,12 @@ def resurrect_stale_tasks(is_alive):
                 db.execute("UPDATE tasks SET status='retrying' WHERE id=? AND status NOT IN ('done','cancelled')",
                            (r["id"],))
             continue
-        # cooldown elapsed → next attempt (no cap — only success or a manual stop ends it;
-        # the backoff caps the RATE at 90 → 180 → 360 → 720 → 900 s, i.e. at most a handful
-        # of attempts per hour instead of one per poll)
+        # cooldown elapsed → next attempt. The backoff caps the RATE (90 → 180 → 360 → 720 →
+        # 900 s), MAX_RETRIES and the age window cap the TOTAL.
         proj = get_project(r["project_id"])
         if not proj:
             continue
-        n = (r["attempts"] or 0) + 1
+        n = attempts + 1
         last_user = db.query_one("SELECT text FROM events WHERE thread_id=? AND type='user' "
                                  "ORDER BY id DESC LIMIT 1", (r["thread_id"],))
         utext = (last_user["text"] if last_user else "") or ""
@@ -802,11 +844,15 @@ def resurrect_stale_tasks(is_alive):
             kind, text, sess = "new", PREAMBLE + utext, ""
         else:
             kind, text, sess = "followup", utext, (r["session_id"] or "")
-        db.execute("UPDATE tasks SET status='queued', attempts=?, error=NULL, finished_at=NULL "
-                   "WHERE id=? AND status NOT IN ('done','cancelled')", (n, r["id"]))
+        # started_at = this attempt: if the runner dies before it writes anything, the next
+        # cooldown is measured from here, not from an older attempt.
+        db.execute("UPDATE tasks SET status='queued', attempts=?, error=NULL, finished_at=NULL, "
+                   "started_at=? WHERE id=? AND status NOT IN ('done','cancelled')",
+                   (n, store.now(), r["id"]))
         _drop_descriptor(r["id"], proj, r["thread_id"], kind, text, sess, log=False,
                          req_model=r["req_model"], req_effort=r["req_effort"])
         _add_event(r["thread_id"], r["id"], "retrying",
-                   "🔁 Self-healing: retry (%d) — the previous run ended without a reply." % n, "System")
+                   "🔁 Self-healing: retry (%s) — the previous run ended without a reply."
+                   % (("%d of %d" % (n, MAX_RETRIES)) if MAX_RETRIES else str(n)), "System")
         started.append((r["project_id"], r["thread_id"], r["id"], n))
     return started

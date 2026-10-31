@@ -7,6 +7,7 @@ ingest loop (folds agent events into SQLite and deploys the app the agent built)
 import mimetypes
 import os
 import stat
+import sys
 import threading
 import time
 
@@ -948,17 +949,34 @@ def _on_event(project_id, thread_id, etype):
     return _deploy_now(project_id, thread_id)
 
 
+_loop_errors_seen = set()
+
+
+def _log_loop_error(step, exc):
+    """Background-loop errors used to be swallowed without a trace — that is how the
+    self-healing retry stayed broken unnoticed. Log each distinct error once (no log flood
+    from a loop that runs every two seconds)."""
+    key = (step, type(exc).__name__, str(exc))
+    if key in _loop_errors_seen:
+        return
+    _loop_errors_seen.add(key)
+    print("[ingest] %s failed: %s: %s" % (step, type(exc).__name__, exc), file=sys.stderr, flush=True)
+
+
 def _ingest_loop():
     time.sleep(2)
     while True:
         try:
             for project_id, thread_id, etype in engine.ingest_once():
                 _on_event(project_id, thread_id, etype)
-            # self-healing: automatically re-queue orphaned/abandoned runs with backoff until
-            # they succeed (never give up; a task ends only on success or a manual stop).
+        except Exception as e:
+            _log_loop_error("ingest", e)
+        try:
+            # self-healing: re-queue orphaned/aborted runs with a growing cooldown, bounded by
+            # AIWERKSTATT_MAX_RETRIES attempts and a 12 h window (see engine.resurrect_stale_tasks)
             engine.resurrect_stale_tasks(lambda pid: ORCH._alive(pid) is not None)
-        except Exception:
-            pass
+        except Exception as e:
+            _log_loop_error("self-healing", e)
         time.sleep(2)
 
 

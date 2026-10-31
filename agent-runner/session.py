@@ -242,8 +242,8 @@ def main():
         tid = head[1]
         text = ev.get("text") or ""
         if ev.get("error") or not text:
-            emit(tid, "failed", "The run ended without a reply. Your workspace is unchanged — "
-                                "send your message again to try once more.")
+            emit(tid, "failed", "The run ended without a reply. It will be retried automatically "
+                                "in a moment — no need to send it again (Stop cancels it).")
         else:
             stream_retries = 0      # a real answer resets the stream-abort counter
             emit(tid, "reply", text[:6000])

@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.14.2 — 2026-10-31
+### Fixed — self-healing retries never ran; now they run, and they are bounded
+- **The bug:** the `tasks` table had no `started_at` and `error` columns, but the self-healing retry (`engine.resurrect_stale_tasks`) read and wrote both. Every call raised `no such column: t.started_at`, and the background loop swallowed the error without a trace. A run that ended without a reply (runner killed, provider stream broken off) was never retried, and a task left behind as "running" stayed that way.
+- **Migration for existing databases:** `db.migrate` adds every later column only when it is missing (checked with `PRAGMA table_info`), so it is idempotent and also fixes databases that already have some of the columns. Tasks that had already failed before the upgrade are marked as given up, so an upgrade does not suddenly re-run old work. Fresh installs get the columns directly.
+- **Bounded, no endless loop:** at most `AIWERKSTATT_MAX_RETRIES` automatic attempts per task (default 5, as already documented in `.env.example`; `0` = no attempt limit) and only within 12 hours of the request. Whichever comes first marks the task failed with a reason, says so once in the task view ("Automatic retries stopped: …"), and the task is never picked up again. The pause between attempts grows from 90 s to 15 min and is measured from the latest attempt; `started_at` is set when a run starts and when it is re-queued.
+- **Stop** now also cancels a task that is waiting for its next automatic attempt (and removes a descriptor that was not picked up yet). Before, only queued and running tasks were cancelled, and a stopped task could have been re-queued.
+- A task the self-healer gave up on shows as **failed** instead of "retrying" forever. Retry notes count the attempts ("retry (2 of 5)"). The runner's message for a run without a reply no longer asks to send the request again (that would have started a duplicate next to the automatic retry).
+- Errors in the background ingest and self-healing loops are now logged once each instead of being dropped silently; the two steps no longer block each other.
+- Tests: `backend/tests/test_self_healing.py` (15 cases) — migration on a database in the old layout (twice, partial schema, rows kept), a run that always fails stops after exactly `MAX_RETRIES` attempts even with no cooldown, cooldown and age window, live runner and active limit are left alone, Stop during the cooldown. CI now runs the backend test suite, as `docs/releasing.md` already stated.
+- Docs: "Self-healing retries" in `docs/architecture.md`, `.env.example`.
+
 ## 0.14.1 — 2026-10-31
 ### Security — GitHub token no longer on a command line
 - **Publish** pushed to `https://x-access-token:<token>@github.com/…`: the token was part of the `git` command line (and of the `git-remote-https` helper) for the duration of the push. A process's command line is readable by every local user, and container processes show up in the host's process list.
