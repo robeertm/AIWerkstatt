@@ -13,6 +13,7 @@ A zip export needs no account at all — scan, then download.
 """
 from __future__ import annotations
 
+import base64
 import io
 import os
 import shutil
@@ -130,16 +131,33 @@ def _ensure_repo(token: str, login: str, name: str, private: bool) -> dict:
     return r.json()
 
 
+def _auth_env(token: str) -> dict:
+    """GitHub credentials for ONE git child process, passed through its environment.
+
+    The token goes into ``http.https://github.com/.extraheader`` via ``GIT_CONFIG_COUNT`` /
+    ``GIT_CONFIG_KEY_0`` / ``GIT_CONFIG_VALUE_0``. It is never part of a command line or a
+    remote URL: ``/proc/<pid>/cmdline`` is readable by every local user (and container
+    processes show up in the host's process list), while a process environment is readable
+    only by the same user and root. Nothing is written to ``.git/config``."""
+    b64 = base64.b64encode(("x-access-token:" + token).encode()).decode()
+    return {"GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+            "GIT_CONFIG_VALUE_0": "AUTHORIZATION: basic " + b64}
+
+
 def _git(args, cwd, token=None):
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
+    if token:
+        env.update(_auth_env(token))
     p = subprocess.run(["git", *args], cwd=cwd, env=env,
                        capture_output=True, text=True, timeout=180)
     if p.returncode != 0:
-        # Never surface the token if it appears in a remote URL.
+        # Never surface the token, should git ever echo it.
         err = (p.stderr or p.stdout or "git failed").strip()
         if token:
             err = err.replace(token, "***")
+            err = err.replace(env["GIT_CONFIG_VALUE_0"], "***")
         raise ValueError(err[:400])
     return p.stdout
 
@@ -181,8 +199,9 @@ def publish_project(pid: str, project_name: str, repo: str, private: bool) -> di
                  "-c", "user.name=%s" % login]
         _git(["init", "-q", "-b", branch], ctx)
         _git(["add", "-A"], ctx)
-        _git([*ident, "commit", "-q", "-m", "Publish from AIWerkstatt"], ctx, token)
-        remote = "https://x-access-token:%s@github.com/%s/%s.git" % (token, login, repo)
+        _git([*ident, "commit", "-q", "-m", "Publish from AIWerkstatt"], ctx)
+        # Plain URL: the token travels only in the environment of the push (see _auth_env).
+        remote = "https://github.com/%s/%s.git" % (login, repo)
         _git(["remote", "add", "origin", remote], ctx)
         _git(["push", "-f", "origin", branch], ctx, token)
     finally:

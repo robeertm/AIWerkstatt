@@ -62,6 +62,12 @@ volume** with restrictive permissions. They are:
   that one ephemeral container**, never written to its command line;
 - gone when that container is removed.
 
+The GitHub token you connect for **Publish** follows the same rule: the push gets it as an
+`http.extraheader` through the environment of that one `git` process (`GIT_CONFIG_COUNT` /
+`GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0`). It is never part of a command line or a remote
+URL — a process's command line is readable by every local user (container processes show up
+in the host's process list), its environment only by the same user and root.
+
 ## The leak scanner guards what you publish — and what you deploy
 
 `backend/scrub/scan.py` is a **deterministic** scanner that runs before anything is

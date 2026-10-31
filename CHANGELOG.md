@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.14.1 — 2026-10-31
+### Security — GitHub token no longer on a command line
+- **Publish** pushed to `https://x-access-token:<token>@github.com/…`: the token was part of the `git` command line (and of the `git-remote-https` helper) for the duration of the push. A process's command line is readable by every local user, and container processes show up in the host's process list.
+- Now the token reaches git only through the environment of that one process, as `http.https://github.com/.extraheader` via `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0`. The remote URL is plain, nothing is written to `.git/config`, and git error output is redacted for both the token and the header.
+- Tests: `backend/tests/test_git_credentials.py` — the token is in no `git` argv and in no URL during a full publish, it is present in the push environment, error output is redacted, and a static guard over the shipped code rejects credential URLs and `Authorization` headers on command lines (with a bait check).
+- Docs: `docs/security.md` (provider keys section).
+
 ## 0.14.0 — 2026-10-30
 ### Added — service token profiles (restricted and coordinator)
 - Every service token now has a **profile**. `restricted` is the default and is exactly the behaviour of 0.13.0; tokens created before this release stay restricted (their stored value is unchanged).
