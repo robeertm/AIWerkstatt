@@ -1,33 +1,29 @@
-# Macht ein Release regulaer, nachdem das VEROEFFENTLICHTE Archiv aufgemacht und
-# nachgelesen wurde. Von Hand ausgeloest.
+# Turns a pre-release into the regular ("latest") release, but only after the
+# PUBLISHED archive has been downloaded, unpacked and checked. Triggered by hand.
 #
-# 🔴 WARUM ES DIESEN SCHRITT GIBT (04.10.2026)
+# Why this step exists
 #
-# `release.yml` markierte jeden Tag-Push als „latest", und das README schickt
-# jeden neuen Benutzer genau dorthin. Geprueft hatte vorher nur der Leck-Scan
-# etwas — und zwar den Checkout, nicht das Archiv, das dann wirklich
-# daliegt.
+# A tag push used to mark its release as "latest" right away, and the README
+# sends every new user exactly there. Before that, only the leak scan had
+# checked anything — and it scanned the checkout, not the archive that is
+# actually offered for download. A release that has not been checked as the
+# artifact users receive must never become "latest".
 #
-# Am 04.10.2026 ging bei DocuSort eine Fassung an Roberts Kunden, die auf
-# bestehenden Datenbanken nicht startete: `:latest` wanderte beim Push, geprueft
-# worden war nur ein lokal gebautes Abbild. Seine Anweisung daraus gilt fuer
-# saemtliche oeffentlichen Repos.
-#
-# Reihenfolge jetzt:
-#   1. Tag-Push       ->  Release als VORABFASSUNG. `releases/latest` zeigt
-#                         weiter auf die vorige — das README-Ziel bleibt heil.
-#   2. dieser Schritt ->  das veroeffentlichte `aiwerkstatt-<v>.tar.gz` wird
-#                         geholt, ausgepackt, nachgelesen, uebersetzt und noch
-#                         einmal auf Lecks durchsucht — am ARTEFAKT, nicht am
-#                         Arbeitsstand.
-#   3. erst dann      ->  Release wird regulaer und ist „latest".
+# Order:
+#   1. tag push     ->  release is created as a PRE-RELEASE. `releases/latest`
+#                       still points to the previous one, so the README target
+#                       stays intact.
+#   2. this step    ->  the published `aiwerkstatt-<v>.tar.gz` is downloaded,
+#                       unpacked, its version checked, compiled and scanned for
+#                       leaks once more — on the ARTIFACT, not the working tree.
+#   3. only then    ->  the release becomes regular and "latest".
 name: Promote to latest
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Die Version, z. B. 0.11.0 (ohne v)"
+        description: "The version, e.g. 0.11.0 (without v)"
         required: true
         type: string
 
@@ -44,88 +40,84 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Das veroeffentlichte Archiv holen und nachlesen
+      - name: Download and check the published archive
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           V="${{ inputs.version }}"
           TAG="v$V"
-          ARCHIV="aiwerkstatt-${V}.tar.gz"
-          mkdir -p pruefung && cd pruefung
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ARCHIV"
-          ls -l "$ARCHIV"
+          ARCHIVE="aiwerkstatt-${V}.tar.gz"
+          mkdir -p check && cd check
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ARCHIVE"
+          ls -l "$ARCHIVE"
 
-          fehler=0
-          rm -rf aus && mkdir aus
-          if ! tar xzf "$ARCHIV" -C aus; then
-            echo "  🔴 laesst sich nicht auspacken"
+          failed=0
+          rm -rf out && mkdir out
+          if ! tar xzf "$ARCHIVE" -C out; then
+            echo "  🔴 cannot be unpacked"
             exit 1
           fi
-          BAUM="aus/aiwerkstatt-${V}"
-          if [ ! -d "$BAUM" ]; then
-            echo "  🔴 im Archiv liegt kein Verzeichnis aiwerkstatt-${V}"
-            ls aus
+          TREE="out/aiwerkstatt-${V}"
+          if [ ! -d "$TREE" ]; then
+            echo "  🔴 the archive has no directory aiwerkstatt-${V}"
+            ls out
             exit 1
           fi
-          echo "  OK  ausgepackt nach $BAUM"
+          echo "  OK  unpacked to $TREE"
 
-          # Die Fassung, die drin steht, muss die sein, die draufsteht.
-          drin="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$BAUM/pyproject.toml" | head -1)"
-          if [ "$drin" = "$V" ]; then
-            echo "  OK  es ist wirklich $V"
+          # The version inside must be the version on the label.
+          inside="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$TREE/pyproject.toml" | head -1)"
+          if [ "$inside" = "$V" ]; then
+            echo "  OK  it really is $V"
           else
-            echo "  🔴 drin steht ${drin:-nichts}, drauf steht $V"
-            fehler=1
+            echo "  🔴 inside: ${inside:-nothing}, label: $V"
+            failed=1
           fi
 
-          # 🔑 Ein Syntaxfehler macht jede Installation beim ersten Start tot —
-          # und das faellt sonst erst beim Benutzer auf.
-          if python3 -m compileall -q "$BAUM/backend" > /tmp/compile.log 2>&1; then
-            echo "  OK  der Rumpf uebersetzt sich"
+          # A syntax error breaks every installation on first start —
+          # and would otherwise only show up on a user's machine.
+          if python3 -m compileall -q "$TREE/backend" > /tmp/compile.log 2>&1; then
+            echo "  OK  the backend compiles"
           else
-            echo "  🔴 uebersetzt sich nicht:"
+            echo "  🔴 does not compile:"
             tail -20 /tmp/compile.log
-            fehler=1
+            failed=1
           fi
 
-          # 🔴 Der Leck-Scan noch einmal, aber am AUSGEPACKTEN ARCHIV. Oben im
-          # Bau laeuft er auf dem Checkout — das ist nicht dieselbe Datei. Was
-          # `git archive` wirklich mitgenommen hat, sieht man nur hier.
-          if ( cd "$BAUM" && python3 backend/scrub/scan.py . ); then
-            echo "  OK  kein Leck im veroeffentlichten Archiv"
+          # The leak scan once more, on the UNPACKED ARCHIVE. The build scans
+          # the checkout — that is not the same set of files. What
+          # `git archive` really included is only visible here.
+          if ( cd "$TREE" && python3 backend/scrub/scan.py . ); then
+            echo "  OK  no leak in the published archive"
           else
-            echo "  🔴 der Leck-Scan findet etwas IM ARCHIV"
-            fehler=1
+            echo "  🔴 the leak scan found something IN THE ARCHIVE"
+            failed=1
           fi
 
-          if [ "$fehler" != "0" ]; then
-            echo "🔴 NICHT FREIGEBEN"
+          if [ "$failed" != "0" ]; then
+            echo "🔴 DO NOT PROMOTE"
             exit 1
           fi
-          echo "✅ das veroeffentlichte Archiv ist heil"
+          echo "✅ the published archive is sound"
 
-      - name: Das Release regulaer machen
+      - name: Make the release regular
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="v${{ inputs.version }}"
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
-          echo "::notice::$TAG ist jetzt die regulaere Fassung"
+          echo "::notice::$TAG is now the regular release"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isPrerelease,isDraft
 
-          # 🔴 NACHGELESEN WIRD AN DER TUER, DIE DIE ANDEREN BENUTZEN.
-          # Der erste Wurf fragte `gh release view --json isLatest` — das Feld
-          # gibt es in dem `gh` auf dem Laeufer nicht, der Schritt wurde rot,
-          # nachdem er das Release schon umgestellt hatte. Und es war ohnehin
-          # die falsche Frage: was zaehlt, ist, was `releases/latest` sagt —
-          # genau der Endpunkt, den der Update-Prüfer der App und
-          # `hass-addons` abfragen.
-          zeigt="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"
-          echo "releases/latest zeigt auf: $zeigt"
-          if [ "$zeigt" != "$TAG" ]; then
-            echo "::error::releases/latest zeigt auf $zeigt, nicht auf $TAG."
+          # Verify through the door everyone else uses: `releases/latest` —
+          # the endpoint the app's update check queries. (`gh release view
+          # --json isLatest` is not available in the runner's gh.)
+          points="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"
+          echo "releases/latest points to: $points"
+          if [ "$points" != "$TAG" ]; then
+            echo "::error::releases/latest points to $points, not to $TAG."
             exit 1
           fi
-          echo "✅ die Tuer, durch die App und Add-on sehen, zeigt auf $TAG"
+          echo "✅ releases/latest points to $TAG"
