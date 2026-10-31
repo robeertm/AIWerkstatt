@@ -53,5 +53,10 @@ the container boundary.
 - Rules and config are **data, not code** where it already works that way (scrub
   rules, provider specs).
 - **English only** for all repository docs, comments, and identifiers.
+- **Commit identity:** commits show your name and e-mail to everyone. Use the
+  address you want public (GitHub's no-reply address works). Pushes are checked
+  by `scripts/check_commit_identity.py` (in CI, and locally after
+  `git config core.hooksPath .githooks`); it only refuses the maintainer's own
+  identities and machine placeholders such as `agent@host`.
 
 Thanks for trying it, and for taking the time to send good feedback. 🛠️
