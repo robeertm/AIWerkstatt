@@ -731,12 +731,14 @@ def ingest_once():
 
 # Self-healing backoff (Mars pattern): retry with a growing cooldown instead of hammering
 # during a provider/API outage.
-RETRY_BASE_SEC = int(os.environ.get("AIWERKSTATT_RETRY_BASE_SEC", "90") or 90)
-RETRY_CAP_SEC = int(os.environ.get("AIWERKSTATT_RETRY_CAP_SEC", "900") or 900)
+# Pause before retry n+1 is BASE * FACTOR**n, capped: 5 min, 15 min, 45 min with the defaults.
+RETRY_BASE_SEC = int(os.environ.get("AIWERKSTATT_RETRY_BASE_SEC", "300") or 300)
+RETRY_FACTOR = int(os.environ.get("AIWERKSTATT_RETRY_FACTOR", "3") or 3)
+RETRY_CAP_SEC = int(os.environ.get("AIWERKSTATT_RETRY_CAP_SEC", "2700") or 2700)
 # Two hard bounds, whichever comes first ends the self-healing for a task:
 #   RETRY_MAX_AGE_SEC  window since the original request (the user has moved on — no
 #                      resurrection of ancient tasks)
-#   MAX_RETRIES        automatic attempts per task (``AIWERKSTATT_MAX_RETRIES``, default 5;
+#   MAX_RETRIES        automatic attempts per task (``AIWERKSTATT_MAX_RETRIES``, default 3;
 #                      0 = no attempt limit, the age window still applies). Every attempt
 #                      costs provider tokens, so a task that keeps failing must stop.
 RETRY_MAX_AGE_SEC = int(os.environ.get("AIWERKSTATT_RETRY_MAX_AGE_SEC", "43200") or 43200)  # 12h
@@ -752,8 +754,8 @@ def _iso_age(iso):
 
 
 def _retry_cooldown(attempts):
-    """Exponential backoff in seconds, capped: 90 → 180 → 360 → 720 → 900."""
-    return min(RETRY_CAP_SEC, RETRY_BASE_SEC * (2 ** min(int(attempts or 0), 4)))
+    """Growing pause in seconds, capped: 5 min → 15 min → 45 min."""
+    return min(RETRY_CAP_SEC, RETRY_BASE_SEC * (RETRY_FACTOR ** min(int(attempts or 0), 6)))
 
 
 def _give_up(task_id, thread_id, reason, announce=True):
@@ -831,8 +833,8 @@ def resurrect_stale_tasks(is_alive):
                 db.execute("UPDATE tasks SET status='retrying' WHERE id=? AND status NOT IN ('done','cancelled')",
                            (r["id"],))
             continue
-        # cooldown elapsed → next attempt. The backoff caps the RATE (90 → 180 → 360 → 720 →
-        # 900 s), MAX_RETRIES and the age window cap the TOTAL.
+        # cooldown elapsed → next attempt. The growing pause caps the RATE (5 → 15 → 45 min),
+        # MAX_RETRIES and the age window cap the TOTAL.
         proj = get_project(r["project_id"])
         if not proj:
             continue

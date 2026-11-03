@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.14.3 — 2026-11-03
+### Changed — self-healing retries: at most 3, with a growing pause of 5, 15 and 45 minutes
+- The default for `AIWERKSTATT_MAX_RETRIES` is now **3** (was 5) and the pause before each retry grows **5 min → 15 min → 45 min** (was 90 s up to 15 min). Every retry costs provider tokens, so a task that keeps failing stops sooner and slower: in the first hour at most two retries start.
+- The pause is `AIWERKSTATT_RETRY_BASE_SEC` (300) × `AIWERKSTATT_RETRY_FACTOR` (3) ^ attempts, capped by `AIWERKSTATT_RETRY_CAP_SEC` (2700). The 12-hour window and `0` = no attempt limit are unchanged.
+- After the last retry fails, the task is marked failed with the reason, shown once in the task view, and never picked up again (unchanged from 0.14.2).
+- Tests: `backend/tests/test_self_healing.py` checks the defaults and the three pauses. Docs: `docs/architecture.md`, `.env.example`.
+
 ## 0.14.2 — 2026-10-31
 ### Fixed — self-healing retries never ran; now they run, and they are bounded
 - **The bug:** the `tasks` table had no `started_at` and `error` columns, but the self-healing retry (`engine.resurrect_stale_tasks`) read and wrote both. Every call raised `no such column: t.started_at`, and the background loop swallowed the error without a trace. A run that ended without a reply (runner killed, provider stream broken off) was never retried, and a task left behind as "running" stayed that way.

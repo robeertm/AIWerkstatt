@@ -84,9 +84,9 @@ a project that's already busy is simply requeued for later.
 A run can end without a reply: the runner container was killed, or the provider
 stream broke off. When no runner for the project is alive and the task's descriptor
 has been claimed, the engine re-queues the task by itself, with a growing pause
-between attempts (90 s, 180 s, 360 s, 720 s, then 15 min). It is bounded twice:
+between attempts (5 min, 15 min, then 45 min). It is bounded twice:
 
-- at most `AIWERKSTATT_MAX_RETRIES` automatic attempts per task (default 5;
+- at most `AIWERKSTATT_MAX_RETRIES` automatic attempts per task (default 3;
   `0` = no attempt limit), and
 - only within 12 hours of the original request (`AIWERKSTATT_RETRY_MAX_AGE_SEC`).
 

@@ -10,7 +10,7 @@ import os
 # self-update check honest: a bumped pyproject can never drift from what the app
 # reports, so the "update available" banner clears once a build actually ships.
 # Falls back to the literal below only if pyproject isn't bundled (bump both on release).
-def _read_version(fallback="0.14.2"):
+def _read_version(fallback="0.14.3"):
     here = os.path.dirname(__file__)
     for p in (os.path.join(here, "pyproject.toml"),        # bundled next to backend (in the image)
               os.path.join(here, "..", "pyproject.toml")):  # repo root (running from source)
@@ -72,7 +72,7 @@ DOCKER_HOST = os.environ.get("DOCKER_HOST", "tcp://dockerproxy:2375")
 AGENT_RUNNER_IMAGE = os.environ.get("AGENT_RUNNER_IMAGE", "aiwerkstatt-agent-runner:latest")
 
 # Auto-retry an aborted run this many times (0 = unlimited until success).
-MAX_RETRIES = int(os.environ.get("AIWERKSTATT_MAX_RETRIES", "5"))
+MAX_RETRIES = int(os.environ.get("AIWERKSTATT_MAX_RETRIES", "3"))
 
 # First-run admin bootstrap (real PIN is set in the browser on first start).
 ADMIN = os.environ.get("AIWERKSTATT_ADMIN", "admin")

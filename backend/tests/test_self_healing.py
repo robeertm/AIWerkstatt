@@ -181,6 +181,12 @@ class SelfHealing(unittest.TestCase):
         self.assertEqual(len(self.events("retry (")), 3)
         self.assertEqual(engine._thread_status(self.thread_id), "failed")
 
+    def test_defaults_three_retries_growing_pause(self):
+        """Defaults: at most 3 automatic retries, pauses of 5, 15 and 45 minutes."""
+        self.assertEqual(engine.MAX_RETRIES, 3)
+        self.assertEqual([engine._retry_cooldown(n) for n in (0, 1, 2)], [300, 900, 2700])
+        self.assertEqual(engine._retry_cooldown(9), 2700)
+
     def test_cooldown_measured_from_last_attempt(self):
         engine.MAX_RETRIES = 10
         self._claim()
@@ -190,8 +196,8 @@ class SelfHealing(unittest.TestCase):
         self.assertEqual(self.heal(), [])
         self.assertEqual(self.task()["status"], "retrying")
         self.assertEqual(engine._thread_status(self.thread_id), "retrying")
-        # once the cooldown (2 attempts → 360 s) has passed, the next attempt starts
-        db.execute("UPDATE tasks SET finished_at=? WHERE id=?", (_iso(400), self.task_id))
+        # once the cooldown (2 attempts → 2700 s) has passed, the next attempt starts
+        db.execute("UPDATE tasks SET finished_at=? WHERE id=?", (_iso(2800), self.task_id))
         self.assertEqual(len(self.heal()), 1)
         t = self.task()
         self.assertEqual((t["status"], t["attempts"]), ("queued", 3))

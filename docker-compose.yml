@@ -31,7 +31,7 @@ services:
       AIWERKSTATT_PORT_RANGE: ${AIWERKSTATT_PORT_RANGE:-8100-8199}
       # Host reachable name the browser uses to open a live app (localhost by default).
       AIWERKSTATT_PUBLIC_HOST: ${AIWERKSTATT_PUBLIC_HOST:-localhost}
-      AIWERKSTATT_MAX_RETRIES: ${AIWERKSTATT_MAX_RETRIES:-5}
+      AIWERKSTATT_MAX_RETRIES: ${AIWERKSTATT_MAX_RETRIES:-3}
       # Volume names the orchestrator mounts into the agent-runner containers.
       # Must match the explicit names below so both sides share the same volumes.
       AIWERKSTATT_VOL_WORKSPACES: aiwerkstatt-workspaces
