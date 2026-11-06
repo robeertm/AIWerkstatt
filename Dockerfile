@@ -27,5 +27,8 @@ ENV AIWERKSTATT_DIST=/app/dist
 EXPOSE 8095
 # The orchestrator runs as a background thread in this single worker; long agent
 # runs happen in separate containers and never block the HTTP worker.
+# Own health probe (the image has no curl): any HTTP error or timeout makes it exit non-zero.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request as u; u.urlopen('http://127.0.0.1:8095/api/health', timeout=4)"
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["gunicorn", "-w", "1", "--threads", "8", "-b", "0.0.0.0:8095", "app:app", "--timeout", "120"]

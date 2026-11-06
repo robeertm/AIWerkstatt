@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.14.4 — 2026-11-06
+### Added — Docker health check for the control plane
+- The `Dockerfile` now declares a `HEALTHCHECK` that calls `/api/health` (every 30 s, 5 s timeout, 30 s start period, 3 retries). It uses Python itself, because the image ships no curl. `docker ps` now shows `healthy` / `unhealthy` for the container.
+
 ## 0.14.3 — 2026-11-03
 ### Changed — self-healing retries: at most 3, with a growing pause of 5, 15 and 45 minutes
 - The default for `AIWERKSTATT_MAX_RETRIES` is now **3** (was 5) and the pause before each retry grows **5 min → 15 min → 45 min** (was 90 s up to 15 min). Every retry costs provider tokens, so a task that keeps failing stops sooner and slower: in the first hour at most two retries start.
