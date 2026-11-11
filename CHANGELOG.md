@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.14.5 — 2026-11-11
+### Changed — README screenshots refreshed
+- All 15 screenshots in `docs/screenshots/` were re-taken from the current interface (0.14.x): sign-in, gallery, project, task form, live feed, activity, publish panel, providers, usage, users, account, welcome dialog and a sample app built by the agent. Same file names, so every README link keeps working.
+- All images are 2560 px wide and sit in the README in equal-sized pairs, so the table rows line up. Small dialogs fill the frame instead of floating in empty space. The pictures show neutral sample data only (a "Habit Tracker" project, an `admin` and a `guest` user); every image was scanned for names, addresses and hosts before it was committed.
+- Release checklist (`docs/releasing.md`): refresh the screenshots when the interface changed since the last release.
+- The comment block in `release.yml` that explains the pre-release step is now in English and free of personal details.
+
 ## 0.14.4 — 2026-11-06
 ### Added — Docker health check for the control plane
 - The `Dockerfile` now declares a `HEALTHCHECK` that calls `/api/health` (every 30 s, 5 s timeout, 30 s start period, 3 retries). It uses Python itself, because the image ships no curl. `docker ps` now shows `healthy` / `unhealthy` for the container.

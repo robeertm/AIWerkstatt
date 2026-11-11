@@ -35,23 +35,15 @@ jobs:
         with:
           body_path: RELEASE_NOTES.md
           files: aiwerkstatt-*.tar.gz
-          # 🔴 ALS VORABFASSUNG, NICHT ALS „latest" (04.10.2026).
+          # Publish as a PRE-RELEASE, not as "latest".
           #
-          # Das README schickt jeden neuen Benutzer auf
-          # `releases/latest` — ein Tag-Push war damit sofort das, was
-          # Fremde herunterladen. Geprueft worden war nur der
-          # Arbeitsstand: der Leck-Scan laeuft oben auf dem Checkout, das
-          # ARCHIV selbst hat niemand aufgemacht.
+          # The README sends every new user to `releases/latest`, so a tag
+          # push used to be exactly what strangers download. Until now only
+          # the working tree had been checked (the leak scan above runs on
+          # the checkout); nobody had opened the archive itself.
           #
-          # Am 04.10.2026 ging bei DocuSort auf diesem Muster eine
-          # Fassung an Roberts Kunden, die nicht startete. Robert hat
-          # daraus eine stehende Anweisung gemacht, fuer saemtliche
-          # oeffentlichen Repos: niemals eine ungepruefte Fassung
-          # ausliefern.
-          #
-          # Jetzt legt der Tag-Push eine Vorabfassung ab — die laesst
-          # `releases/latest` aus, der README-Verweis zeigt also weiter
-          # auf die alte. `promote.yml` packt das VEROEFFENTLICHTE Archiv
-          # aus, liest es nach und macht es erst dann regulaer.
+          # A pre-release leaves `releases/latest` alone, so the README link
+          # keeps pointing at the previous version. `promote.yml` unpacks the
+          # PUBLISHED archive, checks it, and only then makes it regular.
           make_latest: "false"
           prerelease: true

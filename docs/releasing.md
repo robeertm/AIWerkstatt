@@ -20,8 +20,11 @@ Nothing else defines the version. Everything downstream reads it from here.
 2. **Add a matching changelog section.** `CHANGELOG.md` must contain a
    `## X.Y.Z` heading for that exact version. The release pipeline requires it —
    there is no release without a changelog entry.
-3. **Merge to the default branch** with CI green (see below).
-4. **Tag `vX.Y.Z`** and push the tag.
+3. **Refresh the README screenshots** if the interface changed since the last
+   release. They must show the current version, use neutral sample data only,
+   and keep their file names and pairwise sizes (see the README tables).
+4. **Merge to the default branch** with CI green (see below).
+5. **Tag `vX.Y.Z`** and push the tag.
 
 Tagging `vX.Y.Z` triggers **`.github/workflows/release.yml`**, which builds a
 **source archive** and publishes a **GitHub release** for the tag.
