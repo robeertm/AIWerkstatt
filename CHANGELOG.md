@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.15.0 — 2026-11-12
+### Added — fixed worker pool, subagent guard, visible progress
+- **Fixed worker pool:** at most `AIWERKSTATT_MAX_PARALLEL_RUNS` agent runs at the same time across all projects (default **5**, `0` = unlimited as before). Further orders wait in the task queue and start **strictly in order** — the queue is now sorted by task id as a number (9 before 10), and once the pool is full no later order can overtake an earlier one. Follow-ups that need a fresh run wait for a free slot the same way; follow-ups for a live run still go straight into it.
+- **Subagent guard** (`agent-runner/providers/subagent_guard.py`, wired by the Claude adapter via `--settings`): a PreToolUse/PostToolUse hook that enforces, in code, at most **2** subagents at the same time per run (`AIW_SUBAGENT_MAX`), **one level** only (a subagent cannot start its own), a model for every subagent (none given → `haiku`), and **never a more expensive model** than the run itself. A refused call gets a clear message so the agent continues step by step. Subagents run synchronously so counting and results stay inside the run.
+- **Cheaper default for subagents:** runners get `CLAUDE_CODE_SUBAGENT_MODEL=haiku` (`AIWERKSTATT_SUBAGENT_MODEL` to change it).
+- **Visible progress:** recent Claude Code CLIs offer no todo tool in headless runs unless `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` is set — runners now set it, the agent rules ask for a todo list from the start, and the live feed shows a 📋 line such as "Plan: 2/4 done — now: Writing tests" from `TaskCreate`/`TaskUpdate` (or `TodoWrite`).
+- Tests: `backend/tests/test_worker_pool_and_subagents.py` (5 run, 2 wait and start in order; unlimited mode; default model, cap of two, model ceiling, depth one).
+
 ## 0.14.5 — 2026-11-11
 ### Changed — README screenshots refreshed
 - All 15 screenshots in `docs/screenshots/` were re-taken from the current interface (0.14.x): sign-in, gallery, project, task form, live feed, activity, publish panel, providers, usage, users, account, welcome dialog and a sample app built by the agent. Same file names, so every README link keeps working.

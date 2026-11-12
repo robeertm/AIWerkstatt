@@ -62,6 +62,10 @@ VOL_VAULT = os.environ.get("AIWERKSTATT_VOL_VAULT", "aiwerkstatt-vault")
 VAULT_BIND = "/vault"
 
 MEM_LIMIT = os.environ.get("AIWERKSTATT_RUN_MEM", "2g")
+# Fixed worker pool (0.15.0): at most this many agent runs at the same time across ALL projects.
+# Further orders wait in the task queue and start strictly in order (lowest task id first) as soon as
+# a slot is free. 0 = unlimited (old behaviour).
+MAX_PARALLEL_RUNS = int(os.environ.get("AIWERKSTATT_MAX_PARALLEL_RUNS", "5") or 0)
 PIDS_LIMIT = int(os.environ.get("AIWERKSTATT_RUN_PIDS", "512"))
 
 # Scan the app the agent built for hard-coded secrets BEFORE it goes live — the same
@@ -221,6 +225,10 @@ class Orchestrator:
             # default 10 min). Raised to 30 min for larger fan-outs; genuine hangs are caught by the
             # stall watchdog. Harmless for non-Claude providers.
             "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": os.environ.get("WK_BG_WAIT_CEILING_MS", "1800000"),
+            # Subagents without an explicit model run on the cheapest one; the todo tools
+            # (TaskCreate/TaskUpdate) are off in headless runs unless enabled → no visible progress.
+            "CLAUDE_CODE_SUBAGENT_MODEL": os.environ.get("AIWERKSTATT_SUBAGENT_MODEL", "haiku"),
+            "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1",
             "WK_WT": "%s/%s" % (WORKSPACES_BIND, slug),
             "WK_FIRST_MSG_FILE": first,
             "WK_FIRST_TASK": str(int(d["id"])),
@@ -272,7 +280,14 @@ class Orchestrator:
         _log("run for %s finished" % slug)
 
     # ---- queue poll -------------------------------------------------------
-    def _handle(self, d):
+    def _pool_full(self) -> bool:
+        if MAX_PARALLEL_RUNS <= 0:
+            return False
+        live = sum(1 for slug in list(self._running) if self._alive(slug))
+        return live >= MAX_PARALLEL_RUNS
+
+    def _handle(self, d, pool_full=False):
+        """Route one descriptor. Returns "requeued_pool" when it had to wait for a free slot."""
         slug = d["slug"]
         kind = d.get("kind", "new")
         thread_id = int(d["thread_id"])
@@ -281,21 +296,28 @@ class Orchestrator:
             if alive and alive["thread_id"] == thread_id:
                 self._drop_inbox(thread_id, {"kind": kind, "id": d.get("id"),
                                              "text": d.get("text", "")})
-                return
+                return None
             if kind == "followup" and not alive:
+                if pool_full or self._pool_full():
+                    self._requeue(d)
+                    return "requeued_pool"
                 self._launch(d)   # resume via session_id if present
             # compact/stop with no live session → nothing to do
-            return
+            return None
         # kind == new
         if alive:
             # project busy with another thread → requeue this descriptor for later
             self._requeue(d)
-            return
+            return None
+        if pool_full or self._pool_full():
+            self._requeue(d)
+            return "requeued_pool"
         self._launch(d)
+        return None
 
     def _requeue(self, d):
         try:
-            p = os.path.join(TASK_QUEUE, "%d.json" % int(d["id"]))
+            p = os.path.join(TASK_QUEUE, "%s.json" % d["id"])
             tmp = p + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(d, f, ensure_ascii=False)
@@ -303,11 +325,18 @@ class Orchestrator:
         except OSError as e:
             _log("requeue failed: %s" % e)
 
+    @staticmethod
+    def _queue_order(name):
+        """Strict FIFO by task id (9 before 10); non-numeric control descriptors first."""
+        stem = name[:-5] if name.endswith(".json") else name
+        return (1, int(stem), "") if stem.isdigit() else (0, 0, stem)
+
     def poll_once(self):
         try:
-            names = sorted(os.listdir(TASK_QUEUE))
+            names = sorted(os.listdir(TASK_QUEUE), key=self._queue_order)
         except OSError:
             return
+        pool_full = False
         for n in names:
             if not n.endswith(".json") or n.endswith(".tmp"):
                 continue
@@ -321,7 +350,9 @@ class Orchestrator:
                 except OSError: pass
                 continue
             try:
-                self._handle(d)
+                # Once the pool is full, every later order waits too (no overtaking).
+                if self._handle(d, pool_full=pool_full) == "requeued_pool":
+                    pool_full = True
             except Exception as e:
                 _log("handle error for %s: %s" % (n, e))
 

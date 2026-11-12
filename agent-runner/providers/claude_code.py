@@ -8,8 +8,41 @@ CLAUDE_CODE_OAUTH_TOKEN), sourced by the entrypoint — never on the command lin
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 
 from .base import AgentAdapter, RunContext, register
+
+# Subagent guard (0.15.0): at most N parallel subagents per run, one level deep, model never above the
+# run's own model, default haiku. Enforced by a PreToolUse/PostToolUse hook passed via --settings.
+_GUARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subagent_guard.py")
+_SUBAGENT_MAX = int(os.environ.get("AIW_SUBAGENT_MAX", "2") or 2)
+
+
+def _guard_settings(model: str) -> str:
+    """Write the hook settings for this run and return the file path ("" if the guard is missing)."""
+    if not os.path.exists(_GUARD):
+        return ""
+    folder = tempfile.mkdtemp(prefix="aiw-guard-")
+    cmd = "python3 %s --model %s --max %d --state %s" % (_GUARD, model or "haiku", _SUBAGENT_MAX, folder)
+    hook = [{"type": "command", "command": cmd, "timeout": 15}]
+    cfg = {"hooks": {"PreToolUse": [{"matcher": "^(Agent|Task)$", "hooks": hook}],
+                     "PostToolUse": [{"matcher": "^(Agent|Task)$", "hooks": hook}],
+                     "PostToolUseFailure": [{"matcher": "^(Agent|Task)$", "hooks": hook}]}}
+    path = os.path.join(folder, "settings.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f)
+    return path
+
+
+def _plan_line(tasks: dict) -> str:
+    live = [t for t in tasks.values() if t.get("status") != "deleted"]
+    done = sum(1 for t in live if t.get("status") == "completed")
+    cur = next((t for t in live if t.get("status") == "in_progress"), None)
+    line = "Plan: %d/%d done" % (done, len(live))
+    if cur:
+        line += " — now: " + (cur.get("active") or cur.get("subject") or "")
+    return line
 
 _VALID_EFFORT = {"low", "medium", "high", "xhigh", "max"}
 _MAX_ACT = 300           # compact one-liner (default live view)
@@ -87,7 +120,12 @@ _AGENT_RULES = (
     "background processes (nohup, &, disown, daemons or self-invoked CLI calls) — their output is lost "
     "the moment your run ends. Do EVERYTHING within this run: wait for subagents, reassemble, verify "
     "and commit BEFORE you reply. Never announce that you will report back later — after your reply "
-    "the run ends, there is no later."
+    "the run ends, there is no later. "
+    "Keep a todo list from the start (TaskCreate per step, TaskUpdate with in_progress/completed; "
+    "TodoWrite if that is the tool you have) so progress is visible. Subagents: at most 2 at the same "
+    "time, one level only, always set model (haiku for searching, reading, summarising, logs and docs; "
+    "sonnet for regular code/config changes, tests and translations; opus only for security, "
+    "architecture and hard debugging), never more expensive than your own model."
 )
 
 
@@ -96,6 +134,7 @@ class ClaudeAdapter(AgentAdapter):
 
     def __init__(self):
         self.model = "claude-opus-4-8"
+        self._tasks: dict = {}
 
     def build_argv(self, ctx: RunContext) -> list[str]:
         self.model = ctx.model or self.model
@@ -117,6 +156,9 @@ class ClaudeAdapter(AgentAdapter):
             tools += ",Agent"
         argv += ["--allowedTools", tools,
                  "--append-system-prompt", _AGENT_RULES]
+        settings = _guard_settings(ctx.model or self.model)
+        if settings:
+            argv += ["--settings", settings]
         return argv
 
     def encode_user_message(self, text: str) -> bytes:
@@ -149,6 +191,21 @@ class ClaudeAdapter(AgentAdapter):
             return cw if cw > 0 else None
         except (TypeError, ValueError):
             return None
+
+    def _track_plan(self, name: str, inp: dict) -> None:
+        """Fold the agent's todo calls into a step list (TaskCreate/TaskUpdate or TodoWrite)."""
+        if name == "TodoWrite" and isinstance(inp.get("todos"), list):
+            self._tasks = {str(i): {"subject": t.get("content", ""), "active": t.get("activeForm", ""),
+                                    "status": t.get("status", "pending")}
+                           for i, t in enumerate(inp["todos"], 1) if isinstance(t, dict)}
+        elif name == "TaskCreate":
+            self._tasks[str(len(self._tasks) + 1)] = {"subject": inp.get("subject", ""),
+                                                      "active": inp.get("activeForm", ""), "status": "pending"}
+        elif name == "TaskUpdate":
+            t = self._tasks.setdefault(str(inp.get("taskId", "?")), {"subject": "", "active": "", "status": "pending"})
+            for src, dst in (("status", "status"), ("subject", "subject"), ("activeForm", "active")):
+                if inp.get(src):
+                    t[dst] = inp[src]
 
     def parse_line(self, raw: str) -> list[dict]:
         raw = raw.strip()
@@ -188,6 +245,10 @@ class ClaudeAdapter(AgentAdapter):
                             out.append(_act("think", _clip(txt), txt))
                     elif bt == "tool_use":
                         name, inp = bl.get("name", "?"), bl.get("input") or {}
+                        if name in ("TaskCreate", "TaskUpdate", "TodoWrite") and not o.get("parent_tool_use_id"):
+                            self._track_plan(name, inp)
+                            out.append(_act("plan", _clip(_plan_line(self._tasks))))
+                            continue
                         out.append(_act("tool", _clip(_tool_line(name, inp)), _tool_full(name, inp)))
         elif t == "user":
             content = (o.get("message") or {}).get("content")

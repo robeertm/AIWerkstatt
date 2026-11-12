@@ -217,6 +217,7 @@ function LiveRow({ e, showFull, onToggle }: { e: LiveRowT; showFull: boolean; on
     return <div className={`liverow tool${bash ? ' bash' : ''}`} {...click}>{bash ? e.text : `🔧 ${e.text}`}{more}</div>
   }
   if (e.act === 'think') return <div className="liverow think" {...click}>💭 {e.text}{more}</div>
+  if (e.act === 'plan') return <div className="liverow say" {...click}>📋 {e.text}{more}</div>
   if (e.act === 'result') return <div className="liverow result" {...click}>↳ {e.text}{more}</div>
   return <div className="liverow say" {...click}>💬 {e.text}{more}</div>
 }
