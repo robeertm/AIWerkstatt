@@ -646,6 +646,13 @@ def usage():
     return jsonify(engine.usage_summary())
 
 
+@app.get("/api/pool")
+@admin_required
+def pool():
+    """Agents at work: how many of the fixed worker slots are busy, how many orders wait."""
+    return jsonify(ORCH.pool_snapshot())
+
+
 @app.get("/api/model-usage")
 @login_required
 def model_usage():

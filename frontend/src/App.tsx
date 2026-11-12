@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   Me, User, Provider, Project, ThreadSummary, ThreadDetail, FileEntry, FileListing,
   UsageSummary, LimitStatus, UpdateInfo, GithubStatus, ActivityItem, ScanResult, PublishStatus,
-  LiveEntry, PlanLimit,
+  LiveEntry, PlanLimit, PoolSnapshot,
 } from './types'
 import * as api from './api'
+import { focusInField, hasDraft, loopGuard, reloadAllowed } from './updateReload'
 
 // ---------- helpers ----------
 function relTime(iso: string): string {
@@ -606,8 +607,55 @@ function ProjectView({ id, isAdmin, onBack, onOpenThread }: { id: string; isAdmi
   )
 }
 
+// ---------- Agents at work (admins) ----------
+function runTime(iso: string | null): string {
+  if (!iso) return ''
+  const t = Date.parse(iso.endsWith('Z') || /[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + 'Z')
+  if (isNaN(t)) return ''
+  const m = Math.max(0, Math.floor((Date.now() - t) / 60000))
+  return m < 1 ? '<1 min' : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`
+}
+// Polls only while the tab is visible; rendered for admins only, so everyone else never calls /api/pool.
+function PoolStrip({ names }: { names: Record<string, string> }) {
+  const [pool, setPool] = useState<PoolSnapshot | null>(null)
+  useEffect(() => {
+    let alive = true
+    const f = () => {
+      if (document.visibilityState !== 'visible') return
+      api.getPool().then((d) => { if (alive) setPool(d) }).catch(() => {})
+    }
+    f(); const t = setInterval(f, 5000)
+    document.addEventListener('visibilitychange', f)
+    return () => { alive = false; clearInterval(t); document.removeEventListener('visibilitychange', f) }
+  }, [])
+  if (!pool) return null
+  const slots = pool.max > 0 ? pool.max : Math.max(pool.busy, 5)
+  const tiles = Array.from({ length: Math.max(slots, pool.busy) }, (_, i) => pool.runs[i] || null)
+  return (
+    <div className="card pad poolstrip" style={{ marginBottom: '1.2rem' }}>
+      <div className="row" style={{ flexWrap: 'wrap', gap: '.5rem' }}>
+        <b>🤖 Agents at work</b>
+        <span className="chip" style={{ cursor: 'default', color: pool.busy ? 'var(--warn)' : 'var(--muted)' }}>
+          {pool.max > 0 ? `${pool.busy}/${pool.max}` : pool.busy} busy</span>
+        {pool.waiting > 0 && <span className="chip" style={{ cursor: 'default', color: 'var(--muted)' }}>{pool.waiting} waiting</span>}
+      </div>
+      <div className="pooltiles">
+        {tiles.map((r, i) => r ? (
+          <div key={r.project} className="pooltile busy" title={r.title}>
+            <div className="pt-name">{names[r.project] || r.project}</div>
+            <div className="pt-sub">{r.title || '—'}</div>
+            <div className="pt-meta">{[r.model, runTime(r.started_at)].filter(Boolean).join(' · ') || '—'}</div>
+          </div>
+        ) : (
+          <div key={'free' + i} className="pooltile free"><div className="pt-name">free</div></div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ---------- Gallery ----------
-function Gallery({ onOpen }: { onOpen: (id: string) => void }) {
+function Gallery({ onOpen, isAdmin }: { onOpen: (id: string) => void; isAdmin: boolean }) {
   const [projects, setProjects] = useState<Project[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
   const [creating, setCreating] = useState(false)
@@ -642,6 +690,7 @@ function Gallery({ onOpen }: { onOpen: (id: string) => void }) {
   }
   return (
     <div className="wrap fadein">
+      {isAdmin && <PoolStrip names={Object.fromEntries(projects.map((p) => [p.id, p.name]))} />}
       <button className="btn primary" style={{ width: '100%', padding: '.9rem', marginBottom: '1.2rem' }} onClick={() => setCreating((v) => !v)}>➕ New project</button>
       {creating && (
         <div className="card pad stack" style={{ marginBottom: '1.2rem' }}>
@@ -984,6 +1033,96 @@ function UpdateBanner() {
   )
 }
 
+// ---------- Self-reload after an update ----------
+// A new build is detected without any backend support: Vite hashes the bundle (`index-<hash>.js`), so a
+// freshly fetched index.html that names a different bundle means a new version is live. The page then
+// reloads itself — but never over an unsent draft, a focused field or a running write — and shows a
+// banner only as a fallback when it could not reload for a while.
+const BUNDLE_RE = /index-([A-Za-z0-9_-]+)\.js/
+const RELOAD_POLL_MS = 60000
+const RELOAD_CHECK_MS = 3000
+const RELOAD_BANNER_MS = 45000
+const watch = { lastInput: Date.now(), writes: 0, installed: false }
+function installWatch() {
+  if (watch.installed) return
+  watch.installed = true
+  const touch = () => { watch.lastInput = Date.now() }
+  for (const ev of ['pointerdown', 'keydown', 'touchstart', 'wheel', 'scroll', 'input'])
+    window.addEventListener(ev, touch, { capture: true, passive: true })
+  // Every non-GET request (sending a task, an upload) counts until it has finished.
+  const orig = window.fetch.bind(window)
+  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    const m = (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase()
+    if (m === 'GET' || m === 'HEAD') return orig(input, init)
+    watch.writes++
+    return orig(input, init).finally(() => { watch.writes = Math.max(0, watch.writes - 1) })
+  }
+}
+function pageState() {
+  return {
+    visible: document.visibilityState === 'visible',
+    idleMs: Date.now() - watch.lastInput,
+    focusInField: focusInField(document as never),
+    draft: hasDraft(document as never),
+    pendingWrites: watch.writes,
+  }
+}
+function AutoReload() {
+  const [next, setNext] = useState<string | null>(null)   // hash of the new bundle
+  const [banner, setBanner] = useState(false)
+  // 1) detect a new version: every 60 s and right when the tab becomes visible again
+  useEffect(() => {
+    installWatch()
+    let own: string | null = null
+    for (const s of Array.from(document.querySelectorAll('script[src]'))) {
+      const m = (s as HTMLScriptElement).src.match(BUNDLE_RE)
+      if (m) { own = m[1]; break }
+    }
+    if (!own) return                      // dev server etc. → nothing to compare
+    let alive = true, found = false
+    let timer: number
+    const check = async () => {
+      if (found) return
+      try {
+        const html = await fetch(`/?_v=${Date.now()}`, { cache: 'no-store' }).then((r) => r.text())
+        const m = html.match(BUNDLE_RE)
+        if (alive && m && m[1] !== own) { found = true; setNext(m[1]) }
+      } catch { /* offline or restarting → try again next time */ }
+    }
+    const tick = () => { check().finally(() => { if (alive && !found) timer = window.setTimeout(tick, RELOAD_POLL_MS) }) }
+    timer = window.setTimeout(tick, RELOAD_POLL_MS)
+    const vis = () => { if (document.visibilityState === 'visible') check() }
+    document.addEventListener('visibilitychange', vis)
+    return () => { alive = false; clearTimeout(timer); document.removeEventListener('visibilitychange', vis) }
+  }, [])
+  // 2) new version found → reload as soon as it is safe; otherwise fall back to the banner
+  useEffect(() => {
+    if (!next) return
+    if (loopGuard(sessionStorage, next)) { setBanner(true); return }   // this version was already tried once
+    const go = (immediate: boolean) => {
+      if (!reloadAllowed(pageState(), { immediate })) return
+      try { sessionStorage.setItem('aiw_autoreload', next) } catch { /* private mode → fine */ }
+      location.reload()
+    }
+    go(false)
+    const iv = window.setInterval(() => go(false), RELOAD_CHECK_MS)
+    const vis = () => go(true)            // to the background or back: at once, if there is no draft
+    document.addEventListener('visibilitychange', vis)
+    const bt = window.setTimeout(() => setBanner(true), RELOAD_BANNER_MS)
+    return () => { clearInterval(iv); clearTimeout(bt); document.removeEventListener('visibilitychange', vis) }
+  }, [next])
+  if (!next || !banner) return null
+  return (
+    <div className="banner info">
+      <span>✨ A new version is available.</span>
+      <button className="btn primary" style={{ padding: '.3rem .8rem' }} onClick={() => {
+        if (hasDraft(document as never) && !window.confirm('You have unsent text. Reload anyway?')) return
+        location.reload()
+      }}>🔄 Reload</button>
+    </div>
+  )
+}
+
 // ---------- Onboarding ----------
 function Onboarding({ onClose }: { onClose: () => void }) {
   return (
@@ -1208,8 +1347,9 @@ export default function App() {
         <button className="chip" onClick={() => api.logout().then(refreshMe)}>Sign out</button>
       </div>
       {isAdmin && <UpdateBanner />}
+      <AutoReload />
       <LimitBanner />
-      {view.v === 'gallery' && <Gallery onOpen={(id) => setView({ v: 'project', id })} />}
+      {view.v === 'gallery' && <Gallery isAdmin={isAdmin} onOpen={(id) => setView({ v: 'project', id })} />}
       {view.v === 'project' && <ProjectView id={view.id} isAdmin={isAdmin} onBack={() => setView({ v: 'gallery' })}
         onOpenThread={(tid) => setView({ v: 'thread', tid, accent: '#7c6cf0' })} />}
       {view.v === 'thread' && <ThreadView tid={view.tid} accent={view.accent} isAdmin={isAdmin} onBack={() => { const cur = view; setView({ v: 'gallery' }); void cur }} />}

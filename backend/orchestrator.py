@@ -29,6 +29,7 @@ import threading
 import time
 
 import config
+import db
 from scrub.scan import scan_tree
 
 try:
@@ -258,7 +259,8 @@ class Orchestrator:
             network_mode="bridge",   # needs internet for the provider API + git/npm
         )
         with self._lock:
-            self._running[slug] = {"container": container, "thread_id": thread_id}
+            self._running[slug] = {"container": container, "thread_id": thread_id,
+                                   "task_id": d.get("id"), "model": d.get("model") or ""}
         threading.Thread(target=self._monitor, args=(slug, container),
                          daemon=True, name="run-%s" % slug).start()
 
@@ -285,6 +287,57 @@ class Orchestrator:
             return False
         live = sum(1 for slug in list(self._running) if self._alive(slug))
         return live >= MAX_PARALLEL_RUNS
+
+    def pool_snapshot(self) -> dict:
+        """Live view of the worker pool for the admin overview. Counts exactly like the pool
+        itself: a run is busy while its container is alive; an order is waiting while its
+        descriptor sits in the task queue (follow-ups for a live run are fed straight into it
+        and never wait). ``max`` 0 = unlimited."""
+        runs = []
+        live_threads = {}
+        for slug in list(self._running):
+            info = self._alive(slug)
+            if not info:
+                continue
+            tid = int(info["thread_id"])
+            live_threads[slug] = tid
+            row = None
+            try:
+                if info.get("task_id"):
+                    row = db.query_one("SELECT started_at FROM tasks WHERE id = ?", (info["task_id"],))
+                if row is None:
+                    row = db.query_one("SELECT started_at FROM tasks WHERE thread_id = ? "
+                                       "ORDER BY id DESC LIMIT 1", (tid,))
+                th = db.query_one("SELECT title FROM threads WHERE id = ?", (tid,))
+            except Exception:   # a DB hiccup must not hide the pool
+                row, th = None, None
+            title = ((th["title"] if th else "") or "").strip()
+            if len(title) > 80:
+                title = title[:79].rstrip() + "…"
+            runs.append({"project": slug, "title": title,
+                         "started_at": (row["started_at"] if row else None) or None,
+                         "model": info.get("model") or ""})
+        runs.sort(key=lambda r: (r["started_at"] or "", r["project"]))
+        waiting = 0
+        try:
+            names = os.listdir(TASK_QUEUE)
+        except OSError:
+            names = []
+        for n in names:
+            if not n.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(TASK_QUEUE, n), "r", encoding="utf-8") as f:
+                    d = json.load(f)
+            except (OSError, ValueError):
+                continue
+            kind = d.get("kind", "new")
+            if kind not in ("new", "followup"):
+                continue   # compact / stop are control messages, not work
+            if kind == "followup" and live_threads.get(d.get("slug")) == int(d.get("thread_id") or 0):
+                continue
+            waiting += 1
+        return {"max": max(MAX_PARALLEL_RUNS, 0), "busy": len(runs), "waiting": waiting, "runs": runs}
 
     def _handle(self, d, pool_full=False):
         """Route one descriptor. Returns "requeued_pool" when it had to wait for a free slot."""

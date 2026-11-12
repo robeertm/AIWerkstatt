@@ -28,6 +28,9 @@ export type UsageSummary = {
 }
 export type PlanWindow = { pct: number | null; resets_at: string | null }
 export type PlanLimit = { connected: boolean; available?: boolean; session?: PlanWindow; weekly?: PlanWindow }
+// Worker pool overview (admins): max 0 = unlimited.
+export type PoolRun = { project: string; title: string; started_at: string | null; model: string }
+export type PoolSnapshot = { max: number; busy: number; waiting: number; runs: PoolRun[] }
 export type LimitStatus = { active: boolean; until?: number; resumes_at?: string; reset_known?: boolean }
 export type UpdateInfo = { current: string; latest: string | null; update_available: boolean; url: string }
 export type GithubStatus = { connected: boolean; login: string | null }
