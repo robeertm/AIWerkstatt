@@ -506,6 +506,14 @@ def read_live(thread_id, offset=0):
     model, effort = _live_meta(thread_id)
     out = {"entries": entries, "offset": new_offset, "live": live,
            "model": model, "effort": effort}
+    out.update(live_vitals(thread_id))
+    st = db.query_one("SELECT started_at FROM tasks WHERE thread_id=? AND status='running' "
+                      "ORDER BY id DESC LIMIT 1", (thread_id,))
+    if st and st["started_at"]:
+        try:
+            out["started"] = calendar.timegm(time.strptime(str(st["started_at"]), "%Y-%m-%dT%H:%M:%SZ"))
+        except ValueError:
+            pass
     # 🤖 Auto: if this thread's project runs on auto, add the chosen model/intensity
     # (the status file's effort isn't populated) plus the reason + plan for the UI.
     th = db.query_one("SELECT project_id FROM threads WHERE id=?", (thread_id,))
@@ -520,6 +528,101 @@ def read_live(thread_id, offset=0):
             out["auto_reason"] = dec.get("reason", "")
             out["auto_plan"] = dec.get("plan")
     return out
+
+
+# ---------- vital signs: "is the agent alive?" (0.16.0) ----------
+# Derived from the live feed, not from the task status. Activity = any feed line or any byte
+# the runner saw from the agent (status file `last_output`, which also covers silent thinking).
+# Thresholds (seconds): a model turn rarely takes longer than 1-2 min, so 90 s without a line is
+# "quiet" (normal, waiting for the model). 10 min with no output and no open command is unusual
+# (yellow), 30 min practically certain to be stuck (red). An open command (say a 7-minute test
+# run) is never suspicious by itself: it shows "command running since …" and gets no warning.
+THINKING_S = 90
+QUIET_YELLOW_S = 10 * 60
+QUIET_RED_S = 30 * 60
+LIVE_TAIL_BYTES = 512 * 1024
+_SUBAGENT_PREFIXES = ("Agent:", "Task:")
+
+
+def vitals_from(entries, last_output=0, now=None):
+    """Pure core. `entries` = feed entries (dicts with act/text/at), oldest first.
+    Returns {} when there is nothing to judge, else last_activity (epoch s), quiet_s, state
+    (command | subagent | thinking | quiet | stalled_yellow | stalled_red), command_since,
+    command (short text) and `now` (server clock, for the browser to count on from)."""
+    now = time.time() if now is None else now
+    last = int(last_output or 0)
+    opened = []                                  # FIFO of (at, text) for tool calls without a result yet
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        at = e.get("at")
+        if isinstance(at, (int, float)) and at > last:
+            last = int(at)
+        act = e.get("act")
+        if act in ("tool", "plan"):
+            opened.append((at if isinstance(at, (int, float)) else None, str(e.get("text") or "")))
+        elif act == "result" and opened:
+            opened.pop(0)
+    if not last:
+        return {}
+    quiet = max(0, int(now - last))
+    opened = [o for o in opened if o[0] is not None]
+    commands = [o for o in opened if not o[1].startswith(_SUBAGENT_PREFIXES)]
+    subs = [o for o in opened if o[1].startswith(_SUBAGENT_PREFIXES)]
+    since = text = None
+    if commands:
+        state, (since, text) = "command", commands[0]
+    elif subs and quiet < QUIET_YELLOW_S:
+        state, (since, text) = "subagent", subs[0]
+    elif quiet >= QUIET_RED_S:
+        state = "stalled_red"
+    elif quiet >= QUIET_YELLOW_S:
+        state = "stalled_yellow"
+    elif quiet < THINKING_S:
+        state = "thinking"
+    else:
+        state = "quiet"
+    out = {"last_activity": last, "quiet_s": quiet, "state": state, "now": int(now)}
+    if since is not None:
+        out["command_since"] = int(since)
+        out["command"] = text[:160]
+    return out
+
+
+def _live_tail(path):
+    size = os.path.getsize(path)
+    start = max(0, size - LIVE_TAIL_BYTES)
+    with open(path, "rb") as f:
+        f.seek(start)
+        raw = f.read().decode("utf-8", errors="replace")
+    lines = raw.split("\n")
+    if start > 0:
+        lines = lines[1:]                       # first line may be cut
+    out = []
+    for line in lines:
+        line = line.strip()
+        if line:
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+    return out
+
+
+def live_vitals(thread_id, now=None):
+    """Vital signs of the thread's current run ({} if nothing to judge)."""
+    path = os.path.join(EVENTS_DIR, "live-%d.jsonl" % thread_id)
+    try:
+        entries = _live_tail(path)
+    except OSError:
+        entries = []
+    last_output = 0
+    try:
+        with open(os.path.join(EVENTS_DIR, "status-%d.json" % thread_id), "r", encoding="utf-8") as f:
+            last_output = int(json.load(f).get("last_output") or 0)
+    except (OSError, ValueError, TypeError):
+        pass
+    return vitals_from(entries, last_output, now)
 
 
 # ---------- live activity (for the ticker) ----------

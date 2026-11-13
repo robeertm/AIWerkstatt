@@ -101,6 +101,7 @@ def emit(task_id, etype, text, payload=None):
 
 
 _live_seq = 0
+_last_output = [time.time()]   # when did the agent last produce ANY output (silent thinking included)? → status file
 
 
 def emit_activity(act, text):
@@ -124,7 +125,8 @@ def write_status(ctx_pct, alive, pending, compacting=False):
     _atomic_write(STATUS_FILE, json.dumps(
         {"alive": bool(alive), "ctx_pct": int(ctx_pct), "pending": int(pending),
          "compacting": bool(compacting), "thread_id": THREAD_ID, "slug": SLUG,
-         "model": MODEL, "effort": EFFORT, "updated": int(time.time())}, ensure_ascii=False))
+         "model": MODEL, "effort": EFFORT, "updated": int(time.time()),
+         "last_output": int(_last_output[0])}, ensure_ascii=False))
 
 
 def write_limit(until, since, known=False):
@@ -260,6 +262,7 @@ def main():
         # 1) new runlog lines → normalised events
         for line in rlf:
             last_output = time.time()   # any byte from the agent → it's alive (stall watchdog)
+            _last_output[0] = last_output
             for ev in adapter.parse_line(line):
                 kind = ev.get("kind")
                 if kind == "session":
@@ -369,6 +372,7 @@ def main():
                  "completed. Check the current state briefly, then finish the task.")
             now = time.time()
             last_activity = last_output = now
+            _last_output[0] = now
             continue
 
         if should_close:

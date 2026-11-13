@@ -43,6 +43,10 @@ export type AutoPlan = { tier: string; steps: string[]; note?: string }
 export type LiveFeed = {
   entries: LiveEntry[]; offset: number; live: boolean; model?: string; effort?: string
   auto?: boolean; auto_reason?: string; auto_plan?: AutoPlan | null   // 🤖 Auto mode
+  // 💓 vital signs (0.16.0), all times in Unix seconds
+  last_activity?: number; quiet_s?: number; now?: number; started?: number
+  state?: 'command' | 'subagent' | 'thinking' | 'quiet' | 'stalled_yellow' | 'stalled_red'
+  command_since?: number; command?: string
 }
 
 // 🤖 Auto-mode overview: which model·intensity combo ran most.

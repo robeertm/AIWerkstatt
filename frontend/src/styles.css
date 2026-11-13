@@ -146,6 +146,11 @@ label.lbl { font-size: .8rem; color: var(--muted); font-weight: 600; }
   gap: .2rem; font-size: .82rem; padding-right: .2rem; }
 .liverow { padding: .12rem .1rem; line-height: 1.4; word-break: break-word; }
 .liverow.say { color: var(--text); }
+.tnum { font-variant-numeric: tabular-nums; }
+.livetime { color: var(--muted); opacity: .8; font-size: .68em; margin-right: .45rem; white-space: nowrap; }
+.liveline { display: flex; align-items: flex-start; }
+.liveline .livetime { margin-top: .4rem; }
+.liveline .livefull { flex: 1 1 auto; min-width: 0; }
 .liverow.think { color: var(--muted); font-style: italic; }
 .liverow.result { color: var(--muted); }
 .liverow.tool { color: #c7c0ff; }

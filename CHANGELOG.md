@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.16.0 — 2026-11-13
+### Added — live feed with timestamps and vital signs: see at a glance whether the agent is alive
+- **Header line** in the live view (card and full screen): "last activity HH:MM:SS · 12 s ago" and "running for …", counting on locally every second from the server clock. Times are shown in the viewer's own time zone.
+- **State** derived from the run: *command running for 4 min (since 10:35:40)* (an open tool call without a result), *subagent working*, *thinking* (< 90 s since the last output), *quiet*, yellow *no sign of life for 14 min* (≥ 10 min without any output and without an open command) and red (≥ 30 min). A hint only — no button, no abort. An open command never triggers a stall warning (a long test run is not suspicious). Thresholds are constants in `backend/engine.py` (`THINKING_S`, `QUIET_YELLOW_S`, `QUIET_RED_S`), mirrored in the UI, with the reasoning in the comments.
+- **Activity = any feed line or any byte the runner saw from the agent.** The runner now writes `last_output` into its status file, so silent thinking counts as life too. Only the tail of the feed file (512 KB) is read.
+- **Every feed line carries its time** (HH:MM:SS, subtle, tabular digits).
+- **API:** `GET /api/threads/<id>/live` additionally returns `last_activity`, `quiet_s`, `state`, `command_since`, `command`, `now` (server clock) and `started` (all Unix seconds). Nothing renamed.
+- Tests: `backend/tests/test_agent_vitals.py` (open/finished command, silent thinking, quiet/yellow/red boundaries, subagent, plan calls, empty feed, big-file tail, API fields).
+
 ## 0.15.1 — 2026-11-12
 ### Added — "Agents at work" strip for admins, self-reload after an update
 - **Agents at work:** admins get a compact strip at the top of the home view showing `n/5 busy` (or just `n` when the pool is unlimited), how many orders are waiting, and one tile per worker slot — project, task title, model and run time, or "free". It refreshes every 5 seconds, only while the tab is visible; other users never request it.

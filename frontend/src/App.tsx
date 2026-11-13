@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   Me, User, Provider, Project, ThreadSummary, ThreadDetail, FileEntry, FileListing,
   UsageSummary, LimitStatus, UpdateInfo, GithubStatus, ActivityItem, ScanResult, PublishStatus,
-  LiveEntry, PlanLimit, PoolSnapshot,
+  LiveEntry, LiveFeed, PlanLimit, PoolSnapshot,
 } from './types'
 import * as api from './api'
 import { focusInField, hasDraft, loopGuard, reloadAllowed } from './updateReload'
@@ -200,27 +200,78 @@ function LiveLink({ project, building }: { project: { live_port: number | null; 
   return <span className="chip muted">preview appears after the first build</span>
 }
 
+// ---------- Vital signs: is the agent alive? (0.16.0) ----------
+// Times arrive as Unix seconds and are shown in the viewer's own time zone.
+const clock = (t?: number): string =>
+  t ? new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : ''
+const span = (s: number): string => {
+  s = Math.max(0, Math.round(s))
+  if (s < 60) return `${s} s`
+  if (s < 3600) return `${Math.floor(s / 60)} min`
+  const m = Math.floor((s % 3600) / 60)
+  return `${Math.floor(s / 3600)} h${m ? ` ${m} min` : ''}`
+}
+// Thresholds MIRRORED from backend/engine.py (THINKING_S / QUIET_YELLOW_S / QUIET_RED_S) so the state keeps counting
+// between two polls. 90 s: a model turn rarely takes longer. 10 min with no output and no open command is unusual
+// (yellow), 30 min practically certain to be stuck (red). A hint only — no button, no abort.
+const THINKING_S = 90, QUIET_YELLOW_S = 600, QUIET_RED_S = 1800
+
+/** Own component with its own 1 s timer, so the (long) feed list is not re-rendered every second. */
+function LiveVitals({ v, at, working }: { v: LiveFeed; at: number; working: boolean }) {
+  const [, tick] = useState(0)
+  useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(t) }, [])
+  if (!v.last_activity) return null
+  const now = (v.now ?? Date.now() / 1000) + (Date.now() - at) / 1000      // server clock + time since the poll
+  const quiet = Math.max(0, now - v.last_activity)
+  let st = v.state || 'quiet'
+  if (st !== 'command' && st !== 'subagent')
+    st = quiet >= QUIET_RED_S ? 'stalled_red' : quiet >= QUIET_YELLOW_S ? 'stalled_yellow' : quiet < THINKING_S ? 'thinking' : 'quiet'
+  let head: { icon: string; text: string; color: string } | null = null
+  if (working) {
+    if (st === 'command' && v.command_since) head = { icon: '⚙️', text: `command running for ${span(now - v.command_since)}`, color: 'var(--accent)' }
+    else if (st === 'subagent' && v.command_since) head = { icon: '🧩', text: `subagent working for ${span(now - v.command_since)}`, color: 'var(--warn)' }
+    else if (st === 'thinking') head = { icon: '💭', text: 'thinking', color: '#a78bfa' }
+    else if (st === 'stalled_yellow') head = { icon: '⚠️', text: `no sign of life for ${span(quiet)}`, color: 'var(--warn)' }
+    else if (st === 'stalled_red') head = { icon: '🛑', text: `no sign of life for ${span(quiet)}`, color: 'var(--bad)' }
+    else head = { icon: '💤', text: 'quiet', color: 'var(--muted)' }
+  }
+  const warn = st === 'stalled_yellow' || st === 'stalled_red'
+  const runFor = working && v.started ? now - v.started : null
+  return (
+    <div className="stack" style={{ gap: '.1rem', fontSize: '.7rem' }} data-vitals={working ? st : 'idle'}>
+      {head && <div className="row" style={{ gap: '.35rem', color: head.color, fontWeight: 700 }}><span aria-hidden>{head.icon}</span><span>{head.text}</span>
+        {st === 'command' && v.command_since && <span className="muted tnum" style={{ fontWeight: 400 }}>(since {clock(v.command_since)})</span>}</div>}
+      <div className="row tnum" style={{ gap: '.1rem .6rem', flexWrap: 'wrap', color: warn && head ? head.color : 'var(--muted)' }}>
+        <span>last activity {clock(v.last_activity)} · {span(quiet)} ago</span>
+        {runFor !== null && runFor >= 0 && <span>· running for {span(runFor)}</span>}
+      </div>
+    </div>
+  )
+}
+
 // ---------- Live agent feed (watch what it's doing, step by step) ----------
 // Entry + stable client id: the list grows and is trimmed at the front (`slice`), so
 // array indices shift. The per-row "expanded" state hangs off a stable id, not the
 // index — otherwise a reload would expand the wrong row.
 type LiveRowT = LiveEntry & { _id: number }
 
+const stamp = (e: LiveEntry) => e.at ? <span className="livetime tnum" title={`${clock(e.at)} (local time)`}>{clock(e.at)}</span> : <span className="livetime tnum">··:··:··</span>
+
 function LiveRow({ e, showFull, onToggle }: { e: LiveRowT; showFull: boolean; onToggle: () => void }) {
   if (showFull && e.full) {
     const cls = e.act === 'think' ? 'think' : e.act === 'result' ? 'result' : e.act === 'tool' ? 'tool' : 'say'
-    return <pre className={`livefull ${cls}`}>{e.full}</pre>
+    return <div className="liveline">{stamp(e)}<pre className={`livefull ${cls}`}>{e.full}</pre></div>
   }
   const more = e.full ? '  ▸' : ''
   const click = e.full ? { onClick: onToggle, style: { cursor: 'pointer' as const }, title: 'show in full' } : {}
   if (e.act === 'tool') {
     const bash = e.text.startsWith('$ ')
-    return <div className={`liverow tool${bash ? ' bash' : ''}`} {...click}>{bash ? e.text : `🔧 ${e.text}`}{more}</div>
+    return <div className={`liverow tool${bash ? ' bash' : ''}`} {...click}>{stamp(e)}{bash ? e.text : `🔧 ${e.text}`}{more}</div>
   }
-  if (e.act === 'think') return <div className="liverow think" {...click}>💭 {e.text}{more}</div>
-  if (e.act === 'plan') return <div className="liverow say" {...click}>📋 {e.text}{more}</div>
-  if (e.act === 'result') return <div className="liverow result" {...click}>↳ {e.text}{more}</div>
-  return <div className="liverow say" {...click}>💬 {e.text}{more}</div>
+  if (e.act === 'think') return <div className="liverow think" {...click}>{stamp(e)}💭 {e.text}{more}</div>
+  if (e.act === 'plan') return <div className="liverow say" {...click}>{stamp(e)}📋 {e.text}{more}</div>
+  if (e.act === 'result') return <div className="liverow result" {...click}>{stamp(e)}↳ {e.text}{more}</div>
+  return <div className="liverow say" {...click}>{stamp(e)}💬 {e.text}{more}</div>
 }
 
 // Short labels for the "which model / intensity" chip in the live view. Unknown ids fall
@@ -235,8 +286,9 @@ const EFFORT_LABEL: Record<string, string> = {
   low: 'low', medium: 'medium', high: 'high', xhigh: 'very high', max: 'max',
 }
 
-function AgentLive({ tid }: { tid: number }) {
+function AgentLive({ tid, working }: { tid: number; working: boolean }) {
   const [entries, setEntries] = useState<LiveRowT[]>([])
+  const [vit, setVit] = useState<{ v: LiveFeed; at: number } | null>(null)
   const [live, setLive] = useState(false)
   // model · intensity — and on 🤖 Auto also the reason + plan behind the pick
   const [meta, setMeta] = useState<
@@ -254,12 +306,13 @@ function AgentLive({ tid }: { tid: number }) {
   const nextId = useRef(0)
   const box = useRef<HTMLDivElement>(null)
   const bigBox = useRef<HTMLDivElement>(null)
-  useEffect(() => { setEntries([]); offset.current = 0; nextId.current = 0; setOpenIds(new Set()); setMeta(null) }, [tid])
+  useEffect(() => { setEntries([]); offset.current = 0; nextId.current = 0; setOpenIds(new Set()); setMeta(null); setVit(null) }, [tid])
   useEffect(() => {
     let alive = true; let timer: ReturnType<typeof setTimeout>
     const tick = () => api.getLive(tid, offset.current).then((d) => {
       if (!alive) return
       setLive(d.live)
+      setVit(d.last_activity ? { v: d, at: Date.now() } : null)
       // Which model / intensity this run uses (comes with every poll from the status file).
       if (d.model || d.auto) setMeta({
         model: MODEL_LABEL[d.model || ''] || d.model || '', effort: d.effort ? (EFFORT_LABEL[d.effort] || d.effort) : '',
@@ -339,6 +392,7 @@ function AgentLive({ tid }: { tid: number }) {
         </span>
       </div>
       {metaRow}
+      {vit && <LiveVitals v={vit.v} at={vit.at} working={working} />}
       <div className={`livebox${full ? ' full' : ''}`} ref={box}>{rows(false)}</div>
       {big && (
         <div className="liveoverlay" role="dialog" aria-modal="true" aria-label="What the agent is doing — full text">
@@ -352,6 +406,7 @@ function AgentLive({ tid }: { tid: number }) {
             </span>
           </div>
           {metaRow}
+          {vit && <LiveVitals v={vit.v} at={vit.at} working={working} />}
           <div className="liveoverlay-box" ref={bigBox}>{rows(true)}</div>
         </div>
       )}
@@ -443,7 +498,7 @@ function ThreadView({ tid, accent, isAdmin, onBack }: { tid: number; accent: str
         <ReviewCard tid={tid} isAdmin={isAdmin} onDone={() => { api.getThread(tid).then(setT).catch(() => {}) }} />}
 
       <div className="stack" style={{ position: 'sticky', bottom: '.6rem', marginTop: '1rem' }}>
-        <AgentLive tid={tid} />
+        <AgentLive tid={tid} working={working} />
         {s?.alive && (
           <div className="card pad" style={{ background: '#12162a' }}>
             <div className="between" style={{ fontSize: '.78rem' }}>
