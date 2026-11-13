@@ -252,7 +252,8 @@ class Orchestrator:
             "WK_VAULT": vault_path,
             # Read by the subagent rules block and the per-run evidence line (agent-runner).
             "AIW_KNOWLEDGE_DIR": vault_path,
-            "AIW_MEMORY_DIR": MEMORY_DIR,
+            # AIWERKSTATT_MEMORY_DIR is mounted into the web container only; the runner gets its excerpt through
+            # the context pack. Passing that path on would point subagents at a folder they cannot see.
             # Pauses before each retry after an API error (runner default 120,300,900; empty = off).
             "AIW_API_RETRY_DELAYS": os.environ.get("AIW_API_RETRY_DELAYS", "120,300,900"),
             "WK_THREAD_ID": str(thread_id),

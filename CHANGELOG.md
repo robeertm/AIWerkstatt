@@ -13,6 +13,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Evidence per run.** Counted from the real tool calls in the stream: was the knowledge folder read (Read/Grep/Glob on it, or a Bash read command naming it — heredoc bodies, redirect writes, `curl` and `git commit` messages do not count), was it written to, how many subagents were started. One feed line at the end ("Evidence: knowledge read ✓ · knowledge updated ✓ · subagents 2") and an `evidence` object in the status file and the session result.
 - Tests: `backend/tests/test_context_pack.py`, `backend/tests/test_session_api_error.py` (fake provider stream: error, retry, success; three errors, gave up; 429 limit does not use the retry; evidence; classification) and new cases in `test_worker_pool_and_subagents.py` (rules block).
 - Not included: no UI for the `api_error` state yet; the timeline already shows the progress and failure events.
+### Fixed
+- `AIWERKSTATT_MAX_PARALLEL_RUNS` (0.15.0) is now passed through `docker-compose.yml`; before, setting it in `.env` had no effect.
+- `.env.example` lists the new settings (`AIWERKSTATT_MAX_PARALLEL_RUNS`, `AIWERKSTATT_KNOWLEDGE_DIR`, `AIWERKSTATT_MEMORY_DIR`, `AIW_API_RETRY_DELAYS`), and `docker-compose.yml` shows how to mount the knowledge folders read-only. An empty `AIW_API_RETRY_DELAYS` in `.env` really turns the retry off (compose no longer replaces the empty value with the default).
+- The memory folder path is no longer handed to agent runners, which do not mount it; its excerpt reaches them through the context pack.
+- CI byte-compiles every module of the agent runner (the new `evidence.py` included).
+- Live feed: a wrapped line now continues under its text instead of under the timestamp (narrow screens).
+- README screenshots refreshed: the live feed shows the vital-signs line and a time on every line.
 
 ## 0.16.0 — 2026-11-13
 ### Added — live feed with timestamps and vital signs: see at a glance whether the agent is alive

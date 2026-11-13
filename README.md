@@ -56,7 +56,7 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 
 **Watch the agent work — every step it takes — and jump in any time. It builds, deploys, and keeps going as you chat. Stop or steer it whenever.**
 
-<img src="docs/screenshots/14-live-agent.png" alt="A live task thread: the agent's step-by-step activity feed (what it says, the files it writes and edits, the results), a live session bar, and a Stop button" width="860">
+<img src="docs/screenshots/14-live-agent.png" alt="A live task thread: a vital-signs line (command running for 1 min, last activity, run time), the agent's step-by-step activity feed with a timestamp on every line, a live session bar, and a Stop button" width="860">
 
 </div>
 
@@ -83,7 +83,7 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 - **🤖 Auto mode — let it pick the model.** Set a project to **Auto** and the AI chooses the model and reasoning effort for every task: cheap models for tiny tweaks, the strongest for hard work. See exactly what it picked, why, and its plan — right in the live view. Admins can also pick a model for a single task when writing it, which beats both the project setting and Auto.
 - **📚 It remembers your project.** Each project has a persistent knowledge base the agent reads at the start of every run and appends to as it learns — so the next run knows the architecture, decisions and gotchas instead of starting cold.
 - **💬 Chat, don’t prompt-engineer.** Describe what you want like you’d tell a person. Follow up mid-run — the agent folds your note into what it’s already doing.
-- **👀 Watch it work, step by step.** A live feed shows what the agent says, thinks, and does — every file it writes, every command it runs — as it happens. Jump in or hit Stop any time. On the home view, admins also see an **Agents at work** strip: how many worker slots are busy, how many orders wait, and what each running agent is doing.
+- **👀 Watch it work, step by step.** A live feed shows what the agent says, thinks, and does — every file it writes, every command it runs — as it happens, each line with its time. A vital-signs line tells you at a glance whether the agent is alive: last activity, how long the current command has been running, and a yellow or red hint after 10 or 30 minutes without any sign of life. Jump in or hit Stop any time. On the home view, admins also see an **Agents at work** strip: how many worker slots are busy, how many orders wait, and what each running agent is doing.
 - **📦 Isolated by design.** Every agent run and every app it builds runs in its **own container**. The agent can’t touch your machine, only its workspace.
 - **🚀 Live apps, instantly.** Each project deploys to a local port and gets a “open live” link. Watch it come together.
 - **🗂️ See everything.** Live activity ticker, full file browser, context meter with one-click compaction, stop button, unread markers — all the controls, none of the terminal.
@@ -168,9 +168,10 @@ part of it into the first message (a request to "please read" is not reliable). 
 Inserted from each document: the head, the three newest dated `##` sections, one pitfalls/gotchas section — each
 with path and line number. The pack is capped at **12000 bytes** (UTF-8) and ends with a pointer to the rest when
 it is cut. Sections that look like they contain a secret are left out with a note. When nothing matches, the agent
-is told so and asked to name the note it used. Subagents get a short rules block with the same folders
-(`AIW_KNOWLEDGE_DIR` defaults to the project's folder `/vault/<project>`; `AIW_MEMORY_DIR` is optional), and each run
-ends with an evidence line: knowledge read, knowledge updated, number of subagents.
+is told so and asked to name the note it used. Subagents get a short rules block that names the project's knowledge
+folder (`AIW_KNOWLEDGE_DIR` = `/vault/<project>`; the memory folder stays in the web container and reaches the agent
+only through the context pack), and each run ends with an evidence line: knowledge read, knowledge updated, number of
+subagents.
 
 More detail: [docs/architecture.md](docs/architecture.md) · [docs/providers.md](docs/providers.md) · [docs/security.md](docs/security.md)
 

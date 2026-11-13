@@ -32,6 +32,8 @@ services:
       # Host reachable name the browser uses to open a live app (localhost by default).
       AIWERKSTATT_PUBLIC_HOST: ${AIWERKSTATT_PUBLIC_HOST:-localhost}
       AIWERKSTATT_MAX_RETRIES: ${AIWERKSTATT_MAX_RETRIES:-3}
+      # At most this many agent runs at the same time across all projects; 0 = unlimited.
+      AIWERKSTATT_MAX_PARALLEL_RUNS: ${AIWERKSTATT_MAX_PARALLEL_RUNS:-5}
       # Volume names the orchestrator mounts into the agent-runner containers.
       # Must match the explicit names below so both sides share the same volumes.
       AIWERKSTATT_VOL_WORKSPACES: aiwerkstatt-workspaces
@@ -43,8 +45,8 @@ services:
       # folders read-only under `volumes:` below). Empty = off. See README, "Knowledge folder".
       AIWERKSTATT_KNOWLEDGE_DIR: ${AIWERKSTATT_KNOWLEDGE_DIR:-}
       AIWERKSTATT_MEMORY_DIR: ${AIWERKSTATT_MEMORY_DIR:-}
-      # Pauses (seconds) before each retry after an API error; empty = off.
-      AIW_API_RETRY_DELAYS: ${AIW_API_RETRY_DELAYS:-120,300,900}
+      # Pauses (seconds) before each retry after an API error; set to empty in .env = off.
+      AIW_API_RETRY_DELAYS: ${AIW_API_RETRY_DELAYS-120,300,900}
     volumes:
       # SQLite, provider credentials (0600), queues, journal — persists across redeploys.
       - data:/data
@@ -54,6 +56,10 @@ services:
       - inbox:/inbox
       # 📚 Persistent per-project knowledge base the agents read/append across runs.
       - vault:/vault
+      # Optional, for the context pack: mount your own folders read-only and point
+      # AIWERKSTATT_KNOWLEDGE_DIR / AIWERKSTATT_MEMORY_DIR at the paths on the right.
+      # - ./my-knowledge:/knowledge:ro
+      # - ./my-memory:/memory:ro
     depends_on:
       - dockerproxy
     networks:
