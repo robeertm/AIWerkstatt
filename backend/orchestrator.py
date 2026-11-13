@@ -29,6 +29,7 @@ import threading
 import time
 
 import config
+import context_pack
 import db
 from scrub.scan import scan_tree
 
@@ -61,6 +62,10 @@ VOL_INBOX = os.environ.get("AIWERKSTATT_VOL_INBOX", "aiwerkstatt-inbox")
 # read/write into every agent-runner (and into web, which seeds + serves it for the UI).
 VOL_VAULT = os.environ.get("AIWERKSTATT_VOL_VAULT", "aiwerkstatt-vault")
 VAULT_BIND = "/vault"
+# Optional knowledge sources for the context pack (new runs). Both are folders as seen by THIS process;
+# nothing is inserted when they are unset or empty. MEMORY.md is never inserted, only an index_*.md excerpt.
+KNOWLEDGE_DIR = os.environ.get("AIWERKSTATT_KNOWLEDGE_DIR", "")
+MEMORY_DIR = os.environ.get("AIWERKSTATT_MEMORY_DIR", "")
 
 MEM_LIMIT = os.environ.get("AIWERKSTATT_RUN_MEM", "2g")
 # Fixed worker pool (0.15.0): at most this many agent runs at the same time across ALL projects.
@@ -135,6 +140,26 @@ class Orchestrator:
                 "- WHEN DONE, append any important new facts, decisions or gotchas to it so future "
                 "runs remember them. Keep it concise. You may add other .md files under %s/ too.\n\n"
                 % (vault_path, vault_path, vault_path))
+
+    def _context_pack(self, slug, title, vault_path, thread_id) -> str:
+        """Build the context pack for a NEW run; log + store its metadata. Never raises."""
+        try:
+            text, meta = context_pack.build(slug, title, vault_dir=vault_path, knowledge_dir=KNOWLEDGE_DIR,
+                                            memory_dir=MEMORY_DIR)
+        except Exception as e:   # a broken knowledge folder must never block a run
+            _log("context pack failed for %s/%s: %r" % (slug, thread_id, e))
+            return ""
+        _log("context pack %s/%s: docs=%d index=%s bytes=%d no_match=%s omitted=%d"
+             % (slug, thread_id, len(meta["docs"]), meta["index"] or "-", meta["bytes"],
+                meta["no_match"], meta["omitted"]))
+        try:
+            p = os.path.join(EVENTS_BIND, "context-pack-%s.json" % thread_id)
+            with open(p + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False)
+            os.replace(p + ".tmp", p)
+        except OSError:
+            pass
+        return text + "\n\n" if text else ""
 
     def _drop_inbox(self, thread_id, payload):
         d = self._thread_inbox(thread_id)
@@ -211,11 +236,25 @@ class Orchestrator:
         vault_path = self._ensure_vault(slug)
         first_text = d.get("text", "")
         if vault_path and d.get("kind") == "new":
-            first_text = self._vault_preamble(vault_path) + first_text
+            title = d.get("title") or ""
+            if not title:
+                try:
+                    row = db.query_one("SELECT title FROM threads WHERE id = ?", (thread_id,))
+                    title = (row["title"] if row else "") or ""
+                except Exception:
+                    title = ""
+            title = title or (first_text.strip().split("\n")[0] if first_text.strip() else "")
+            first_text = (self._vault_preamble(vault_path)
+                          + self._context_pack(slug, title, vault_path, thread_id) + first_text)
         first = self._write_first(thread_id, first_text)
         env = {
             "WK_SLUG": slug,
             "WK_VAULT": vault_path,
+            # Read by the subagent rules block and the per-run evidence line (agent-runner).
+            "AIW_KNOWLEDGE_DIR": vault_path,
+            "AIW_MEMORY_DIR": MEMORY_DIR,
+            # Pauses before each retry after an API error (runner default 120,300,900; empty = off).
+            "AIW_API_RETRY_DELAYS": os.environ.get("AIW_API_RETRY_DELAYS", "120,300,900"),
             "WK_THREAD_ID": str(thread_id),
             "WK_REPO": d.get("repo", ""),
             "WK_PROVIDER": provider,

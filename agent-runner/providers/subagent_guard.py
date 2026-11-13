@@ -8,7 +8,10 @@ Enforced in code, not only in the prompt:
   * every subagent gets a model: none given → ``haiku`` (input is rewritten); a model more expensive
     than the run's own model (``--model``) is denied,
   * subagents run synchronously (``run_in_background`` forced to false) so counting and results stay
-    inside the run.
+    inside the run,
+  * (0.17.0) an allowed call gets a fixed rules block prepended to its ``prompt`` (``[AIWerkstatt subagent]``,
+    at most 1536 bytes, never added twice): secrets, no publishing, no contact with people, and the read-only
+    knowledge folder (``--knowledge`` / env ``AIW_KNOWLEDGE_DIR``, optional ``--memory`` / ``AIW_MEMORY_DIR``).
 
 State: ``<--state>/state.json`` = {"running": {tool_use_id: {model, description, since}}} under flock.
 Any internal error → exit 0 without output (Claude keeps running); only the rules above deny.
@@ -20,6 +23,8 @@ import os
 import sys
 import time
 
+MARKER = "[AIWerkstatt subagent]"
+BLOCK_MAX_BYTES = 1536
 RANK = {"haiku": 1, "sonnet": 2, "opus": 3, "fable": 4}
 STALE_S = 4 * 3600
 
@@ -30,6 +35,34 @@ def family(model):
         if k in m:
             return k
     return ""
+
+
+def rules_block(knowledge="", memory=""):
+    """The fixed English rules block for a subagent prompt (<= BLOCK_MAX_BYTES, ends with the task separator)."""
+    lines = [
+        MARKER + " Fixed rules added by the workshop, they always apply:",
+        "- Never print secrets and never put them on a command line (use files or the environment).",
+        "- No git tags, no releases, no publishing or deploying, unless the task below explicitly asks for it.",
+        "- Never stop or touch another project's running orders. No broad pkill/killall.",
+        "- Do not message people directly (chat, mail, issue comments, phone notifications).",
+        "- Clean up your own processes and test leftovers.",
+    ]
+    if knowledge:
+        k = "- Knowledge is read-only: the project knowledge folder is %s" % knowledge
+        if memory:
+            k += " and the memory folder is %s" % memory
+        lines.append(k + ". Read the relevant section before changing a system.")
+    elif memory:
+        lines.append("- Knowledge is read-only: the memory folder is %s. Read the relevant section before "
+                     "changing a system." % memory)
+    lines.append("- Your result goes back to the main agent, which updates the knowledge base. "
+                 "Name the notes you read.")
+    lines.append("--- Task ---")
+    block = "\n".join(lines) + "\n"
+    if len(block.encode("utf-8")) > BLOCK_MAX_BYTES:   # absurdly long paths: drop the path line
+        lines = [x for x in lines if not x.startswith("- Knowledge is read-only")]
+        block = "\n".join(lines) + "\n"
+    return block
 
 
 def reply(decision, reason=None, new_input=None):
@@ -101,6 +134,9 @@ def pre_agent(d, a):
         st.save()
     ti["model"] = eff
     ti["run_in_background"] = False
+    prompt = ti.get("prompt")
+    if isinstance(prompt, str) and MARKER not in prompt:
+        ti["prompt"] = rules_block(a.knowledge, a.memory) + prompt
     reply("allow", "subagent model: %s" % eff, ti)
 
 
@@ -116,6 +152,8 @@ def main():
     p.add_argument("--model", default="")
     p.add_argument("--max", type=int, default=2)
     p.add_argument("--state", default="/tmp/aiw-subagent-guard")
+    p.add_argument("--knowledge", default=os.environ.get("AIW_KNOWLEDGE_DIR", ""))
+    p.add_argument("--memory", default=os.environ.get("AIW_MEMORY_DIR", ""))
     a = p.parse_args()
     try:
         d = json.load(sys.stdin)

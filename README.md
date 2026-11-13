@@ -154,6 +154,24 @@ provider you chose. Pick per project which provider and model to use.
   isolated **workspace volume** and streams progress back over a shared **events volume**.
 - The **app the agent builds** runs as a sibling container and is served live locally.
 
+### 📚 Knowledge folder and memory folder
+
+Every project has its own persistent `knowledge.md`. For **new** runs the web container inserts the relevant
+part of it into the first message (a request to "please read" is not reliable). Two optional settings add more:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AIWERKSTATT_KNOWLEDGE_DIR` | empty (off) | Folder of markdown master documents (path as seen inside the web container). A file is used when its normalised name starts with the project slug, otherwise when its name matches keywords of the order title (at most 2). |
+| `AIWERKSTATT_MEMORY_DIR` | empty (off) | Folder with `MEMORY.md` and `index_<topic>.md` files. `MEMORY.md` is never inserted; the `index_*.md` that best matches the project slug contributes its newest `- [` lines. |
+| `AIW_API_RETRY_DELAYS` | `120,300,900` | Seconds to wait before each retry after an API error; empty turns the retry off. |
+
+Inserted from each document: the head, the three newest dated `##` sections, one pitfalls/gotchas section — each
+with path and line number. The pack is capped at **12000 bytes** (UTF-8) and ends with a pointer to the rest when
+it is cut. Sections that look like they contain a secret are left out with a note. When nothing matches, the agent
+is told so and asked to name the note it used. Subagents get a short rules block with the same folders
+(`AIW_KNOWLEDGE_DIR` defaults to the project's folder `/vault/<project>`; `AIW_MEMORY_DIR` is optional), and each run
+ends with an evidence line: knowledge read, knowledge updated, number of subagents.
+
 More detail: [docs/architecture.md](docs/architecture.md) · [docs/providers.md](docs/providers.md) · [docs/security.md](docs/security.md)
 
 ## 🔐 Security

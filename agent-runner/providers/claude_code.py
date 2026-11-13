@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import tempfile
 
 from .base import AgentAdapter, RunContext, register
@@ -25,6 +26,10 @@ def _guard_settings(model: str) -> str:
         return ""
     folder = tempfile.mkdtemp(prefix="aiw-guard-")
     cmd = "python3 %s --model %s --max %d --state %s" % (_GUARD, model or "haiku", _SUBAGENT_MAX, folder)
+    # Knowledge/memory folders for the subagent rules block come from the environment (nothing hard-coded).
+    for flag, var in (("--knowledge", "AIW_KNOWLEDGE_DIR"), ("--memory", "AIW_MEMORY_DIR")):
+        if os.environ.get(var):
+            cmd += " %s %s" % (flag, shlex.quote(os.environ[var]))
     hook = [{"type": "command", "command": cmd, "timeout": 15}]
     cfg = {"hooks": {"PreToolUse": [{"matcher": "^(Agent|Task)$", "hooks": hook}],
                      "PostToolUse": [{"matcher": "^(Agent|Task)$", "hooks": hook}],
@@ -127,6 +132,22 @@ _AGENT_RULES = (
     "sonnet for regular code/config changes, tests and translations; opus only for security, "
     "architecture and hard debugging), never more expensive than your own model."
 )
+
+
+_API_ERROR_STATUS = (401, 403, 408, 409, 529)
+_API_ERROR_WORDS = ("failed to authenticate", "overloaded", "api error", "attention required")
+
+
+def _is_api_error(o: dict) -> bool:
+    """Did this (error) result end on an API/edge error rather than a real usage limit? The caller has already
+    excluded limits (rate_limit / 429). Such a run may be worth retrying after a pause."""
+    if str(o.get("terminal_reason") or "") == "api_error" or o.get("is_api_error_message"):
+        return True
+    st = o.get("api_error_status")
+    if isinstance(st, int) and (st in _API_ERROR_STATUS or st >= 500):
+        return True
+    txt = str(o.get("result") or "").lower()
+    return any(w in txt for w in _API_ERROR_WORDS)
 
 
 class ClaudeAdapter(AgentAdapter):
@@ -249,7 +270,9 @@ class ClaudeAdapter(AgentAdapter):
                             self._track_plan(name, inp)
                             out.append(_act("plan", _clip(_plan_line(self._tasks))))
                             continue
-                        out.append(_act("tool", _clip(_tool_line(name, inp)), _tool_full(name, inp)))
+                        ev = _act("tool", _clip(_tool_line(name, inp)), _tool_full(name, inp))
+                        ev["tool"] = {"name": name, "input": inp}   # raw call, for the per-run evidence counters
+                        out.append(ev)
         elif t == "user":
             content = (o.get("message") or {}).get("content")
             if isinstance(content, list):
@@ -303,6 +326,8 @@ class ClaudeAdapter(AgentAdapter):
             out.append({"kind": "result", "text": o.get("result") or "",
                         "error": is_err, "limited": limited, "reset": reset,
                         "transient": transient, "reason": reason,
+                        "api_error": is_err and not limited and _is_api_error(o),
+                        "api_status": o.get("api_error_status") if isinstance(o.get("api_error_status"), int) else None,
                         "out_tokens": out_tokens, "cost": cost,
                         "window": self._window(o)})
         return out

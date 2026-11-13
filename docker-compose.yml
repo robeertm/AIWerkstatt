@@ -39,6 +39,12 @@ services:
       AIWERKSTATT_VOL_INBOX: aiwerkstatt-inbox
       AIWERKSTATT_VOL_VAULT: aiwerkstatt-vault
       AIWERKSTATT_APP_UID: "10001"
+      # Optional knowledge sources for the context pack (paths as seen INSIDE this container; mount the
+      # folders read-only under `volumes:` below). Empty = off. See README, "Knowledge folder".
+      AIWERKSTATT_KNOWLEDGE_DIR: ${AIWERKSTATT_KNOWLEDGE_DIR:-}
+      AIWERKSTATT_MEMORY_DIR: ${AIWERKSTATT_MEMORY_DIR:-}
+      # Pauses (seconds) before each retry after an API error; empty = off.
+      AIW_API_RETRY_DELAYS: ${AIW_API_RETRY_DELAYS:-120,300,900}
     volumes:
       # SQLite, provider credentials (0600), queues, journal — persists across redeploys.
       - data:/data

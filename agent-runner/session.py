@@ -26,6 +26,7 @@ from collections import deque
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from providers import get_adapter, RunContext  # noqa: E402
+from evidence import Evidence  # noqa: E402
 
 # ---------------------------------------------------------------- env contract
 SLUG        = os.environ["WK_SLUG"]
@@ -65,10 +66,29 @@ STALL_TIMEOUT = int(os.environ.get("WK_STALL_TIMEOUT", "600"))
 AUTO_PCT     = int(os.environ.get("WK_AUTO_COMPACT_PCT", "80"))
 LIMIT_WAIT   = int(os.environ.get("WK_LIMIT_WAIT", "1800"))
 
+# 🔁 API-error retry (0.17.0): a run that ends on an API/edge error (not a real usage limit) keeps its task
+# open, waits the next delay and then continues in the SAME session. Comma-separated seconds, one entry per
+# attempt; empty = off (the older immediate stream-resume path stays in charge).
+API_RETRY_DELAYS = [int(x) for x in os.environ.get("AIW_API_RETRY_DELAYS", "120,300,900").split(",")
+                    if x.strip().isdigit()]
+API_CONTINUE = ("The previous attempt ended with an API error. Continue exactly where you left off - do not "
+                "start over and do not repeat steps you already completed. Check the current state briefly, "
+                "then finish the task.")
+# Knowledge folder (also read by the subagent rules block through the environment).
+KNOWLEDGE_DIR = os.environ.get("AIW_KNOWLEDGE_DIR") or os.environ.get("WK_VAULT") or "/vault/%s" % SLUG
+os.environ["AIW_KNOWLEDGE_DIR"] = KNOWLEDGE_DIR
+
 _seq = 0
 adapter = get_adapter(PROVIDER)
 MODEL = MODEL or (adapter.model if adapter else "")
 CTX_WINDOW = adapter.default_context_window(MODEL) if adapter else 200_000
+
+
+def _api_reason(ev):
+    """Short human reason for an API-error result (status + start of the text)."""
+    txt = " ".join(str(ev.get("text") or "").split())[:80]
+    st = ev.get("api_status")
+    return ("%s \u00b7 %s" % (st, txt)) if st and txt else (str(st) if st else (txt or ev.get("reason") or "API error"))
 
 
 def log(msg):
@@ -101,6 +121,8 @@ def emit(task_id, etype, text, payload=None):
 
 
 _live_seq = 0
+LIVE = {"api_error": None}     # api_error state shown in the status file
+EVIDENCE = Evidence([KNOWLEDGE_DIR])
 _last_output = [time.time()]   # when did the agent last produce ANY output (silent thinking included)? → status file
 
 
@@ -126,7 +148,8 @@ def write_status(ctx_pct, alive, pending, compacting=False):
         {"alive": bool(alive), "ctx_pct": int(ctx_pct), "pending": int(pending),
          "compacting": bool(compacting), "thread_id": THREAD_ID, "slug": SLUG,
          "model": MODEL, "effort": EFFORT, "updated": int(time.time()),
-         "last_output": int(_last_output[0])}, ensure_ascii=False))
+         "last_output": int(_last_output[0]), "api_error": LIVE["api_error"],
+         "evidence": EVIDENCE.as_dict()}, ensure_ascii=False))
 
 
 def write_limit(until, since, known=False):
@@ -210,6 +233,11 @@ def main():
     stream_retries = 0        # stream aborts (API) since the last real answer
     restart_request = None    # (task_id, reason) — handled in the main loop, not in the parser
     controls_since_compact = 0
+    api_attempts = 0          # API-error retries since the last real answer
+    api_wait_until = 0.0      # when the next "continue" is due (0 = not waiting)
+    api_tid = None
+    api_gave_up = False
+    rl_size = 0               # last seen runlog size (truncation detection)
     should_close = False
     limited_close = None   # (task_id, reset)
     processed_inbox = set()
@@ -218,12 +246,39 @@ def main():
     def handle_result(ev):
         nonlocal ctx_pct, last_activity, should_close, limited_close, controls_since_compact
         nonlocal ctx_window, sess_out, sess_cost, sess_turns, restart_request, stream_retries
+        nonlocal api_attempts, api_wait_until, api_tid, api_gave_up
         sess_out += int(ev.get("out_tokens", 0) or 0)
         sess_cost = max(sess_cost, float(ev.get("cost", 0) or 0))
         sess_turns += 1
         if ev.get("window"):
             ctx_window = ev["window"]
         head = expected.popleft() if expected else ("task", None)
+        # 🔁 API error (not a limit): wait, then continue in the same session; give up after the last delay.
+        if (API_RETRY_DELAYS and ev.get("api_error") and not ev.get("limited")
+                and head[0] == "task" and head[1] is not None):
+            why = _api_reason(ev)
+            n = len(API_RETRY_DELAYS)
+            if api_attempts < n:
+                expected.appendleft(head)
+                api_attempts += 1
+                api_wait_until = time.time() + API_RETRY_DELAYS[api_attempts - 1]
+                api_tid = head[1]
+                LIVE["api_error"] = {"attempt": api_attempts, "max": n, "next_attempt": int(api_wait_until),
+                                     "gave_up": False, "reason": why}
+                emit(head[1], "progress", "API error (%s) \u2014 retrying at %s (%d/%d)"
+                     % (why, time.strftime("%H:%M", time.localtime(api_wait_until)), api_attempts, n))
+                log("API error (%s) -> retry %d/%d" % (why, api_attempts, n))
+            else:
+                api_gave_up = True
+                api_wait_until = 0.0
+                LIVE["api_error"] = {"attempt": api_attempts, "max": n, "next_attempt": 0,
+                                     "gave_up": True, "reason": why}
+                emit(head[1], "failed", "API error, gave up after %d retries (%s)" % (api_attempts, why))
+                log("API error (%s) -> gave up after %d retries" % (why, api_attempts))
+                expected.clear()
+                should_close = True
+            last_activity = time.time()
+            return
         # 🔴 Transient stream abort → keep the task open and resume (handled in the main loop).
         if (ev.get("transient") and head[0] == "task" and head[1] is not None
                 and sid and stream_retries < STREAM_RETRY_MAX):
@@ -248,6 +303,9 @@ def main():
                                 "in a moment — no need to send it again (Stop cancels it).")
         else:
             stream_retries = 0      # a real answer resets the stream-abort counter
+            api_attempts = 0        # ... and the API-error counter
+            api_wait_until = 0.0
+            LIVE["api_error"] = None
             emit(tid, "reply", text[:6000])
         # One result = the agent processed everything fed so far. A mid-turn
         # follow-up folded into this turn → resolve the remaining expected tasks.
@@ -259,6 +317,16 @@ def main():
         last_activity = time.time()
 
     while True:
+        # 0) runlog truncated (a restart truncates the file)? Read from the start, otherwise the offset would
+        # sit behind the new end of file and new lines would stay invisible.
+        try:
+            size = os.fstat(rlf.fileno()).st_size
+            if size < rl_size:
+                log("runlog truncated (%d -> %d bytes) - reading from the start" % (rl_size, size))
+                rlf.seek(0)
+            rl_size = size
+        except (OSError, ValueError):
+            pass
         # 1) new runlog lines → normalised events
         for line in rlf:
             last_output = time.time()   # any byte from the agent → it's alive (stall watchdog)
@@ -280,6 +348,8 @@ def main():
                                      int(ev.get("reset", 0) or 0))
                     should_close = True
                 elif kind == "activity":
+                    if ev.get("tool"):
+                        EVIDENCE.tool(ev["tool"].get("name", ""), ev["tool"].get("input") or {})
                     emit_activity(ev.get("act", "say"), ev.get("text", ""))
                     last_activity = time.time()
                 elif kind == "result":
@@ -343,6 +413,22 @@ def main():
 
         write_status(ctx_pct, 1, len(expected))
 
+        # 3a) 🔁 API-error wait is over -> "continue" into the same session (restart via resume if it died)
+        if api_wait_until and time.time() >= api_wait_until:
+            api_wait_until = 0.0
+            if LIVE["api_error"]:
+                LIVE["api_error"] = dict(LIVE["api_error"], next_attempt=0)
+            emit(api_tid, "progress", "Retry %d/%d after the API error \u2014 the agent continues."
+                 % (api_attempts, len(API_RETRY_DELAYS)))
+            log("API error: retry %d/%d" % (api_attempts, len(API_RETRY_DELAYS)))
+            if proc.poll() is None:
+                feed(API_CONTINUE)
+                now = time.time()
+                last_activity = last_output = now
+                _last_output[0] = now
+            elif sid:
+                restart_request = (api_tid, "API error")   # same path as a stream abort (resume)
+
         # 4) exit conditions
         # 🔴 Stream abort (API) → resume THE SAME session. Done here, not in the parser:
         # we swap both the process and the file handle we are reading from.
@@ -365,6 +451,7 @@ def main():
             time.sleep(min(30, 5 * stream_retries))   # let the hiccup settle
             proc = start_agent(resume_id=sid)
             rlf = open_runlog()
+            rl_size = 0
             # --resume reloads the history; a short nudge continues the interrupted turn.
             # Do NOT re-send the order — it is already in the transcript.
             feed("The stream dropped because of an API error. Continue exactly where you "
@@ -377,6 +464,9 @@ def main():
 
         if should_close:
             break
+        if api_wait_until:
+            time.sleep(0.4)   # waiting for the next attempt: no stall watchdog, no idle close, process may be gone
+            continue
         if proc.poll() is not None:
             log("agent process ended (rc=%s) — closing session" % proc.returncode)
             break
@@ -400,7 +490,10 @@ def main():
         time.sleep(0.4)
 
     # ---------------------------------------------------------------- teardown
-    result = {"session_id": sid, "limited": None, "reset": 0, "requeue": [], "ok": True}
+    result = {"session_id": sid, "limited": None, "reset": 0, "requeue": [], "ok": True,
+              "api_gave_up": api_gave_up, "api_error": LIVE["api_error"]}
+    if api_gave_up:
+        result["ok"] = False
 
     if limited_close is not None:
         tid, reset = limited_close
@@ -440,6 +533,8 @@ def main():
         proc.send_signal(signal.SIGTERM)
         try: proc.wait(timeout=10)
         except subprocess.TimeoutExpired: proc.kill()
+    emit_activity("say", EVIDENCE.line())      # once, at session end
+    result["evidence"] = EVIDENCE.as_dict()
     write_status(ctx_pct, 0, 0)
 
     if sess_out or sess_cost:

@@ -78,11 +78,11 @@ class WorkerPool(unittest.TestCase):
         self.assertEqual(len(o.launched), 7)
 
 
-def guard(event, state, **kw):
+def guard(event, state, extra=(), **kw):
     d = {"hook_event_name": event, "tool_name": "Agent", "tool_use_id": kw.pop("tid", "t1"),
          "tool_input": kw.pop("tool_input", {"description": "d", "prompt": "p"})}
     d.update(kw)
-    r = subprocess.run([sys.executable, GUARD, "--model", "claude-sonnet-5-5", "--max", "2", "--state", state],
+    r = subprocess.run([sys.executable, GUARD, "--model", "claude-sonnet-5-5", "--max", "2", "--state", state] + list(extra),
                        input=json.dumps(d), capture_output=True, text=True)
     return json.loads(r.stdout)["hookSpecificOutput"] if r.stdout.strip() else None
 
@@ -112,6 +112,34 @@ class SubagentGuard(unittest.TestCase):
         self.assertEqual(h["permissionDecision"], "deny")
         h = guard("PreToolUse", self.state, agent_id="sub-1")
         self.assertEqual(h["permissionDecision"], "deny")
+
+
+    def test_rules_block_is_prepended_once_and_other_fields_unchanged(self):
+        ti = {"description": "d", "prompt": "Find the bug in parser.py", "subagent_type": "general-purpose"}
+        extra = ["--knowledge", "/vault/demo", "--memory", "/mem"]
+        h = guard("PreToolUse", self.state, extra=extra, tool_input=dict(ti))
+        new = h["updatedInput"]
+        block, _, rest = new["prompt"].partition("--- Task ---\n")
+        self.assertTrue(new["prompt"].startswith("[AIWerkstatt subagent]"))
+        self.assertEqual(rest, ti["prompt"])                       # the original prompt follows, untouched
+        self.assertLessEqual(len(block.encode("utf-8")) + len("--- Task ---\n"), 1536)
+        self.assertIn("/vault/demo", block)
+        self.assertIn("/mem", block)
+        self.assertEqual(new["description"], "d")
+        self.assertEqual(new["subagent_type"], "general-purpose")
+        self.assertEqual(new["model"], "haiku")
+        # a prompt that already carries the block is not wrapped a second time
+        h2 = guard("PreToolUse", self.state, extra=extra, tid="t2",
+                   tool_input={"description": "d", "prompt": new["prompt"]})
+        self.assertEqual(h2["updatedInput"]["prompt"].count("[AIWerkstatt subagent]"), 1)
+
+    def test_rules_block_without_folders_and_with_huge_paths_stays_small(self):
+        h = guard("PreToolUse", self.state)
+        self.assertTrue(h["updatedInput"]["prompt"].startswith("[AIWerkstatt subagent]"))
+        self.assertNotIn("Knowledge is read-only", h["updatedInput"]["prompt"])
+        h = guard("PreToolUse", self.state, extra=["--knowledge", "/k" * 3000], tid="t3")
+        block = h["updatedInput"]["prompt"].partition("--- Task ---\n")[0]
+        self.assertLessEqual(len(block.encode("utf-8")), 1536)
 
 
 if __name__ == "__main__":
