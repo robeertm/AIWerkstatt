@@ -29,7 +29,8 @@ export type UsageSummary = {
 export type PlanWindow = { pct: number | null; resets_at: string | null }
 export type PlanLimit = { connected: boolean; available?: boolean; session?: PlanWindow; weekly?: PlanWindow }
 // Worker pool overview (admins): max 0 = unlimited.
-export type PoolRun = { project: string; title: string; started_at: string | null; model: string }
+export type ApiErrorState = { attempt: number; max: number; next_attempt: number; gave_up: boolean; reason: string }
+export type PoolRun = { project: string; title: string; started_at: string | null; model: string; api_error?: ApiErrorState }
 export type PoolSnapshot = { max: number; busy: number; waiting: number; runs: PoolRun[] }
 export type LimitStatus = { active: boolean; until?: number; resumes_at?: string; reset_known?: boolean }
 export type UpdateInfo = { current: string; latest: string | null; update_available: boolean; url: string }
@@ -45,7 +46,9 @@ export type LiveFeed = {
   auto?: boolean; auto_reason?: string; auto_plan?: AutoPlan | null   // 🤖 Auto mode
   // 💓 vital signs (0.16.0), all times in Unix seconds
   last_activity?: number; quiet_s?: number; now?: number; started?: number
-  state?: 'command' | 'subagent' | 'thinking' | 'quiet' | 'stalled_yellow' | 'stalled_red'
+  task_since?: number; run_since?: number      // 0.18.0: when the task first began / when the current run began
+  api_error?: ApiErrorState
+  state?: 'command' | 'subagent' | 'thinking' | 'quiet' | 'stalled_yellow' | 'stalled_red' | 'api_error'
   command_since?: number; command?: string
 }
 

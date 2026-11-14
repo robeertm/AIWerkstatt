@@ -92,12 +92,14 @@ def conn():
 #                                 review (NULL = restricted)
 #   tasks.origin                  which token sent each task (new task or follow-up)
 #   tasks.started_at / error      start of the latest attempt and the reason a task was given
+#   tasks.first_started_at        start of the FIRST attempt (never moved by a retry) → "task since"
 #                                 up; the self-healing retry needs both
 _ADDED_COLUMNS = (
     ("tasks", "req_model"), ("tasks", "req_effort"),
     ("threads", "origin"), ("threads", "review"),
     ("threads", "origin_profile"), ("tasks", "origin"),
     ("tasks", "started_at"), ("tasks", "error"),
+    ("tasks", "first_started_at"),
 )
 
 

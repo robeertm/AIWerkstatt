@@ -181,6 +181,22 @@ class SelfHealing(unittest.TestCase):
         self.assertEqual(len(self.events("retry (")), 3)
         self.assertEqual(engine._thread_status(self.thread_id), "failed")
 
+    def test_retry_keeps_the_first_start_of_the_task(self):
+        """0.18.0: started_at moves to each new attempt; first_started_at ("task since") never does."""
+        engine.RETRY_BASE_SEC = engine.RETRY_CAP_SEC = 0
+        engine.MAX_RETRIES = 3
+        self._claim()
+        db.execute("UPDATE tasks SET status='failed', finished_at=?, started_at=?, first_started_at=NULL WHERE id=?",
+                   (_iso(100), _iso(200), self.task_id))
+        self.assertEqual(len(self.heal()), 1)
+        t = self.task()
+        self.assertEqual(t["first_started_at"], _iso(200))        # carried over from the old attempt
+        self.assertGreater(t["started_at"], t["first_started_at"])
+        self._claim()
+        self._fail()
+        self.assertEqual(len(self.heal()), 1)
+        self.assertEqual(self.task()["first_started_at"], _iso(200))   # second retry: still the first
+
     def test_defaults_three_retries_growing_pause(self):
         """Defaults: at most 3 automatic retries, pauses of 5, 15 and 45 minutes."""
         self.assertEqual(engine.MAX_RETRIES, 3)

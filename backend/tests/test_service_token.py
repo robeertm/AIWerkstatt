@@ -35,6 +35,7 @@ class ServiceToken(unittest.TestCase):
             db.conn().close()
         except sqlite3.Error:
             pass
+        db._conn = None     # the connection is process-wide: later test modules must open a fresh one
         shutil.rmtree(_TMP, ignore_errors=True)
 
     def h(self, token=None):

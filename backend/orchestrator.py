@@ -31,6 +31,7 @@ import time
 import config
 import context_pack
 import db
+import engine
 from scrub.scan import scan_tree
 
 try:
@@ -344,9 +345,10 @@ class Orchestrator:
             row = None
             try:
                 if info.get("task_id"):
-                    row = db.query_one("SELECT started_at FROM tasks WHERE id = ?", (info["task_id"],))
+                    row = db.query_one("SELECT started_at, first_started_at FROM tasks WHERE id = ?",
+                                       (info["task_id"],))
                 if row is None:
-                    row = db.query_one("SELECT started_at FROM tasks WHERE thread_id = ? "
+                    row = db.query_one("SELECT started_at, first_started_at FROM tasks WHERE thread_id = ? "
                                        "ORDER BY id DESC LIMIT 1", (tid,))
                 th = db.query_one("SELECT title FROM threads WHERE id = ?", (tid,))
             except Exception:   # a DB hiccup must not hide the pool
@@ -354,9 +356,13 @@ class Orchestrator:
             title = ((th["title"] if th else "") or "").strip()
             if len(title) > 80:
                 title = title[:79].rstrip() + "…"
-            runs.append({"project": slug, "title": title,
-                         "started_at": (row["started_at"] if row else None) or None,
-                         "model": info.get("model") or ""})
+            # "started_at" = when the TASK began (first attempt; a retry does not move it)
+            started = ((row["first_started_at"] or row["started_at"]) if row else None) or None
+            run = {"project": slug, "title": title, "started_at": started, "model": info.get("model") or ""}
+            ae = engine.api_error_state(engine._status_file(tid))
+            if ae:
+                run["api_error"] = ae
+            runs.append(run)
         runs.sort(key=lambda r: (r["started_at"] or "", r["project"]))
         waiting = 0
         try:

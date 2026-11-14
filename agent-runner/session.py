@@ -123,6 +123,7 @@ def emit(task_id, etype, text, payload=None):
 _live_seq = 0
 LIVE = {"api_error": None}     # api_error state shown in the status file
 EVIDENCE = Evidence([KNOWLEDGE_DIR])
+RUN_STARTED = int(time.time())  # when THIS run began (a restart/resume is a new run) → "run since" in the UI
 _last_output = [time.time()]   # when did the agent last produce ANY output (silent thinking included)? → status file
 
 
@@ -147,7 +148,7 @@ def write_status(ctx_pct, alive, pending, compacting=False):
     _atomic_write(STATUS_FILE, json.dumps(
         {"alive": bool(alive), "ctx_pct": int(ctx_pct), "pending": int(pending),
          "compacting": bool(compacting), "thread_id": THREAD_ID, "slug": SLUG,
-         "model": MODEL, "effort": EFFORT, "updated": int(time.time()),
+         "model": MODEL, "effort": EFFORT, "updated": int(time.time()), "run_started": RUN_STARTED,
          "last_output": int(_last_output[0]), "api_error": LIVE["api_error"],
          "evidence": EVIDENCE.as_dict()}, ensure_ascii=False))
 

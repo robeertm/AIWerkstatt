@@ -507,13 +507,7 @@ def read_live(thread_id, offset=0):
     out = {"entries": entries, "offset": new_offset, "live": live,
            "model": model, "effort": effort}
     out.update(live_vitals(thread_id))
-    st = db.query_one("SELECT started_at FROM tasks WHERE thread_id=? AND status='running' "
-                      "ORDER BY id DESC LIMIT 1", (thread_id,))
-    if st and st["started_at"]:
-        try:
-            out["started"] = calendar.timegm(time.strptime(str(st["started_at"]), "%Y-%m-%dT%H:%M:%SZ"))
-        except ValueError:
-            pass
+    out.update(task_timing(thread_id, out.get("command_since")))
     # 🤖 Auto: if this thread's project runs on auto, add the chosen model/intensity
     # (the status file's effort isn't populated) plus the reason + plan for the UI.
     th = db.query_one("SELECT project_id FROM threads WHERE id=?", (thread_id,))
@@ -622,7 +616,73 @@ def live_vitals(thread_id, now=None):
             last_output = int(json.load(f).get("last_output") or 0)
     except (OSError, ValueError, TypeError):
         pass
-    return vitals_from(entries, last_output, now)
+    out = vitals_from(entries, last_output, now)
+    # 🔁 an API error that is being retried is its own state: the runner waits on purpose, so
+    # "no sign of life" would be wrong. After giving up the usual states apply again.
+    ae = api_error_state(_status_file(thread_id))
+    if ae:
+        out["api_error"] = ae
+        if out and not ae["gave_up"] and ae["next_attempt"]:
+            out["state"] = "api_error"
+    return out
+
+
+def _iso_epoch(v):
+    try:
+        return calendar.timegm(time.strptime(str(v), "%Y-%m-%dT%H:%M:%SZ"))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _status_file(thread_id):
+    try:
+        with open(os.path.join(EVENTS_DIR, "status-%d.json" % thread_id), "r", encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def api_error_state(status):
+    """Normalised ``api_error`` object from a runner status file, or None. Shape:
+    {attempt, max, next_attempt (Unix s, 0 = none planned), gave_up, reason}. Used by the live
+    vitals and the pool snapshot, so both show the same thing."""
+    ae = status.get("api_error") if isinstance(status, dict) else None
+    if not isinstance(ae, dict):
+        return None
+    def _i(k):
+        try:
+            return int(ae.get(k) or 0)
+        except (TypeError, ValueError):
+            return 0
+    return {"attempt": _i("attempt"), "max": _i("max"), "next_attempt": _i("next_attempt"),
+            "gave_up": bool(ae.get("gave_up")), "reason": str(ae.get("reason") or "")[:120]}
+
+
+def task_timing(thread_id, command_since=None):
+    """Two different clocks, kept apart (0.18.0). ``task_since`` = when the task first began
+    (the first attempt of the running task — a retry or a restart does not move it);
+    ``run_since`` = when the CURRENT run (container) began. The task never starts later than the
+    run or an open command, so the screen cannot say "command since 10:35, task since 10:40".
+    ``started`` (0.16.0 field) stays the start of the latest attempt for older clients."""
+    out = {}
+    row = db.query_one("SELECT started_at, first_started_at FROM tasks WHERE thread_id=? AND status='running' "
+                       "ORDER BY id DESC LIMIT 1", (thread_id,))
+    attempt = _iso_epoch(row["started_at"]) if row else 0
+    first = (_iso_epoch(row["first_started_at"]) if row else 0) or attempt
+    try:
+        run = int(_status_file(thread_id).get("run_started") or 0)
+    except (TypeError, ValueError):
+        run = 0
+    run = run or attempt
+    if attempt:
+        out["started"] = attempt
+    if run:
+        out["run_since"] = run
+    since = [t for t in (first, run, command_since) if t]
+    if since and row:
+        out["task_since"] = int(min(since))
+    return out
 
 
 # ---------- live activity (for the ticker) ----------
@@ -807,8 +867,9 @@ def ingest_once():
         _add_event(thread_id, task_id, etype, text, d.get("author", "Agent"))
         # update task/thread state
         if etype == "ack" and task_id:
-            db.execute("UPDATE tasks SET status='running', started_at=? WHERE id=? AND status='queued'",
-                       (store.now(), task_id))
+            db.execute("UPDATE tasks SET status='running', started_at=?, "
+                       "first_started_at=COALESCE(first_started_at, ?) WHERE id=? AND status='queued'",
+                       (store.now(), store.now(), task_id))
         elif etype == "reply" and task_id:
             db.execute("UPDATE tasks SET status='done', finished_at=? WHERE id=?", (store.now(), task_id))
         elif etype == "failed" and task_id:
@@ -952,8 +1013,9 @@ def resurrect_stale_tasks(is_alive):
         # started_at = this attempt: if the runner dies before it writes anything, the next
         # cooldown is measured from here, not from an older attempt.
         db.execute("UPDATE tasks SET status='queued', attempts=?, error=NULL, finished_at=NULL, "
+                   "first_started_at=COALESCE(first_started_at, started_at, ?), "
                    "started_at=? WHERE id=? AND status NOT IN ('done','cancelled')",
-                   (n, store.now(), r["id"]))
+                   (n, store.now(), store.now(), r["id"]))
         _drop_descriptor(r["id"], proj, r["thread_id"], kind, text, sess, log=False,
                          req_model=r["req_model"], req_effort=r["req_effort"])
         _add_event(r["thread_id"], r["id"], "retrying",

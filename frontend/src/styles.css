@@ -203,6 +203,7 @@ pre.code { white-space: pre-wrap; word-break: break-word; font-family: ui-monosp
   display: flex; flex-direction: column; gap: .1rem; font-size: .78rem; }
 .pooltile.free { background: transparent; border-style: dashed; color: var(--muted); justify-content: center; min-height: 3.6rem; }
 .pooltile.busy { border-color: #fbbf2466; }
+.pooltile.apierr { border-color: var(--warn); }
 .pooltile .pt-name { font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pooltile .pt-sub, .pooltile .pt-meta { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pooltile .pt-meta { font-size: .72rem; }

@@ -223,12 +223,13 @@ function LiveVitals({ v, at, working }: { v: LiveFeed; at: number; working: bool
   if (!v.last_activity) return null
   const now = (v.now ?? Date.now() / 1000) + (Date.now() - at) / 1000      // server clock + time since the poll
   const quiet = Math.max(0, now - v.last_activity)
-  let st = v.state || 'quiet'
-  if (st !== 'command' && st !== 'subagent')
+  let st: string = v.state || 'quiet'
+  if (st !== 'command' && st !== 'subagent' && st !== 'api_error')
     st = quiet >= QUIET_RED_S ? 'stalled_red' : quiet >= QUIET_YELLOW_S ? 'stalled_yellow' : quiet < THINKING_S ? 'thinking' : 'quiet'
   let head: { icon: string; text: string; color: string } | null = null
   if (working) {
-    if (st === 'command' && v.command_since) head = { icon: '⚙️', text: `command running for ${span(now - v.command_since)}`, color: 'var(--accent)' }
+    if (st === 'api_error' && v.api_error) head = { icon: '🔁', text: 'API error', color: 'var(--warn)' }
+    else if (st === 'command' && v.command_since) head = { icon: '⚙️', text: `command running for ${span(now - v.command_since)}`, color: 'var(--accent)' }
     else if (st === 'subagent' && v.command_since) head = { icon: '🧩', text: `subagent working for ${span(now - v.command_since)}`, color: 'var(--warn)' }
     else if (st === 'thinking') head = { icon: '💭', text: 'thinking', color: '#a78bfa' }
     else if (st === 'stalled_yellow') head = { icon: '⚠️', text: `no sign of life for ${span(quiet)}`, color: 'var(--warn)' }
@@ -236,15 +237,22 @@ function LiveVitals({ v, at, working }: { v: LiveFeed; at: number; working: bool
     else head = { icon: '💤', text: 'quiet', color: 'var(--muted)' }
   }
   const warn = st === 'stalled_yellow' || st === 'stalled_red'
-  const runFor = working && v.started ? now - v.started : null
+  // Two clocks (0.18.0): the task since its first start, and the current run — shown only when the run began later
+  // (after a follow-up, a restart or an API error), so the two never contradict each other.
+  const taskSince = working ? (v.task_since || v.started || 0) : 0
+  const runSince = working && v.run_since && taskSince && v.run_since - taskSince >= 60 ? v.run_since : 0
+  const ae = working && st === 'api_error' ? v.api_error : undefined
   return (
     <div className="stack" style={{ gap: '.1rem', fontSize: '.7rem' }} data-vitals={working ? st : 'idle'}>
       {head && <div className="row" style={{ gap: '.35rem', color: head.color, fontWeight: 700 }}><span aria-hidden>{head.icon}</span><span>{head.text}</span>
         {st === 'command' && v.command_since && <span className="muted tnum" style={{ fontWeight: 400 }}>(since {clock(v.command_since)})</span>}</div>}
-      <div className="row tnum" style={{ gap: '.1rem .6rem', flexWrap: 'wrap', color: warn && head ? head.color : 'var(--muted)' }}>
+      <div className="row tnum" style={{ gap: '.1rem 1rem', flexWrap: 'wrap', color: warn && head ? head.color : 'var(--muted)' }}>
         <span>last activity {clock(v.last_activity)} · {span(quiet)} ago</span>
-        {runFor !== null && runFor >= 0 && <span>· running for {span(runFor)}</span>}
+        {taskSince > 0 && <span>task since {clock(taskSince).slice(0, 5)} ({span(now - taskSince)})</span>}
+        {runSince > 0 && <span>run since {clock(runSince).slice(0, 5)}</span>}
       </div>
+      {ae && <div className="tnum" style={{ color: 'var(--warn)' }}>
+        {ae.next_attempt ? `retrying at ${clock(ae.next_attempt).slice(0, 5)}` : 'retrying'} · attempt {ae.attempt}/{ae.max}{ae.reason ? ` · ${ae.reason}` : ''}</div>}
     </div>
   )
 }
@@ -696,10 +704,15 @@ function PoolStrip({ names }: { names: Record<string, string> }) {
       </div>
       <div className="pooltiles">
         {tiles.map((r, i) => r ? (
-          <div key={r.project} className="pooltile busy" title={r.title}>
+          <div key={r.project} className={`pooltile busy${r.api_error ? ' apierr' : ''}`}
+               title={r.api_error ? `${r.title} — API error${r.api_error.reason ? ` (${r.api_error.reason})` : ''}` : r.title}>
             <div className="pt-name">{names[r.project] || r.project}</div>
-            <div className="pt-sub">{r.title || '—'}</div>
-            <div className="pt-meta">{[r.model, runTime(r.started_at)].filter(Boolean).join(' · ') || '—'}</div>
+            {/* An API error replaces the step line: short head, the time on its own line (never cut off) */}
+            <div className="pt-sub" style={r.api_error ? { color: 'var(--warn)', fontWeight: 700 } : undefined}>
+              {r.api_error ? '🔁 API error' : (r.title || '—')}</div>
+            <div className="pt-meta">{r.api_error
+              ? (r.api_error.gave_up ? 'gave up' : r.api_error.next_attempt ? `retry ${new Date(r.api_error.next_attempt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })} · ${r.api_error.attempt}/${r.api_error.max}` : 'retrying')
+              : ([r.model, runTime(r.started_at)].filter(Boolean).join(' · ') || '—')}</div>
           </div>
         ) : (
           <div key={'free' + i} className="pooltile free"><div className="pt-name">free</div></div>
