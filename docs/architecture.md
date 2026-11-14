@@ -101,7 +101,7 @@ agent-runner:
 
 | Volume | Holds |
 |---|---|
-| `workspaces` | One subdirectory per project (`/workspaces/<slug>`) — the agent's working tree. |
+| `workspaces` | One subdirectory per project (`/workspaces/<slug>`) — the agent's working tree. At most one run per project at a time: new orders and follow-ups of other threads wait in the queue until the project is free, so two runs never share (or switch branches in) the same working tree. |
 | `events` | Typed event JSONs the web control plane ingests (plus status/usage/limit files). |
 | `inbox` | Per-thread follow-ups, compact requests and stop signals fed to a live session. |
 

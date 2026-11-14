@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.18.1 — 2026-11-14
+### Fixed — one working tree per project, follow-ups never lost
+- A follow-up for thread B while the same project was busy with thread A was taken off the queue and silently dropped: it was neither delivered to the running session (different thread) nor launched (project busy). It now waits in the queue, like a new order does, and starts once the project is free. Two runs never share the project's working tree.
+- Architecture docs state the rule (at most one run per project; other threads wait).
+- Tests: `backend/tests/test_one_run_per_workspace.py` (second new order and a follow-up of another thread wait while the project is busy and start in order afterwards; follow-up of the running thread still goes to its inbox; different projects run in parallel).
+
 ## 0.18.0 — 2026-11-14
 ### Added — two clocks in the live view, API-error state on screen
 - **"Task since" and "run since" are separate.** Before, the header counted "running for" from the start of the latest attempt, so after a self-healing retry, a follow-up or an API-error pause an open command could look older than the task it belonged to ("command running since 10:35" under "running for 10 min"). Now `GET /api/threads/<id>/live` returns `task_since` (the first attempt of the running task — a retry never moves it) and `run_since` (when the current run began; the runner writes `run_started` into its status file). The task never starts later than the run or an open command. The header shows "task since HH:MM (n min)" and, only when the run began at least a minute later, "run since HH:MM". `started` (0.16.0) is unchanged: the start of the latest attempt.

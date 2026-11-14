@@ -396,6 +396,11 @@ class Orchestrator:
                 self._drop_inbox(thread_id, {"kind": kind, "id": d.get("id"),
                                              "text": d.get("text", "")})
                 return None
+            if kind == "followup" and alive:
+                # One working tree per project: the project is busy with ANOTHER thread. Never start a second run
+                # in the same workspace, and never drop the follow-up — it waits until the project is free.
+                self._requeue(d)
+                return None
             if kind == "followup" and not alive:
                 if pool_full or self._pool_full():
                     self._requeue(d)
