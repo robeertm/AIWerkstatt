@@ -111,8 +111,23 @@ class SelfHealing(unittest.TestCase):
         import db
         import engine
         cls.project = engine.create_project("Heal test", "x", "", "admin", provider="demo")
+        # When another test module imported app, its background "ingest" thread heals every
+        # 2 s on the shared database and races with these tests (retry counts off by one).
+        # Silence that thread only; the tests call the healer from the main thread.
+        import threading
+        cls._real_heal = engine.resurrect_stale_tasks
+
+        def _heal(is_alive, _real=cls._real_heal):
+            if threading.current_thread().name == "ingest":
+                return []
+            return _real(is_alive)
+        engine.resurrect_stale_tasks = _heal
         cls._saved = (engine.RETRY_BASE_SEC, engine.RETRY_CAP_SEC, engine.MAX_RETRIES,
                       engine.RETRY_MAX_AGE_SEC)
+
+    @classmethod
+    def tearDownClass(cls):
+        engine.resurrect_stale_tasks = cls._real_heal
 
     def setUp(self):
         engine.RETRY_BASE_SEC, engine.RETRY_CAP_SEC, engine.MAX_RETRIES, \

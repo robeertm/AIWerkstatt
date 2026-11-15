@@ -48,6 +48,16 @@ class CoordinatorToken(unittest.TestCase):
         self.addCleanup(wk.API_BLOCKLIST.discard, self.pid)
 
     def tearDown(self):
+        # leave no open task behind: other test modules share this data directory and the
+        # self-healer of a later module would pick it up (order dependent failures)
+        for r in db.query_all("SELECT t.id FROM tasks t JOIN threads h ON h.id=t.thread_id "
+                              "WHERE h.project_id=?", (self.pid,)):
+            try:
+                os.remove(os.path.join(engine.TASK_QUEUE, "%d.json" % r["id"]))
+            except OSError:
+                pass
+            db.execute("UPDATE tasks SET status='cancelled', finished_at=? WHERE id=? "
+                       "AND status NOT IN ('done','cancelled')", (store.now(), r["id"]))
         wk.ORCH.deploy = self._orig_deploy
         wk.WRITE_LIMIT.reset()
         store.api_token_set_disabled("coord-test", False)
