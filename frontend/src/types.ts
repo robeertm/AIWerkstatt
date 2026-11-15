@@ -30,7 +30,8 @@ export type PlanWindow = { pct: number | null; resets_at: string | null }
 export type PlanLimit = { connected: boolean; available?: boolean; session?: PlanWindow; weekly?: PlanWindow }
 // Worker pool overview (admins): max 0 = unlimited.
 export type ApiErrorState = { attempt: number; max: number; next_attempt: number; gave_up: boolean; reason: string }
-export type PoolRun = { project: string; title: string; started_at: string | null; model: string; api_error?: ApiErrorState }
+export type BackgroundWait = { since: number; count: number; continuations: number; max: number; reason: string; description: string }
+export type PoolRun = { project: string; title: string; started_at: string | null; model: string; api_error?: ApiErrorState; background_wait?: BackgroundWait }
 export type TestRunnerLoad = { fresh: boolean; stand: number | null; load: number[] | null; cores: number | null; cpu_percent: number | null; test_runs: number | null; max_runs: number | null }
 export type PoolSnapshot = { max: number; busy: number; waiting: number; runs: PoolRun[]; test_runner?: TestRunnerLoad }
 export type LimitStatus = { active: boolean; until?: number; resumes_at?: string; reset_known?: boolean }
@@ -49,7 +50,8 @@ export type LiveFeed = {
   last_activity?: number; quiet_s?: number; now?: number; started?: number
   task_since?: number; run_since?: number      // 0.18.0: when the task first began / when the current run began
   api_error?: ApiErrorState
-  state?: 'command' | 'subagent' | 'thinking' | 'quiet' | 'stalled_yellow' | 'stalled_red' | 'api_error'
+  background_wait?: BackgroundWait
+  state?: 'command' | 'subagent' | 'thinking' | 'quiet' | 'stalled_yellow' | 'stalled_red' | 'api_error' | 'waiting_background'
   command_since?: number; command?: string
 }
 

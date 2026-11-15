@@ -123,7 +123,8 @@ _AGENT_RULES = (
     "You run as a single non-interactive pass. For parallelism, use the Agent tool: subagents run "
     "SYNCHRONOUSLY within THIS run and return their results, so you can reassemble them. NEVER use "
     "background processes (nohup, &, disown, daemons or self-invoked CLI calls) — their output is lost "
-    "the moment your run ends. Do EVERYTHING within this run: wait for subagents, reassemble, verify "
+    "the moment your run ends. Wait for long runs in the foreground with a timeout and a sleep loop; "
+    "notifications from background Bash or Monitor after your turn ends are not reliable. Do EVERYTHING within this run: wait for subagents, reassemble, verify "
     "and commit BEFORE you reply. Never announce that you will report back later — after your reply "
     "the run ends, there is no later. "
     "Keep a todo list from the start (TaskCreate per step, TaskUpdate with in_progress/completed; "
@@ -134,6 +135,7 @@ _AGENT_RULES = (
 )
 
 
+_BG_DONE = ("completed", "failed", "killed", "cancelled", "stopped", "error")
 _API_ERROR_STATUS = (401, 403, 408, 409, 529)
 _API_ERROR_WORDS = ("failed to authenticate", "overloaded", "api error", "attention required")
 
@@ -273,6 +275,10 @@ class ClaudeAdapter(AgentAdapter):
                         ev = _act("tool", _clip(_tool_line(name, inp)), _tool_full(name, inp))
                         ev["tool"] = {"name": name, "input": inp}   # raw call, for the per-run evidence counters
                         out.append(ev)
+            top = not o.get("parent_tool_use_id")
+            for e in out:
+                if e["kind"] == "activity":
+                    e["top"] = top          # main conversation (True) or a subagent (False)
         elif t == "user":
             content = (o.get("message") or {}).get("content")
             if isinstance(content, list):
@@ -280,6 +286,30 @@ class ClaudeAdapter(AgentAdapter):
                     if isinstance(bl, dict) and bl.get("type") == "tool_result":
                         cont = bl.get("content")
                         out.append(_act("result", _clip(_result_line(cont)), _result_full(cont)))
+        elif t == "system":
+            # Background work of the CLI (Bash run_in_background, Monitor, background subagents). The full list in
+            # `background_tasks_changed` is authoritative; task_started/task_updated/task_notification are the
+            # fallback for CLI versions without it. Neutral event: the driver decides what to do with it.
+            st = o.get("subtype")
+            if st == "background_tasks_changed" and isinstance(o.get("tasks"), list):
+                out.append({"kind": "background", "tasks": [
+                    {"id": str(x["task_id"]), "description": str(x.get("description") or ""),
+                     "type": str(x.get("task_type") or ""), "status": str(x.get("status") or "")}
+                    for x in o["tasks"] if isinstance(x, dict) and x.get("task_id")]})
+            elif o.get("task_id"):
+                tid = str(o["task_id"])
+                if st == "task_started" and o.get("is_backgrounded"):
+                    out.append({"kind": "background", "started": {
+                        "id": tid, "description": str(o.get("description") or ""),
+                        "type": str(o.get("task_type") or "")}})
+                elif st == "task_updated":
+                    patch = o.get("patch") or {}
+                    if str(patch.get("status") or "") in _BG_DONE:
+                        out.append({"kind": "background", "ended": tid})
+                    elif patch.get("is_backgrounded"):
+                        out.append({"kind": "background", "started": {"id": tid, "description": "", "type": ""}})
+                elif st == "task_notification":
+                    out.append({"kind": "background", "ended": tid})
         elif t == "rate_limit_event":
             ri = o.get("rate_limit_info") or {}
             if ri.get("status") == "rejected":

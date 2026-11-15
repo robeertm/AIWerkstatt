@@ -18,6 +18,7 @@ environment (sourced by the entrypoint), never on the command line.
 """
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -74,6 +75,34 @@ API_RETRY_DELAYS = [int(x) for x in os.environ.get("AIW_API_RETRY_DELAYS", "120,
 API_CONTINUE = ("The previous attempt ended with an API error. Continue exactly where you left off - do not "
                 "start over and do not repeat steps you already completed. Check the current state briefly, "
                 "then finish the task.")
+# A turn that ends with open background work is not a finished task (0.23.0). When the agent starts a long job in the
+# background and ends its turn with "I am waiting for the notification", the result is NOT the final reply: the task stays
+# open, the CLI wakes the agent itself when the job ends, and if it does not (nothing open for BG_EMPTY_S) or the job runs
+# longer than BG_NUDGE_S, the driver feeds a continuation into the SAME session. At most BG_MAX continuations per task,
+# then the task ends with a "stuck" reply (no requeue).
+BG_MAX = int(os.environ.get("AIW_BG_MAX_CONTINUATIONS", "3"))
+BG_NUDGE_S = int(os.environ.get("AIW_BG_NUDGE_S", "900"))
+BG_EMPTY_S = int(os.environ.get("AIW_BG_EMPTY_S", "60"))
+BG_CONTINUE = ("Automatic continuation by the workshop: your last turn ended while work was still open (a background "
+               "task or an announced wait). Notifications after the end of a turn are not reliable. Check your "
+               "background tasks now (read the output file or wait in the foreground with a timeout and a sleep "
+               "loop) and carry on until the task is really done. End your turn only when nothing is open.")
+STUCK_PREFIX = "\u23f3 Stuck on a background run"
+# Fallback without a state event: short replies that only announce a wait (kept narrow; German variants because agents
+# may answer in the language of the task).
+_WAIT_PATTERN = re.compile(
+    r"(?i)(i.ll (wait|report back) (for|when|once)|i will (wait|report back) (for|when|once)"
+    r"|waiting for the (monitor|notification|background)|nothing (else )?to do until"
+    r"|ich warte (auf|bis)|benachrichtigung (dieses|des|vom) monitors?|bis dahin ist nichts (weiter )?zu tun"
+    r"|melde mich, ?sobald)")
+
+
+def waits_only(text):
+    """True if a (short) reply only announces waiting for something later. Long reports never match."""
+    t = " ".join(str(text or "").split())
+    return bool(t) and len(t) <= 1200 and bool(_WAIT_PATTERN.search(t[-500:]))
+
+
 # Knowledge folder (also read by the subagent rules block through the environment).
 KNOWLEDGE_DIR = os.environ.get("AIW_KNOWLEDGE_DIR") or os.environ.get("WK_VAULT") or "/vault/%s" % SLUG
 os.environ["AIW_KNOWLEDGE_DIR"] = KNOWLEDGE_DIR
@@ -121,7 +150,9 @@ def emit(task_id, etype, text, payload=None):
 
 
 _live_seq = 0
-LIVE = {"api_error": None}     # api_error state shown in the status file
+LIVE = {"api_error": None,     # api_error state shown in the status file
+        "background": {},      # open background tasks: id -> {description, type, since}
+        "waiting": None}       # turn ended with open work: {since, continuations, reason}
 EVIDENCE = Evidence([KNOWLEDGE_DIR])
 RUN_STARTED = int(time.time())  # when THIS run began (a restart/resume is a new run) → "run since" in the UI
 _last_output = [time.time()]   # when did the agent last produce ANY output (silent thinking included)? → status file
@@ -142,6 +173,36 @@ def emit_activity(act, text):
         log("live write failed: %s" % e)
 
 
+def background_update(ev):
+    """Fold one neutral `background` event into LIVE["background"]."""
+    bg = LIVE["background"]
+    now = int(time.time())
+    if "tasks" in ev:
+        done = ("completed", "failed", "killed", "cancelled", "stopped", "error")
+        LIVE["background"] = {
+            x["id"]: {"description": (bg.get(x["id"]) or {}).get("description") or x.get("description", "")[:80],
+                      "type": x.get("type", ""), "since": (bg.get(x["id"]) or {}).get("since") or now}
+            for x in ev["tasks"] if x.get("status") not in done}
+    elif ev.get("started"):
+        s = ev["started"]
+        bg[s["id"]] = {"description": s.get("description", "")[:80], "type": s.get("type", ""), "since": now}
+    elif ev.get("ended"):
+        bg.pop(ev["ended"], None)
+
+
+def _background_fields():
+    d = {}
+    if LIVE["background"]:
+        d["background_open"] = len(LIVE["background"])
+    w = LIVE["waiting"]
+    if w:
+        d["background_wait"] = {"since": w["since"], "count": len(LIVE["background"]),
+                                "continuations": w["continuations"], "max": BG_MAX, "reason": w["reason"],
+                                "description": next((v["description"] for v in LIVE["background"].values()
+                                                     if v.get("description")), "")}
+    return d
+
+
 def write_status(ctx_pct, alive, pending, compacting=False):
     # model/effort ride along so the live "what the agent is doing" view can show WHICH model
     # and intensity this run actually uses (the values this session was launched with).
@@ -150,7 +211,7 @@ def write_status(ctx_pct, alive, pending, compacting=False):
          "compacting": bool(compacting), "thread_id": THREAD_ID, "slug": SLUG,
          "model": MODEL, "effort": EFFORT, "updated": int(time.time()), "run_started": RUN_STARTED,
          "last_output": int(_last_output[0]), "api_error": LIVE["api_error"],
-         "evidence": EVIDENCE.as_dict()}, ensure_ascii=False))
+         "evidence": EVIDENCE.as_dict(), **_background_fields()}, ensure_ascii=False))
 
 
 def write_limit(until, since, known=False):
@@ -238,6 +299,11 @@ def main():
     api_wait_until = 0.0      # when the next "continue" is due (0 = not waiting)
     api_tid = None
     api_gave_up = False
+    bg_continuations = {}     # automatic continuations per task id (at most BG_MAX)
+    bg_tid = None             # task currently waiting for its background work
+    bg_empty_since = 0.0      # since when no background task is open (the CLI did not wake the agent)
+    bg_anchor = 0.0           # start of the wait / last continuation
+    stuck = None              # {"task_id","continuations","description","reason"} -> result
     rl_size = 0               # last seen runlog size (truncation detection)
     should_close = False
     limited_close = None   # (task_id, reset)
@@ -248,6 +314,7 @@ def main():
         nonlocal ctx_pct, last_activity, should_close, limited_close, controls_since_compact
         nonlocal ctx_window, sess_out, sess_cost, sess_turns, restart_request, stream_retries
         nonlocal api_attempts, api_wait_until, api_tid, api_gave_up
+        nonlocal bg_tid, bg_empty_since, bg_anchor, stuck
         sess_out += int(ev.get("out_tokens", 0) or 0)
         sess_cost = max(sess_cost, float(ev.get("cost", 0) or 0))
         sess_turns += 1
@@ -307,6 +374,37 @@ def main():
             api_attempts = 0        # ... and the API-error counter
             api_wait_until = 0.0
             LIVE["api_error"] = None
+            # A turn that ends with open work (real CLI state; fallback: the reply only waits) is not a finished task.
+            open_n = len(LIVE["background"])
+            if tid is not None and (open_n or waits_only(text)):
+                n_cont = bg_continuations.get(tid, 0)
+                desc = next((v["description"] for v in LIVE["background"].values() if v.get("description")), "")
+                reason = "background" if open_n else "text"
+                if n_cont < BG_MAX:
+                    expected.appendleft(head)           # the task stays open
+                    now_t = time.time()
+                    bg_tid, bg_anchor = tid, now_t
+                    bg_empty_since = 0.0 if open_n else now_t
+                    LIVE["waiting"] = {"since": int(now_t), "continuations": n_cont, "reason": reason}
+                    what = (("%d background task%s open%s" % (open_n, "" if open_n == 1 else "s",
+                                                              (": " + desc) if desc else ""))
+                            if open_n else "the reply only announces a wait")
+                    emit(tid, "progress", "\u23f3 Waiting for a background run (%s). The task stays open; the "
+                         "workshop continues it automatically.\n\n%s" % (what, text[:1500]))
+                    log("turn ended with open work (%s, %d open) -> task %s stays open, continuations %d/%d"
+                        % (reason, open_n, tid, n_cont, BG_MAX))
+                    last_activity = now_t
+                    return
+                stuck = {"task_id": tid, "continuations": n_cont, "description": desc, "reason": reason}
+                LIVE["waiting"] = None
+                emit(tid, "reply", "%s: the agent still ended its turn with open work after %d automatic "
+                     "continuations (%s). The task is probably not finished; a follow-up continues it. "
+                     "Last reply:\n\n%s" % (STUCK_PREFIX, n_cont, desc or reason, text[:5000]))
+                log("open work after %d continuations -> stuck" % n_cont)
+                expected.clear()
+                should_close = True
+                return
+            LIVE["waiting"] = None
             emit(tid, "reply", text[:6000])
         # One result = the agent processed everything fed so far. A mid-turn
         # follow-up folded into this turn → resolve the remaining expected tasks.
@@ -351,8 +449,12 @@ def main():
                 elif kind == "activity":
                     if ev.get("tool"):
                         EVIDENCE.tool(ev["tool"].get("name", ""), ev["tool"].get("input") or {})
+                    if LIVE["waiting"] and ev.get("top") and ev.get("act") in ("say", "think", "tool"):
+                        LIVE["waiting"] = None   # the CLI woke the agent itself - it works again
                     emit_activity(ev.get("act", "say"), ev.get("text", ""))
                     last_activity = time.time()
+                elif kind == "background":
+                    background_update(ev)
                 elif kind == "result":
                     handle_result(ev)
 
@@ -430,6 +532,30 @@ def main():
             elif sid:
                 restart_request = (api_tid, "API error")   # same path as a stream abort (resume)
 
+        # 3c) waiting for background work: the CLI did not wake the agent (nothing open for BG_EMPTY_S) or the job
+        # runs longer than BG_NUDGE_S -> continue in the same session, at most BG_MAX times per task.
+        if LIVE["waiting"] and not should_close and bg_tid is not None:
+            now = time.time()
+            if LIVE["background"]:
+                bg_empty_since = 0.0
+            elif not bg_empty_since:
+                bg_empty_since = now
+            if ((bg_empty_since and now - bg_empty_since >= BG_EMPTY_S) or now - bg_anchor >= BG_NUDGE_S) \
+                    and proc.poll() is None:
+                n_cont = bg_continuations.get(bg_tid, 0) + 1
+                bg_continuations[bg_tid] = n_cont
+                why = ("background task finished, no new turn" if bg_empty_since
+                       else "background task running for %d min" % ((now - bg_anchor) // 60))
+                emit(bg_tid, "progress", "\U0001f501 Automatic continuation %d/%d (%s) \u2014 the agent checks "
+                     "its background tasks and carries on." % (n_cont, BG_MAX, why))
+                log("background: continuation %d/%d (%s)" % (n_cont, BG_MAX, why))
+                LIVE["waiting"] = None
+                bg_anchor, bg_empty_since = now, 0.0
+                feed(BG_CONTINUE)
+                last_activity = last_output = now
+                _last_output[0] = now
+                continue
+
         # 4) exit conditions
         # 🔴 Stream abort (API) → resume THE SAME session. Done here, not in the parser:
         # we swap both the process and the file handle we are reading from.
@@ -475,7 +601,7 @@ def main():
         # Stall watchdog: tasks are pending but the agent has gone silent for too long → it's
         # hung (API-retry dead end / dead socket). Terminate it; the pending tasks are re-queued
         # in teardown (auto-retry up to MAX_RETRIES). Keeps a hung agent from blocking the project.
-        if expected and now - last_output > STALL_TIMEOUT:
+        if expected and now - last_output > STALL_TIMEOUT and not LIVE["waiting"]:   # waiting is handled by 3c
             log("stall watchdog: no output for %ds with %d task(s) pending — agent hung, terminating + re-queueing"
                 % (int(now - last_output), len(expected)))
             try:
@@ -492,7 +618,8 @@ def main():
 
     # ---------------------------------------------------------------- teardown
     result = {"session_id": sid, "limited": None, "reset": 0, "requeue": [], "ok": True,
-              "api_gave_up": api_gave_up, "api_error": LIVE["api_error"]}
+              "api_gave_up": api_gave_up, "api_error": LIVE["api_error"],
+              "stuck": stuck, "continuations": sum(bg_continuations.values())}
     if api_gave_up:
         result["ok"] = False
 

@@ -224,11 +224,12 @@ function LiveVitals({ v, at, working }: { v: LiveFeed; at: number; working: bool
   const now = (v.now ?? Date.now() / 1000) + (Date.now() - at) / 1000      // server clock + time since the poll
   const quiet = Math.max(0, now - v.last_activity)
   let st: string = v.state || 'quiet'
-  if (st !== 'command' && st !== 'subagent' && st !== 'api_error')
+  if (st !== 'command' && st !== 'subagent' && st !== 'api_error' && st !== 'waiting_background')
     st = quiet >= QUIET_RED_S ? 'stalled_red' : quiet >= QUIET_YELLOW_S ? 'stalled_yellow' : quiet < THINKING_S ? 'thinking' : 'quiet'
   let head: { icon: string; text: string; color: string } | null = null
   if (working) {
     if (st === 'api_error' && v.api_error) head = { icon: '🔁', text: 'API error', color: 'var(--warn)' }
+    else if (st === 'waiting_background') head = { icon: '⏳', text: 'waiting for background run', color: 'var(--accent)' }
     else if (st === 'command' && v.command_since) head = { icon: '⚙️', text: `command running for ${span(now - v.command_since)}`, color: 'var(--accent)' }
     else if (st === 'subagent' && v.command_since) head = { icon: '🧩', text: `subagent working for ${span(now - v.command_since)}`, color: 'var(--warn)' }
     else if (st === 'thinking') head = { icon: '💭', text: 'thinking', color: '#a78bfa' }
@@ -717,7 +718,7 @@ function PoolStrip({ names }: { names: Record<string, string> }) {
             <div className="pt-name">{names[r.project] || r.project}</div>
             {/* An API error replaces the step line: short head, the time on its own line (never cut off) */}
             <div className="pt-sub" style={r.api_error ? { color: 'var(--warn)', fontWeight: 700 } : undefined}>
-              {r.api_error ? '🔁 API error' : (r.title || '—')}</div>
+              {r.api_error ? '🔁 API error' : r.background_wait ? '⏳ waiting for background run' : (r.title || '—')}</div>
             <div className="pt-meta">{r.api_error
               ? (r.api_error.gave_up ? 'gave up' : r.api_error.next_attempt ? `retry ${new Date(r.api_error.next_attempt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })} · ${r.api_error.attempt}/${r.api_error.max}` : 'retrying')
               : ([r.model, runTime(r.started_at)].filter(Boolean).join(' · ') || '—')}</div>

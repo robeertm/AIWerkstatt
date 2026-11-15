@@ -17,6 +17,10 @@ Normalised events returned by ``parse_line`` are plain dicts with a ``kind``:
   {"kind": "result", "text": str, "error": bool,
                      "limited": bool, "reset": <epoch int>,
                      "out_tokens": int, "cost": float, "window": <int|None>}
+  {"kind": "background", "tasks": [{"id","description","type","status"}]}   # full list of open background work
+  {"kind": "background", "started": {"id","description","type"}}            # incremental (fallback)
+  {"kind": "background", "ended": "<id>"}
+Providers without background work simply never emit "background".
 
 Exactly one ``result`` is expected per user message fed in (the driver relies on
 this for turn↔task mapping). If a provider folds a mid-turn follow-up into the

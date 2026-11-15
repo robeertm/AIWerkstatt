@@ -624,6 +624,13 @@ def live_vitals(thread_id, now=None):
         out["api_error"] = ae
         if out and not ae["gave_up"] and ae["next_attempt"]:
             out["state"] = "api_error"
+    # A turn that ended with open background work: the runner waits on purpose and continues it by itself,
+    # so the agent is neither finished nor stuck.
+    bw = background_wait_state(_status_file(thread_id))
+    if bw:
+        out["background_wait"] = bw
+        if out and not (ae and not ae["gave_up"] and ae["next_attempt"]):
+            out["state"] = "waiting_background"
     return out
 
 
@@ -657,6 +664,21 @@ def api_error_state(status):
             return 0
     return {"attempt": _i("attempt"), "max": _i("max"), "next_attempt": _i("next_attempt"),
             "gave_up": bool(ae.get("gave_up")), "reason": str(ae.get("reason") or "")[:120]}
+
+
+def background_wait_state(status):
+    """Normalised ``background_wait`` object from a runner status file, or None. Shape:
+    {since, count, continuations, max, reason, description}."""
+    bw = status.get("background_wait") if isinstance(status, dict) else None
+    if not isinstance(bw, dict):
+        return None
+    def _i(k):
+        try:
+            return int(bw.get(k) or 0)
+        except (TypeError, ValueError):
+            return 0
+    return {"since": _i("since"), "count": _i("count"), "continuations": _i("continuations"), "max": _i("max"),
+            "reason": str(bw.get("reason") or "")[:20], "description": str(bw.get("description") or "")[:120]}
 
 
 def task_timing(thread_id, command_since=None):

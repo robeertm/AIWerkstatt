@@ -362,6 +362,9 @@ class Orchestrator:
             ae = engine.api_error_state(engine._status_file(tid))
             if ae:
                 run["api_error"] = ae
+            bw = engine.background_wait_state(engine._status_file(tid))
+            if bw:
+                run["background_wait"] = bw
             runs.append(run)
         runs.sort(key=lambda r: (r["started_at"] or "", r["project"]))
         waiting = 0
