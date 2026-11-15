@@ -156,6 +156,9 @@ before profiles existed are restricted and behave exactly as before.
   The profile exists for a service that files tasks for trusted reporters; see
   [Trusted reporters](#trusted-reporters).
 
+- **Chain tasks** are restricted too, unless the operator sets `AIWERKSTATT_CHAIN_REVIEW=off`
+  (then they run like coordinator tasks). See [Task chain](#task-chain).
+
 **Origin.** A task created with a token carries `origin = "api:<token name>"`, set on the
 server from the verified token and never from the request body. Follow-ups record the
 sending token too. The task list and the task view show it as a **via &lt;name&gt;** badge.
@@ -197,6 +200,32 @@ rather than a display name or login, which can be renamed or reused. The service
 process automatically content that looks suspicious. Hand these to a human instead: prompt
 injection attempts, requests for credentials or privileges, security reports, legal or money
 questions, contact outside the platform, and pull requests containing code.
+
+### Task chain
+
+The `chain` profile belongs to [`scripts/chain/chain.py`](chain.md), which files the next task
+of a plan after each finished one. It allows the same three routes as `reporter`, with
+tighter limits on creating:
+
+- **One collecting project and a fixed title prefix.** `AIWERKSTATT_CHAIN_PROJECT` and
+  `AIWERKSTATT_CHAIN_TITLE_PREFIX`. If either is unset, empty, or the request does not match,
+  the API answers **403**.
+- **Standard models only.** `model` must be empty, `auto`, or a model of the project's
+  provider that the Auto ladder may pick. Special-purpose and legacy models, unknown
+  models and unknown effort steps are refused with **403**. There is no per-task working
+  folder in AIWerkstatt, so there is no folder rule.
+- **No attachments.** A request carrying `files`, `attachments` or `attachment` is refused.
+- **Own tasks only.** Reading and follow-ups only for tasks created by the calling token
+  (**403** also for unknown ids and for tasks of other tokens or people).
+- **Review gate on by default.** Chain tasks are restricted tasks. Only an operator who sets
+  `AIWERKSTATT_CHAIN_REVIEW=off` lets them run unreviewed; the profile never gets wider routes.
+- **Own rate limit.** `AIWERKSTATT_CHAIN_RATE` writes per hour per token (default 6; `0` or
+  an invalid value falls back to 6), then **429** with `Retry-After`.
+- The tool itself adds ceilings of 4 new tasks per day, 1 running per track and 2 running in
+  total, a kill-switch file and a pause file. It never tags, releases or publishes.
+
+Keep the token file at mode 0600; the tool refuses a token file readable by others and never
+passes the token on a command line.
 
 ## Honest residual risk
 

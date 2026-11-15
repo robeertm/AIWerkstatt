@@ -198,6 +198,12 @@ set of endpoints. Each token has a **profile**:
   follow up on the tasks that same token created. Its tasks go through the same review
   gate as restricted ones. Own rate limit (`AIWERKSTATT_REPORTER_RATE`, 8 per hour by
   default). No file uploads, no project access, nothing else.
+- **chain**: for the task-chain tool in [`scripts/chain`](docs/chain.md). It can only create
+  tasks in one collecting project (`AIWERKSTATT_CHAIN_PROJECT`) whose title starts with a
+  fixed prefix (`AIWERKSTATT_CHAIN_TITLE_PREFIX`), with `auto` or a standard model and no
+  attachments, and read and follow up on its own tasks. Either variable unset means every
+  create is refused. Review gate on by default, own rate limit (`AIWERKSTATT_CHAIN_RATE`,
+  6 per hour by default), nothing else.
 
 No token can release, publish, create or delete projects, change settings, manage users or
 tokens, or decide a review. Every task shows which token created it (**via &lt;name&gt;**),

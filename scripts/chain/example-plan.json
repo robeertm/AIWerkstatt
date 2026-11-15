@@ -1,0 +1,25 @@
+{
+  "limits": {"per_day": 3, "per_track": 1, "total": 2},
+  "external": {
+    "api-credentials": "Credentials for the example API are stored on the host"
+  },
+  "order": ["docs-outline", "api-schema", "ui-shell", "docs-guide", "api-endpoints", "ui-forms", "api-release", "ui-polish"],
+  "tasks": [
+    {"id": "docs-outline", "track": "docs", "title": "Outline the user guide", "model": "claude-haiku-5-5", "effort": "low", "hours": 0.5,
+     "prompt": "Write an outline of the user guide in docs/guide.md.", "check": "The outline lists every feature once."},
+    {"id": "api-schema", "track": "api", "title": "Define the data schema", "model": "claude-sonnet-5-5", "effort": "medium", "hours": 1,
+     "prompt": "Add the database schema and migrations for the example entities.", "check": "The migration test passes."},
+    {"id": "ui-shell", "track": "ui", "title": "Build the page shell", "model": "claude-sonnet-5-5", "effort": "medium", "hours": 1,
+     "prompt": "Build the navigation and the empty page shell.", "check": "The frontend build is green."},
+    {"id": "docs-guide", "track": "docs", "title": "Write the guide", "model": "claude-sonnet-5-5", "effort": "low", "hours": 1,
+     "depends_on": ["docs-outline", "ui-shell"], "prompt": "Fill the outline with the full guide."},
+    {"id": "api-endpoints", "track": "api", "title": "Implement the endpoints", "model": "claude-opus-5-5", "effort": "high", "hours": 2,
+     "depends_on": ["api-schema", "ext:api-credentials"], "prompt": "Implement the endpoints with tests.", "check": "All API tests pass."},
+    {"id": "ui-forms", "track": "ui", "title": "Build the forms", "model": "claude-sonnet-5-5", "effort": "medium", "hours": 1.5,
+     "depends_on": ["ui-shell", "api-endpoints"], "prompt": "Build the forms against the new endpoints."},
+    {"id": "api-release", "track": "api", "title": "Prepare the release notes", "hours": 0.5, "release": true,
+     "depends_on": ["api-endpoints", "ui-forms"], "prompt": "Update the changelog and the version for the release."},
+    {"id": "ui-polish", "track": "ui", "title": "Optional visual polish", "optional": true, "hours": 1,
+     "depends_on": ["ui-forms"], "prompt": "Tidy spacing and colours on every page."}
+  ]
+}

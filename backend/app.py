@@ -16,6 +16,7 @@ from functools import wraps
 import requests
 from flask import Flask, g, jsonify, request, send_from_directory, send_file, abort, session
 
+import automode
 import config
 import db
 import store
@@ -60,12 +61,19 @@ API_ENDPOINTS = {
     # Creates tasks in ONE project (AIWERKSTATT_REPORTER_PROJECT; unset = always 403), reads
     # and follows up on its own tasks only, own (stricter) write rate limit, review gate on.
     "reporter": frozenset({"thread_create", "thread_get", "thread_comment"}),
+    # chain: for the automatic task-chain tool (scripts/chain). Creates tasks in ONE project
+    # (AIWERKSTATT_CHAIN_PROJECT) with a fixed title prefix (AIWERKSTATT_CHAIN_TITLE_PREFIX),
+    # standard models only, no attachments; reads and follows up on its own tasks only.
+    # Unset project or prefix = always 403. Own write rate limit. No other route.
+    "chain": frozenset({"thread_create", "thread_get", "thread_comment"}),
 }
 API_WRITES = {"coordinator": frozenset({"thread_create", "thread_comment"}),
-              "reporter": frozenset({"thread_create", "thread_comment"})}
+              "reporter": frozenset({"thread_create", "thread_comment"}),
+              "chain": frozenset({"thread_create", "thread_comment"})}
 API_BLOCKLIST = {s.strip() for s in os.environ.get("AIWERKSTATT_API_BLOCKLIST", "").split(",") if s.strip()}
 WRITE_LIMIT = service_token.WriteLimiter()
 REPORTER_LIMIT = service_token.WriteLimiter(service_token.reporter_rate())
+CHAIN_LIMIT = service_token.WriteLimiter(service_token.chain_rate())
 
 
 @app.before_request
@@ -84,7 +92,7 @@ def _service_token_gate():
     if tok["disabled"] or request.endpoint not in API_ENDPOINTS.get(tok["profile"], ()):
         return None   # the route itself answers 401: a token is no user here
     if request.endpoint in API_WRITES.get(tok["profile"], ()):
-        limiter = REPORTER_LIMIT if tok["profile"] == "reporter" else WRITE_LIMIT
+        limiter = {"reporter": REPORTER_LIMIT, "chain": CHAIN_LIMIT}.get(tok["profile"], WRITE_LIMIT)
         ok, retry = limiter.allow(tok["name"])
         if not ok:
             resp = jsonify(error="Too many requests from this service token. Try again later.")
@@ -145,9 +153,45 @@ def _reporter_project():
 
 
 def _reporter_owns(tid):
-    """True when the thread exists and was created by the calling reporter token."""
+    """True when the thread exists and was created by the calling reporter or chain token."""
     th = db.query_one("SELECT origin FROM threads WHERE id=?", (tid,))
     return bool(th and th["origin"] and th["origin"] == _origin())
+
+
+def _chain():
+    u = current_user()
+    return bool(u and u.get("api") and u.get("profile") == "chain")
+
+
+def _chain_project():
+    return os.environ.get("AIWERKSTATT_CHAIN_PROJECT", "").strip()
+
+
+def _chain_prefix():
+    return os.environ.get("AIWERKSTATT_CHAIN_TITLE_PREFIX", "")
+
+
+def _chain_unreviewed():
+    """Chain tasks go through the review gate unless the operator explicitly turns it off
+    with AIWERKSTATT_CHAIN_REVIEW=off (then they run like coordinator tasks)."""
+    return _chain() and os.environ.get("AIWERKSTATT_CHAIN_REVIEW", "on").strip().lower() == "off"
+
+
+def _chain_request_ok(p, d, title):
+    """Every limit of a chain task in one place. False = answer 403."""
+    prefix = _chain_prefix()
+    if not _chain_project() or not prefix or not title.startswith(prefix):
+        return False
+    if d.get("files") or d.get("attachments") or d.get("attachment"):
+        return False   # no attachments of any kind
+    spec = providers.get_spec(p["provider"])
+    model = (d.get("model") or "").strip() if isinstance(d.get("model"), (str, type(None))) else None
+    effort = (d.get("effort") or "").strip() if isinstance(d.get("effort"), (str, type(None))) else None
+    if model is None or effort is None or spec is None:
+        return False
+    if model and model != automode.AUTO_MODEL and model not in {m.id for m in spec.models if m.in_auto}:
+        return False   # only the standard list: no special-purpose or legacy model
+    return not effort or effort in spec.efforts
 
 
 def _origin():
@@ -161,7 +205,7 @@ def _origin():
 
 def _restricted_origin():
     """The origin when this request creates a restricted task (restricted token), else None."""
-    return None if _coordinator() else _origin()
+    return None if (_coordinator() or _chain_unreviewed()) else _origin()
 
 
 def _snapshot_or_none(pid):
@@ -493,7 +537,7 @@ def project_delete(pid):
 def _requested(d, key):
     """Per-task model/effort are admin-only (like the project setting); ignored for members.
     A coordinator token may choose them too (it dispatches work like an admin would)."""
-    return d.get(key) if current_user()["role"] == "admin" or _coordinator() else None
+    return d.get(key) if current_user()["role"] == "admin" or _coordinator() or _chain() else None
 
 
 @app.post("/api/projects/<pid>/threads")
@@ -506,9 +550,13 @@ def thread_create(pid):
         abort(403)
     if _reporter() and pid != _reporter_project():
         abort(403)   # a reporter files into the one intake project; unset = nowhere
+    if _chain() and pid != _chain_project():
+        abort(403)   # same for the chain: one collecting project; unset = nowhere
     d = request.get_json(force=True) or {}
     title = (d.get("title") or "").strip()
     body = (d.get("request") or d.get("body") or "").strip()
+    if _chain() and not _chain_request_ok(p, d, title):
+        abort(403)
     if not title or not body:
         return jsonify(error="Title and request are required."), 400
     if not provider_connected(p["provider"]):
@@ -519,14 +567,16 @@ def thread_create(pid):
             return err
     res = engine.create_thread(p, title, body, current_user()["name"],
                                model=_requested(d, "model"), effort=_requested(d, "effort"),
-                               origin=_origin(), profile=current_user().get("profile"))
+                               origin=_origin(),
+                               profile=engine.COORDINATOR if _chain_unreviewed()
+                               else current_user().get("profile"))
     return jsonify(number=res["thread_id"], id=res["thread_id"]), 201
 
 
 @app.get("/api/threads/<int:tid>")
 @login_required
 def thread_get(tid):
-    if _reporter() and not _reporter_owns(tid):
+    if (_reporter() or _chain()) and not _reporter_owns(tid):
         abort(403)   # also for unknown ids: no probing which tasks exist
     tl = engine.thread_timeline(tid)
     if not tl:
@@ -545,7 +595,7 @@ def thread_get(tid):
 @app.post("/api/threads/<int:tid>/comment")
 @login_required
 def thread_comment(tid):
-    if _reporter() and not _reporter_owns(tid):
+    if (_reporter() or _chain()) and not _reporter_owns(tid):
         abort(403)
     th = db.query_one("SELECT project_id FROM threads WHERE id=?", (tid,))
     if not th:

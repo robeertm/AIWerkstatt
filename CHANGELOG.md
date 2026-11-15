@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.20.0 — 2026-11-15
+### Added — `chain` service token profile and a task-chain tool
+- New profile `chain` (`service_token.py create|register <name> --profile chain`) for an automatic task chain. It may only create a task, read a task and send a follow-up, and every create is checked: the project must be `AIWERKSTATT_CHAIN_PROJECT`, the title must start with `AIWERKSTATT_CHAIN_TITLE_PREFIX` (either one unset: always 403), the model must be `auto` or from the standard list (no special-purpose or legacy model), the effort must be a known step, and attachments are refused. Reading and follow-ups only on tasks this same token created (403 otherwise, also for unknown ids). No project access, no other route. AIWerkstatt has no per-task working folders, so there is no folder rule.
+- Chain tasks are restricted tasks by default (review gate, snapshot, hold). The operator can switch the gate off for the chain with `AIWERKSTATT_CHAIN_REVIEW=off`; then they run like coordinator tasks.
+- Own write rate limit `AIWERKSTATT_CHAIN_RATE` (default 6 per hour per token, never unlimited) answering 429 with `Retry-After`. Kill switch and audit log as for all tokens.
+- New tool `scripts/chain/chain.py` (standard library only): reads a plan (tasks, tracks, dependencies, order, limits, external conditions) and after each finished task files the next one through the API. Checks the result file (known fields only), fixed ceilings of 4 per day, 1 per track and 2 in total (a plan can only lower them), kill-switch file, soft pause, atomic status file, three red results in a row block a task, optional tasks only after `approve`, human steps and external conditions confirmed with `manual-done`, self-healing for a timer (`check`: a task that finished without a result or stalled gets exactly one follow-up), and a `simulate` dry run of the whole plan. The token is read from a mode-0600 file, never from the command line.
+- Docs: `docs/chain.md`, README (service tokens) and `docs/security.md` ("Task chain").
+- Tests: `backend/tests/test_chain_token.py`, `scripts/chain/test_chain.py`; CI runs the chain tests.
+
 ## 0.19.0 — 2026-11-15
 ### Added — `reporter` service token profile for trusted reporters
 - New profile `reporter` (`service_token.py create|register <name> --profile reporter`). It may only create a task, read a task and send a follow-up. Creating works in one fixed intake project, set by `AIWERKSTATT_REPORTER_PROJECT` (unset: always 403); reading and follow-ups only on tasks this same token created (403 otherwise, also for unknown ids). No file uploads, no project access.
