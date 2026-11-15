@@ -210,6 +210,12 @@ tokens, or decide a review. Every task shows which token created it (**via &lt;n
 every token request is written to an audit log, and a kill-switch file disables a token at
 once. Details: [docs/security.md](docs/security.md#service-tokens).
 
+### 🖥️ Optional second test machine
+
+Heavy test suites can run on a second machine through a forced-command SSH key, throttled and capped
+at 2 runs at once, with the machine's load shown in the admin overview. Standard library only, off unless
+configured. See [docs/test-runner.md](docs/test-runner.md).
+
 ## 💬 Feedback
 
 Bug reports and feature ideas are very welcome — please [open an issue](https://github.com/robeertm/AIWerkstatt/issues).

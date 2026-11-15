@@ -1,0 +1,22 @@
+# Example unit: collects the load of the test machine every 30 s (read-only command "status").
+# Copy to /etc/systemd/system/, adjust User, paths and the config location, then: systemctl enable --now remote-test-collector
+[Unit]
+Description=Remote test runner: collect the load of the test machine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=CHANGE_ME
+Environment=AIWERKSTATT_TEST_RUNNER_CONFIG=/etc/aiwerkstatt/test-runner.json
+Environment=AIWERKSTATT_TEST_RUNNER_STATUS_DIR=/var/lib/aiwerkstatt/test-runner/status
+UMask=0027
+ExecStart=/usr/bin/python3 /opt/aiwerkstatt/scripts/test-runner/remote_test.py --collect
+Restart=always
+RestartSec=30
+Nice=19
+CPUQuota=10%
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

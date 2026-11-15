@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   Me, User, Provider, Project, ThreadSummary, ThreadDetail, FileEntry, FileListing,
   UsageSummary, LimitStatus, UpdateInfo, GithubStatus, ActivityItem, ScanResult, PublishStatus,
-  LiveEntry, LiveFeed, PlanLimit, PoolSnapshot,
+  LiveEntry, LiveFeed, PlanLimit, PoolSnapshot, TestRunnerLoad,
 } from './types'
 import * as api from './api'
 import { focusInField, hasDraft, loopGuard, reloadAllowed } from './updateReload'
@@ -678,6 +678,14 @@ function runTime(iso: string | null): string {
   const m = Math.max(0, Math.floor((Date.now() - t) / 60000))
   return m < 1 ? '<1 min' : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`
 }
+// One line for the optional second test machine: "37 % CPU · load 3.4 / 8 cores · 1 of 2 runs" (+ "no data" when stale).
+function testRunnerLine(t: TestRunnerLoad): string {
+  const parts: string[] = []
+  if (t.cpu_percent != null) parts.push(`${Math.round(t.cpu_percent)} % CPU`)
+  if (t.load && t.load.length && t.cores) parts.push(`load ${t.load[0].toFixed(1)} / ${t.cores} cores`)
+  if (t.test_runs != null && t.max_runs) parts.push(`${t.test_runs} of ${t.max_runs} runs`)
+  return parts.join(' · ') || 'no data'
+}
 // Polls only while the tab is visible; rendered for admins only, so everyone else never calls /api/pool.
 function PoolStrip({ names }: { names: Record<string, string> }) {
   const [pool, setPool] = useState<PoolSnapshot | null>(null)
@@ -718,6 +726,12 @@ function PoolStrip({ names }: { names: Record<string, string> }) {
           <div key={'free' + i} className="pooltile free"><div className="pt-name">free</div></div>
         ))}
       </div>
+      {pool.test_runner && (
+        <div className="testrunner-line muted" title={pool.test_runner.fresh ? 'Second test machine' : 'No fresh sample from the second test machine'}>
+          <b>Test runner</b>{!pool.test_runner.fresh && <span className="chip" style={{ cursor: 'default', color: 'var(--warn)' }}>stale</span>}
+          <span>{testRunnerLine(pool.test_runner)}</span>
+        </div>
+      )}
     </div>
   )
 }

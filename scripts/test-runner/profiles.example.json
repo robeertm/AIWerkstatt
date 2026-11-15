@@ -1,0 +1,45 @@
+{
+  "settings": {
+    "max_runs": 2,
+    "memory": "4g",
+    "cpu_mode": "cpus",
+    "cpus": "2",
+    "cpusets": ["0-1", "2-3"],
+    "cpu_shares": 256,
+    "shm_size": "512m",
+    "max_run_seconds": 14400,
+    "docker": ["docker"]
+  },
+  "base_images": {
+    "python312": {
+      "dockerfile": [
+        "FROM python:3.12-slim-bookworm",
+        "ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/tmp",
+        "COPY requirements.txt pins.txt /base/",
+        "RUN pip install --no-cache-dir -r /base/requirements.txt -r /base/pins.txt"
+      ]
+    }
+  },
+  "profiles": {
+    "example-app": {
+      "build": "repo",
+      "modes": {
+        "image": {"read_only": true, "command": ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-rfE"],
+                  "targets": ["tests"], "env": {"EXAMPLE_DATA": "/tmp/data"}},
+        "full": {"read_only": false, "command": ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-rfE"],
+                 "targets": ["tests"]}
+      },
+      "env_allowed": {"EXAMPLE_FLAG": "^[01]$"}
+    },
+    "example-lib": {
+      "build": "base",
+      "base": "python312",
+      "pins": ["pytest==8.3.4", "pytest-xdist==3.6.1"],
+      "modes": {
+        "pytest": {"read_only": true, "command": ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-rfE"],
+                   "targets": [], "workdir": "/source"}
+      },
+      "env_allowed": {}
+    }
+  }
+}

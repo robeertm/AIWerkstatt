@@ -227,6 +227,32 @@ tighter limits on creating:
 Keep the token file at mode 0600; the tool refuses a token file readable by others and never
 passes the token on a command line.
 
+## Remote test runner
+
+The optional tool in [`scripts/test-runner`](test-runner.md) runs a test suite on a second machine. It adds
+no route and no permission to AIWerkstatt itself; the trust boundary is the SSH key of that machine:
+
+- **Forced command.** The key is installed as `restrict,from="<client address>",command="python3 -I <dir>/remote_test_receiver.py" <key>`.
+  The caller can only issue `status`, `run <request>` and `result <id>`; every other command is refused,
+  and the install script proves this by trying `id` with the new key. `restrict` removes port, agent and X11
+  forwarding and the terminal.
+- **Allow list.** `run` only works for profiles and modes listed in `profiles.json` next to the receiver. The
+  file must belong to root or to the receiver's user and must not be writable by others, otherwise the
+  receiver refuses to start a run. Every request field is validated (ids, commit, repository name, `n`, arguments
+  with a deny list for options that would redirect output or configuration, environment variables only from a
+  per-profile allow list, pins in `package==version` form).
+- **Package check.** The uploaded archive may contain only `source/` (and `extra/` where a mode allows it); absolute
+  paths, `..`, hard links, links pointing outside, entries below links and special files are refused before anything
+  is unpacked.
+- **Contained containers.** `--rm --network none --cap-drop ALL --security-opt no-new-privileges --no-healthcheck`,
+  a memory limit, a low `--cpu-shares`, a CPU limit (`--cpus` or `--cpuset-cpus`), a read-only root file system and
+  a read-only source mount. No Docker socket, no other mount, never more than 2 runs at once.
+- **Read-only status.** `status` returns load, cores, pressure, free RAM, CPU and the runner's own runs, and nothing
+  about other containers or services of that machine.
+- **No secrets in the package.** Only tracked files of one commit are packed (`git archive`), so untracked files such
+  as `.env` never leave the client. The client configuration (target and key path) lives in a file or the
+  environment, never in the code.
+
 ## Honest residual risk
 
 Two things you should hold in mind:

@@ -4,6 +4,7 @@ Flask app that serves the React UI and the API, owns SQLite, and runs two
 background threads: the orchestrator (launches agent-runner containers) and the
 ingest loop (folds agent events into SQLite and deploys the app the agent built).
 """
+import json
 import mimetypes
 import os
 import stat
@@ -724,11 +725,42 @@ def usage():
     return jsonify(engine.usage_summary())
 
 
+TEST_RUNNER_FRESH_S = 120
+TEST_RUNNER_FIELDS = ("load", "cores", "psi_cpu", "psi_io", "ram_free_gb", "cpu_percent", "test_runs", "max_runs")
+
+
+def test_runner_status():
+    """The load of the optional second test machine, read from the collector file named by
+    AIWERKSTATT_TEST_RUNNER_STATUS (scripts/test-runner). None when unset or unreadable. `fresh` is true while
+    the collector's last successful sample is younger than 120 s; `stand` is that sample's unix time."""
+    path = os.environ.get("AIWERKSTATT_TEST_RUNNER_STATUS", "").strip()
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(d, dict):
+        return None
+    stand = d.get("stand")
+    stand = stand if isinstance(stand, (int, float)) and not isinstance(stand, bool) else None
+    out = {k: d.get(k) for k in TEST_RUNNER_FIELDS}
+    out["stand"] = int(stand) if stand is not None else None
+    out["fresh"] = bool(d.get("ok")) and stand is not None and 0 <= time.time() - stand < TEST_RUNNER_FRESH_S
+    return out
+
+
 @app.get("/api/pool")
 @admin_required
 def pool():
-    """Agents at work: how many of the fixed worker slots are busy, how many orders wait."""
-    return jsonify(ORCH.pool_snapshot())
+    """Agents at work: how many of the fixed worker slots are busy, how many orders wait.
+    With a configured test runner collector the answer also carries an optional `test_runner` field."""
+    snap = ORCH.pool_snapshot()
+    tr = test_runner_status()
+    if tr is not None:
+        snap = dict(snap, test_runner=tr)
+    return jsonify(snap)
 
 
 @app.get("/api/model-usage")

@@ -36,7 +36,7 @@ jobs:
       - name: Byte-compile backend + agent-runner
         run: |
           python -m py_compile backend/*.py backend/providers/*.py backend/scrub/*.py
-          python -m py_compile agent-runner/*.py agent-runner/providers/*.py scripts/chain/*.py
+          python -m py_compile agent-runner/*.py agent-runner/providers/*.py scripts/chain/*.py scripts/test-runner/*.py
       # Without the docker package the orchestrator runs without a Docker client, so the
       # tests need no Docker daemon on the runner.
       - name: Backend tests
@@ -45,6 +45,8 @@ jobs:
           cd backend && python -m unittest discover -s tests
       - name: Chain tool tests
         run: python -m unittest discover -s scripts/chain
+      - name: Remote test runner tests
+        run: python -m unittest discover -s scripts/test-runner
 
   frontend:
     runs-on: ubuntu-latest
