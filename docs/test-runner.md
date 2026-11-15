@@ -49,6 +49,9 @@ The trust boundary is one SSH key that can only start the receiver (details in
   `requirements.txt` and the profile's `pins` (the client may send other pins in the same `package==version` form).
   The image is cached per content hash (the 2 newest states are kept); the package is mounted read-only at `/source`
   (and `extra/` at `/extra` for modes with `"extra": true`).
+  Order the template by how often things change: system packages and browsers depend only on `pins.txt`
+  (`COPY pins.txt` + install first), `COPY requirements.txt` + install last. A changed requirements file then
+  rebuilds only the last layer; browser installs on a slow machine can otherwise take an hour per change.
 - Mode keys: `command`, `targets` (default pytest targets), `read_only` (default true), `env` (fixed variables),
   `workdir`, `junit` (default true for pytest) and `extra`.
 - **CPU limit:** `cpu_mode: "cpus"` uses `--cpus` (the kernel needs CFS quota; image builds get the equivalent

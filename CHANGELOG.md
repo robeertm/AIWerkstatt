@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.22.1 — 2026-11-15
+### Changed — remote test runner: cache-friendly base image template
+- `profiles.example.json` installs the pinned test tools before `requirements.txt`, and `docs/test-runner.md` explains the layer order: system packages and browsers depend only on the pins, so a changed requirements file rebuilds only the last layer (a browser install measured about an hour on a small second machine).
+
 ## 0.22.0 — 2026-11-15
 ### Added — remote test runner: a second test machine and its load in the admin overview
 - New tool `scripts/test-runner/remote_test.py` (client, standard library only): packs one commit with `git archive`, sends it over a dedicated SSH key with a forced command to the receiver on a second machine, passes the test output through unchanged and returns the exit code of the test run. Throttle instead of abort: while the runner is busy (CPU, load, pressure or a test already running) the start waits up to N minutes (default 60) and then runs anyway; the receiver never accepts more than 2 runs at once. Exit 100 means runner unavailable, request refused or a fault of the runner itself, so the caller runs the tests locally. A dropped connection never aborts the run; the client fetches the result afterwards. Also `--status`, `--available` and `--collect [--once]` (collector: `status.json` plus one JSONL file per day, 14 days). Configuration only from a file or the environment (`AIWERKSTATT_TEST_RUNNER_CONFIG`), no defaults with hosts.
