@@ -11,6 +11,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Own write rate limit `AIWERKSTATT_REPORTER_RATE` (default 8 per hour per token, never unlimited) answering 429 with `Retry-After`. Kill switch and audit log as for all tokens.
 - Docs: README (service tokens) and `docs/security.md` ("Trusted reporters": verify the reporter by an immutable numeric account id in the calling service; hand suspicious content to a human).
 - Tests: `backend/tests/test_reporter_token.py`.
+- Fixed (tests): the self-healing tests no longer race with the background healer of the app module and the coordinator tests leave no open tasks behind (order dependent failures in the full run).
 
 ## 0.18.1 — 2026-11-14
 ### Fixed — one working tree per project, follow-ups never lost
