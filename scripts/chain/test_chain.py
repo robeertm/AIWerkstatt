@@ -314,6 +314,354 @@ class Cli(Base):
         self.assertTrue(out[-1].startswith("finished"))
 
 
+GATE_OK = ("noise\nGATE: GREEN\nSUMMARY (version 1.2.3, commit abc1234d, image ghcr.io/owner/app:1.2.3)\n")
+REL = {"repo": "owner/app", "image": "ghcr.io/owner/app", "identity": "chain",
+       "queue_dir": "@Q@", "broker_status": "@S@", "gate_logs": "@G@", "clone": "/nonexistent/clone"}
+PROOF = {"ok": True, "reason": "OK", "tag": "v1.2.3", "tag_commit": "abc", "digest": "sha256:aa",
+         "latest_digest": "sha256:aa", "latest_same": True}
+
+
+class GateBase(Base):
+    def setUp(self):
+        super().setUp()
+        self.q = os.path.join(self.root, "queue")
+        self.g = os.path.join(self.root, "gates")
+        self.st = os.path.join(self.root, "broker-status.json")
+        os.makedirs(self.q)
+        os.makedirs(self.g)
+        self.proof = {"ok": False, "reason": "tag v1.2.3 missing"}
+        self.main = ("1.2.3", "abc1234d" + "0" * 32)
+
+    def rel(self, **kw):
+        d = {k: v.replace("@Q@", self.q).replace("@S@", self.st).replace("@G@", self.g) if isinstance(v, str) else v
+             for k, v in REL.items()}
+        d.update(kw)
+        return d
+
+    def chain(self, tasks=None, **kw):
+        tasks = tasks or [{"id": "a", "track": "x", "release": True}, {"id": "b", "track": "x", "depends_on": ["a"]}]
+        ch = self.make(plan(tasks, release=self.rel(), **kw))
+        ch.evidence = lambda repo, image, ver: dict(self.proof)
+        ch.main_state = lambda: self.main
+        return ch
+
+    def log(self, text=GATE_OK, name="gate.log", age_h=0):
+        path = os.path.join(self.g, name)
+        with open(path, "w") as f:
+            f.write(text)
+        old = self.clock.now() - age_h * 3600
+        os.utime(path, (old, old))
+        return name
+
+    def req(self):
+        return os.path.join(self.q, "app.req")
+
+
+class RealClockGate(GateBase):
+    def setUp(self):
+        super().setUp()
+        self.clock = type("C", (), {"now": staticmethod(lambda: __import__("time").time())})()
+
+
+class GateLog(RealClockGate):
+    def check(self, text=GATE_OK, **kw):
+        self.log(text, **kw)
+        return chain.check_gate_log(self.g, "gate.log", self.clock.now(), 48, "ghcr.io/owner/app")
+
+    def test_green(self):
+        ok, why, info = self.check()
+        self.assertTrue(ok, why)
+        self.assertEqual((info["version"], info["commit"]), ("1.2.3", "abc1234d"))
+
+    def test_rejections(self):
+        s = GATE_OK
+        cases = [
+            (s.replace("GATE: GREEN", "GATE: RED"), "red"),
+            (s + "GATE: RED\n", "red"),
+            (s.replace("GATE: GREEN\n", ""), "GREEN"),
+            ("GATE: GREEN\n", "SUMMARY"),
+            (s + "SUMMARY (version 1.2.4, commit abc1234d, image ghcr.io/owner/app:1.2.4)\n", "several"),
+            (s.replace("image ghcr.io/owner/app:1.2.3", "image ghcr.io/owner/app:latest"), "published"),
+            (s.replace("image ghcr.io/owner/app:1.2.3", "image local/app:1.2.3"), "published"),
+            (s.replace("commit abc1234d", "commit zz"), "commit"),
+            ("GATE: GREEN\nSUMMARY (broken\n", "readable"),
+        ]
+        for text, word in cases:
+            ok, why, _ = self.check(text)
+            self.assertFalse(ok, text)
+            self.assertIn(word, why)
+
+    def test_old_symlink_names_size(self):
+        ok, why, _ = self.check(age_h=49)
+        self.assertFalse(ok)
+        self.assertIn("older", why)
+        self.log()
+        os.symlink(os.path.join(self.g, "gate.log"), os.path.join(self.g, "link.log"))
+        self.assertIn("symlink", chain.check_gate_log(self.g, "link.log", self.clock.now(), 48, "ghcr.io/owner/app")[1])
+        for bad in ("../x", "/etc/passwd", "a/b", "", ".hidden", None):
+            self.assertFalse(chain.check_gate_log(self.g, bad, self.clock.now(), 48, "ghcr.io/owner/app")[0])
+        self.assertIn("not found", chain.check_gate_log(self.g, "nope.log", self.clock.now(), 48, "ghcr.io/owner/app")[1])
+        self.log(GATE_OK + "x" * (2 * 1024 * 1024 + 1))
+        self.assertIn("2 MB", chain.check_gate_log(self.g, "gate.log", self.clock.now(), 48, "ghcr.io/owner/app")[1])
+        os.mkdir(os.path.join(self.g, "dir"))
+        self.assertIn("regular", chain.check_gate_log(self.g, "dir", self.clock.now(), 48, "ghcr.io/owner/app")[1])
+
+
+class Release(GateBase):
+    def setUp(self):
+        super().setUp()
+        self.ch = self.chain()
+        self.ch.fill()
+        self.ch.ingest("a", self.result("a"))
+
+    def test_request_is_written_once(self):
+        rc, text = self.ch.release("a", self.log())
+        self.assertEqual(rc, 0, text)
+        with open(self.req()) as f:
+            self.assertEqual(json.load(f), {"mode": "release", "by": "chain", "gate": "green", "gate_log": "gate.log"})
+        self.assertEqual([n for n in os.listdir(self.q)], ["app.req"])        # no temp leftovers
+        rc, text = self.ch.release("a", "gate.log")
+        self.assertEqual(rc, 0)
+        self.assertIn("already requested", text)
+        self.assertEqual(self.ch.load()["releases"]["1.2.3"]["state"], "requested")
+        self.assertEqual(self.ch.fill(), [])                                  # b waits for the release
+
+    def test_already_out_requests_nothing(self):
+        self.proof = dict(PROOF)
+        rc, text = self.ch.release("a", self.log())
+        self.assertEqual(rc, 0)
+        self.assertIn("already out", text)
+        self.assertFalse(os.path.exists(self.req()))
+        self.assertEqual(self.ch.load()["releases"]["1.2.3"]["state"], "published")
+        self.assertEqual(self.ch.fill(), ["b"])                               # the release step is done
+
+    def test_waiting_request_file_blocks(self):
+        open(self.req(), "w").close()
+        rc, text = self.ch.release("a", self.log())
+        self.assertEqual(rc, 1)
+        self.assertIn("unprocessed", text)
+
+    def test_only_release_tasks_and_known_ids(self):
+        self.log()
+        self.assertEqual(self.ch.release("b", "gate.log")[0], 1)
+        self.assertEqual(self.ch.release("zz", "gate.log")[0], 1)
+        plain = self.make(plan([{"id": "a", "track": "x", "release": True}]))
+        self.assertEqual(plain.release("a", "gate.log")[0], 1)                # no release block
+        self.assertFalse(os.path.exists(self.req()))
+
+    def test_fail_closed(self):
+        name = self.log()
+        self.main = (None, None)
+        self.assertIn("not readable", self.ch.release("a", name)[1])
+        self.main = ("1.2.4", "abc1234d" + "0" * 32)
+        self.assertIn("run the gate again", self.ch.release("a", name)[1])
+        self.main = ("1.2.3", "ffffffff" + "0" * 32)
+        self.assertIn("commit", self.ch.release("a", name)[1])
+        self.assertEqual(self.ch.release("a", self.log(GATE_OK.replace("GREEN", "RED"), "red.log"))[0], 1)
+        self.assertEqual(self.ch.release("a", "missing.log")[0], 1)
+        self.assertFalse(os.path.exists(self.req()))
+
+    def test_release_off_holds_but_building_goes_on(self):
+        open(os.path.join(self.root, "RELEASE_OFF"), "w").close()
+        rc, text = self.ch.release("a", self.log())
+        self.assertEqual(rc, 3)
+        self.assertFalse(os.path.exists(self.req()))
+        self.assertEqual(self.ch.load()["releases"]["1.2.3"]["state"], "held")
+        self.assertTrue(self.ch.status()["release_off"])
+        self.assertEqual(self.ch.fill(), [])                                  # b still waits for the step ...
+        self.ch.manual_done("release:a")
+        self.assertEqual(self.ch.fill(), ["b"])                               # ... and building goes on afterwards
+        os.remove(os.path.join(self.root, "RELEASE_OFF"))
+        self.assertEqual(self.ch.release("a", "gate.log")[0], 0)              # held is not requested: now it goes
+
+    def test_hard_kill_stops_release(self):
+        name = self.log()
+        open(os.path.join(self.root, "KILL"), "w").close()
+        with self.assertRaises(chain.Killed):
+            self.ch.release("a", name)
+        self.assertFalse(os.path.exists(self.req()))
+
+    def test_verify_publishes_and_resolves_steps(self):
+        self.ch.release("a", self.log())
+        self.assertEqual(self.ch.verify()[0]["state"], "requested")
+        self.proof = dict(PROOF)
+        self.assertEqual(self.ch.verify("1.2.3")[0]["state"], "published")
+        s = self.ch.load()
+        self.assertEqual(s["releases"]["1.2.3"]["proof"]["digest"], "sha256:aa")
+        self.assertTrue(s["manual"]["release:a"]["done"])
+        self.assertEqual(self.ch.fill(), ["b"])
+
+    def test_latest_mismatch_raises_alert(self):
+        self.ch.release("a", self.log())
+        self.proof = dict(PROOF, latest_same=False)
+        self.ch.verify()
+        self.assertIn("latest:1.2.3", self.ch.status()["alerts"])
+
+    def test_broker_refusal_is_failed_and_alerted(self):
+        self.ch.release("a", self.log())
+        with open(self.st, "w") as f:
+            json.dump({"version": "1.2.3", "state": "failed", "error": "tag exists",
+                       "ts": chain.iso(self.clock.now() + 5)}, f)
+        self.assertEqual(self.ch.verify()[0]["state"], "failed")
+        self.assertIn("tag exists", self.ch.status()["alerts"]["release:1.2.3"])
+        os.remove(self.req())                                                 # the broker took the old request
+        self.assertEqual(self.ch.release("a", "gate.log")[0], 0)              # a new green gate may ask again
+        self.assertEqual(self.ch.load()["releases"]["1.2.3"]["state"], "requested")
+
+    def test_old_broker_answer_is_ignored(self):
+        self.ch.release("a", self.log())
+        with open(self.st, "w") as f:
+            json.dump({"version": "1.2.3", "state": "failed", "ts": chain.iso(self.clock.now() - 7200)}, f)
+        self.assertEqual(self.ch.verify()[0]["state"], "requested")
+
+    def test_request_without_answer_alerts_after_three_hours(self):
+        self.ch.release("a", self.log())
+        self.clock.t += 3 * 3600 + 5
+        self.ch.verify()
+        self.assertIn("release:1.2.3", self.ch.status()["alerts"])
+
+    def test_check_measures_open_requests(self):
+        self.ch.release("a", self.log())
+        self.proof = dict(PROOF)
+        self.ch.check()
+        self.assertEqual(self.ch.load()["releases"]["1.2.3"]["state"], "published")
+
+    def test_result_release_field(self):
+        chain.validate_result({"id": "a", "tests": "green", "gate": "green", "release": "held"}, "a")
+        with self.assertRaises(chain.ChainError):
+            chain.validate_result({"id": "a", "tests": "green", "gate": "green", "release": "yes"}, "a")
+
+
+class ExternalRelease(GateBase):
+    def make_chain(self):
+        ch = self.chain([{"id": "c", "track": "y", "depends_on": ["ext:lib"]}],
+                        external={"lib": "library 2.4.0"},
+                        extern_release={"lib": {"repo": "owner/lib", "version": "2.4.0"}})
+        self.calls = []
+        ch.evidence = lambda repo, image, ver: (self.calls.append((repo, image, ver)), dict(self.proof))[1]
+        return ch
+
+    def test_resolves_itself_and_is_throttled(self):
+        ch = self.make_chain()
+        self.assertEqual(ch.fill(), [])
+        self.assertEqual(ch.check_external_releases(), [])
+        self.assertEqual(ch.check_external_releases(), [])                    # within 10 minutes: not asked again
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0], ("owner/lib", "ghcr.io/owner/lib", "2.4.0"))
+        self.clock.t += 601
+        self.proof = dict(PROOF)
+        self.assertEqual(ch.check_external_releases(), ["lib"])
+        self.assertEqual(ch.fill(), ["c"])
+        self.assertIn("lib", ch.status()["external_auto"])
+        self.assertEqual(ch.check_external_releases(), [])                    # done stays done
+
+    def test_check_resolves_and_manual_done_stays_as_emergency(self):
+        ch = self.make_chain()
+        ch.check()
+        self.assertEqual(ch.status()["external_pending"][0]["key"], "lib")
+        ch.manual_done("lib")
+        self.assertEqual(ch.fill(), ["c"])
+
+    def test_plan_rules(self):
+        base = {"tasks": [{"id": "a", "track": "x", "title": "t", "prompt": "p"}], "external": {"k": "d"}}
+        for bad in ({"k": {"repo": "x", "version": "1.0.0"}}, {"k": {"repo": "o/r", "version": "1.0"}},
+                    {"other": {"repo": "o/r", "version": "1.0.0"}}, {"k": {"repo": "o/r"}}):
+            with self.assertRaises(chain.ChainError):
+                chain.validate_plan(dict(base, extern_release=bad))
+        for bad in ({"repo": "o/r"}, {"repo": "o/r", "queue_dir": "rel", "clone": "/c"},
+                    {"repo": "o/r", "queue_dir": "/q", "clone": "/c", "unknown": 1},
+                    {"repo": "o/r", "queue_dir": "/q", "clone": "/c", "version_file": "../x"}):
+            with self.assertRaises(chain.ChainError):
+                chain.validate_plan(dict(base, release=bad))
+        ok = chain.validate_plan(dict(base, release={"repo": "o/r", "queue_dir": "/q", "clone": "/c"}))
+        self.assertEqual((ok["release"]["identity"], ok["release"]["slug"], ok["release"]["image"]),
+                         ("chain", "r", "ghcr.io/o/r"))
+
+
+class StepSorting(Base):
+    def run_steps(self, steps, release_task=False, release_block=None, **res):
+        extra = {"release": release_block} if release_block else {}
+        p = plan([{"id": "a", "track": "x", "release": release_task}], **extra)
+        ch = self.make(p)
+        ch.fill()
+        ch.ingest("a", self.result("a", manual_steps=steps, **res))
+        return ch, ch.status()
+
+    def test_only_real_reasons_wait_for_a_human(self):
+        ch, st = self.run_steps(["Sign the collector manifest with the signing key", "Confirm with a passkey",
+                                 "Check it in the real desktop browser", "Decide about the new name",
+                                 "Write a note into the vault"])
+        self.assertEqual(len(st["waiting_for_human"]), 3)
+        self.assertTrue(all(h["reason"] for h in st["waiting_for_human"]))
+        self.assertEqual([c["text"] for c in st["waiting_for_coordinator"]], ["Decide about the new name"])
+        self.assertEqual(st["chain_open"], [])
+        self.assertEqual(len(st["taken_over"]), 1)                            # the note went to the inbox
+        self.assertNotIn("vault", json.dumps(st["manual_pending"]))
+
+    def test_release_steps(self):
+        rel = {"repo": "o/r", "queue_dir": "/q", "clone": "/c"}
+        ch, st = self.run_steps(["Release the new version"], True, rel)
+        self.assertEqual({c["key"] for c in st["chain_open"]}, {"a:1", "release:a"})
+        os.remove(os.path.join(self.root, "state.json"))
+        ch, st = self.run_steps(["Release the new version"], True, rel, release="requested")
+        self.assertEqual({c["key"] for c in st["chain_open"]}, {"release:a"})
+        os.remove(os.path.join(self.root, "state.json"))
+        ch, st = self.run_steps(["Tag the new version"])                       # no release path: coordinator
+        self.assertEqual(len(st["waiting_for_coordinator"]), 1)
+        self.assertEqual(st["waiting_for_human"], [])
+
+    def test_plan_may_add_reasons(self):
+        p = plan([{"id": "a", "track": "x"}], human_reasons=[{"pattern": "hardware token", "reason": "token is plugged in"}])
+        ch = self.make(p)
+        ch.fill()
+        ch.ingest("a", self.result("a", manual_steps=["Touch the hardware token"]))
+        self.assertEqual(ch.status()["waiting_for_human"][0]["reason"], "token is plugged in")
+
+    def test_old_entries_are_sorted_on_loading(self):
+        ch = self.make(plan([{"id": "a", "track": "x"}]))
+        ch.fill()
+        s = ch.load()
+        s["manual"]["a:1"] = {"text": "Confirm with a passkey", "task": "a", "done": False}
+        s["manual"]["a:2"] = {"text": "Add a note to the vault", "task": "a", "done": False}
+        ch.save(s)
+        st = ch.status()
+        self.assertEqual([h["key"] for h in st["waiting_for_human"]], ["a:1"])
+        self.assertEqual([h["key"] for h in st["waiting_for_coordinator"]], ["a:2"])
+
+    def test_status_text_says_nothing_waits(self):
+        p = plan([{"id": "a", "track": "x"}])
+        lines = []
+        chain.main(["--root", self.root, "--plan", self._write(p), "status"], out=lines.append, api=self.api, clock=self.clock)
+        self.assertIn("  waiting for the main workstation: nothing", lines)
+
+    def _write(self, p):
+        path = os.path.join(self.root, "p.json")
+        with open(path, "w") as f:
+            json.dump({"tasks": [{"id": "a", "track": "x", "title": "t", "prompt": "p"}]}, f)
+        return path
+
+
+class GateCli(GateBase):
+    def test_release_command_exit_codes(self):
+        raw = {"tasks": [{"id": "a", "track": "x", "title": "t", "prompt": "p", "release": True}], "release": self.rel()}
+        path = os.path.join(self.root, "plan.json")
+        with open(path, "w") as f:
+            json.dump(raw, f)
+        lines = []
+        err = io.StringIO()
+        self.log()
+
+        def run(*args):
+            with redirect_stderr(err):
+                return chain.main(["--root", self.root, "--plan", path] + list(args), out=lines.append,
+                                  api=self.api, clock=self.clock)
+        with self.assertRaises(SystemExit):
+            run("release", "--id", "a")                                       # --gate-log is required
+        self.assertEqual(run("release", "--id", "a", "--gate-log", "gate.log"), 1)   # clone does not exist: fail closed
+        self.assertFalse(os.path.exists(self.req()))
+        self.assertEqual(run("verify", "9.9"), 2)
+
+
 class TokenFile(unittest.TestCase):
     def test_permissions_and_empty(self):
         d = tempfile.mkdtemp(prefix="chain-tok-")

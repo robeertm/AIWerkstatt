@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.21.0 — 2026-11-15
+### Added — task chain: gate green = release
+- New command `chain.py release --id <id> --gate-log <name>`: verifies a gate log (bare file name in the configured folder, regular file, no symlink, at most 2 MB and 48 hours old, `GATE: GREEN`, no `GATE: RED`, exactly one distinct `SUMMARY (version V, commit C, image I)` line, image equal to the published `<image>:V`, version and commit equal to `origin/<branch>` of the clone) and only then files an atomically written request in the drop box of a release broker. No double request, none when the version is already out, only for release tasks, fail closed. The chain never creates a tag; the broker does.
+- New release kill switch `<root>/RELEASE_OFF`: releases rest (exit 3, state `held`), building continues; the hard `KILL` stops releases too.
+- New command `chain.py verify [<version>]` (also run by `check`): measures tag, GitHub release (not a draft), image digest and `latest` anonymously and read-only; a refusal in the broker status file marks the release `failed` and raises an alert, as does a request without result after 3 hours or a `latest` that does not point to the new image.
+- New plan fields: `release` (repo, image, queue dir, broker status file, gate log folder, clone, branch, version file, identity, slug, max age) and `extern_release` (external conditions that are releases resolve themselves once tag, release and image are provably out, checked at most every 10 minutes; `manual-done` stays as an emergency) and `human_reasons`.
+- Steps from results are sorted: waiting for the main workstation only with a reason (signing keys, passkeys, real desktop browser), releases are done by the chain, notes and documentation go through the inbox, everything else is a coordinator decision. The status lists them separately (additive fields) and old state entries are sorted on loading. Results may carry `release`.
+- Changed: the step "release by hand (the chain never releases)" is gone; with a `release` block it is a chain step resolved by the release, without one it goes to the coordinator.
+- Docs: `docs/chain.md`. Tests: 26 new tests in `scripts/chain/test_chain.py` (fake broker, registry and clock, no network).
+
 ## 0.20.0 — 2026-11-15
 ### Added — `chain` service token profile and a task-chain tool
 - New profile `chain` (`service_token.py create|register <name> --profile chain`) for an automatic task chain. It may only create a task, read a task and send a follow-up, and every create is checked: the project must be `AIWERKSTATT_CHAIN_PROJECT`, the title must start with `AIWERKSTATT_CHAIN_TITLE_PREFIX` (either one unset: always 403), the model must be `auto` or from the standard list (no special-purpose or legacy model), the effort must be a known step, and attachments are refused. Reading and follow-ups only on tasks this same token created (403 otherwise, also for unknown ids). No project access, no other route. AIWerkstatt has no per-task working folders, so there is no folder rule.
