@@ -378,6 +378,8 @@ class GateLog(RealClockGate):
         cases = [
             (s.replace("GATE: GREEN", "GATE: RED"), "red"),
             (s + "GATE: RED\n", "red"),
+            (s + "GATE: RED (2)\n", "red"),
+            (s.replace("GATE: GREEN", "GATE: GREEN with stand-in lists (trial run)"), "GREEN"),
             (s.replace("GATE: GREEN\n", ""), "GREEN"),
             ("GATE: GREEN\n", "SUMMARY"),
             (s + "SUMMARY (version 1.2.4, commit abc1234d, image ghcr.io/owner/app:1.2.4)\n", "several"),

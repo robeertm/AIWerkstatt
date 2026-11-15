@@ -332,7 +332,7 @@ def check_gate_log(folder, name, now, max_hours, image):
             lines = [z.strip() for z in fh.read().splitlines()]
     except OSError:
         return False, "gate log not readable", info
-    if "GATE: RED" in lines:
+    if any(z.startswith("GATE: RED") for z in lines):  # also "GATE: RED (3)"
         return False, "the gate is red (GATE: RED): never release", info
     if "GATE: GREEN" not in lines:
         return False, "line GATE: GREEN is missing", info
