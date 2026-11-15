@@ -394,21 +394,38 @@ def image_digest(image, ref):
     return ""
 
 
+def _github(path):
+    """Read-only GitHub REST call. Uses a token from the environment (GH_TOKEN or GITHUB_TOKEN, never argv)
+    when present, otherwise anonymous (60 requests per hour per address, shared by everything on the host).
+    -> (code, body); code 0 means unclear (network, rate limit, 5xx) and must never be read as "missing"."""
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    code, body, _ = _http("https://api.github.com/" + path.lstrip("/"), headers)
+    return (0 if code in (0, 403, 429) or code >= 500 else code), body
+
+
 def release_evidence(repo, image, version):
-    """Is <repo> v<version> really out? Tag + GitHub release (no draft) + image :<version>,
-    read-only and anonymous. -> {ok, reason, tag, tag_commit, digest, latest_digest, latest_same}"""
+    """Is <repo> v<version> really out? Tag + GitHub release (no draft) + image :<version>, read-only.
+    -> {ok, unclear, reason, tag, tag_commit, digest, latest_digest, latest_same}"""
     if not REPO_RE.match(repo or "") or not VERSION_RE.match(version or ""):
         return {"ok": False, "reason": "repo or version invalid"}
     tag = "v" + version
     out = {"ok": False, "tag": tag, "reason": ""}
-    api = "https://api.github.com/repos/%s" % repo
-    accept = {"Accept": "application/vnd.github+json"}
-    code, body, _ = _http("%s/git/ref/tags/%s" % (api, tag), accept)
+    unclear = "GitHub not reachable or rate limited: unclear, try again later"
+    code, body = _github("repos/%s/git/ref/tags/%s" % (repo, tag))
+    if not code:
+        out.update({"reason": unclear, "unclear": True})
+        return out
     if code != 200:
         out["reason"] = "tag %s missing (HTTP %s)" % (tag, code)
         return out
     out["tag_commit"] = str((body.get("object") or {}).get("sha", ""))[:12]
-    code, body, _ = _http("%s/releases/tags/%s" % (api, tag), accept)
+    code, body = _github("repos/%s/releases/tags/%s" % (repo, tag))
+    if not code:
+        out.update({"reason": unclear, "unclear": True})
+        return out
     if code != 200 or body.get("draft"):
         out["reason"] = "GitHub release %s missing%s (HTTP %s)" % (tag, " (draft)" if body.get("draft") else "", code)
         return out
@@ -898,6 +915,8 @@ class Chain:
             self._record_release(s, ver, tid, log_name, commit, "published", proof)
             self.save(s)
             return 0, "v%s is already out (tag, release, image): nothing requested" % ver
+        if proof.get("unclear"):
+            return 1, "no request: %s" % proof.get("reason")
         halt = self.release_off()
         if halt:
             s["releases"][ver] = dict(before, version=ver, task=tid, gate_log=log_name, commit=commit,

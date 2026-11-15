@@ -437,6 +437,27 @@ class Release(GateBase):
         self.assertEqual(self.ch.load()["releases"]["1.2.3"]["state"], "published")
         self.assertEqual(self.ch.fill(), ["b"])                               # the release step is done
 
+    def test_unclear_evidence_requests_nothing(self):
+        self.proof = {"ok": False, "unclear": True, "reason": "GitHub not reachable or rate limited"}
+        rc, text = self.ch.release("a", self.log())
+        self.assertEqual(rc, 1)
+        self.assertIn("rate limited", text)
+        self.assertFalse(os.path.exists(self.req()))
+
+    def test_rate_limit_is_unclear_not_missing(self):
+        orig = chain._http
+        try:
+            chain._http = lambda url, headers=None, method="GET": (403, {}, {})
+            ev = chain.release_evidence("owner/app", "ghcr.io/owner/app", "1.2.3")
+            self.assertTrue(ev["unclear"])
+            self.assertFalse(ev["ok"])
+            chain._http = lambda url, headers=None, method="GET": (404, {}, {})
+            ev = chain.release_evidence("owner/app", "ghcr.io/owner/app", "1.2.3")
+            self.assertFalse(ev.get("unclear"))
+            self.assertIn("missing", ev["reason"])
+        finally:
+            chain._http = orig
+
     def test_waiting_request_file_blocks(self):
         open(self.req(), "w").close()
         rc, text = self.ch.release("a", self.log())
