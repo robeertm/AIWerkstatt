@@ -152,6 +152,10 @@ before profiles existed are restricted and behave exactly as before.
 - **Coordinator tasks** are meant for a trusted orchestrator. They skip the review gate and
   the blocklist. A follow-up on a restricted task stays restricted, whoever sends it.
 
+- **Reporter tasks** are restricted like the default profile (review gate, snapshot, hold).
+  The profile exists for a service that files tasks for trusted reporters; see
+  [Trusted reporters](#trusted-reporters).
+
 **Origin.** A task created with a token carries `origin = "api:<token name>"`, set on the
 server from the verified token and never from the request body. Follow-ups record the
 sending token too. The task list and the task view show it as a **via &lt;name&gt;** badge.
@@ -169,6 +173,30 @@ with `service_token.py disable <name>` / `enable <name>`.
 ones, is appended to `<data>/service-token-audit.jsonl` (file mode 0600): time, token name,
 profile, method, route, path, project and HTTP status. The token itself, its hash and the
 request headers are never written.
+
+### Trusted reporters
+
+The `reporter` profile is deliberately the narrowest one. It allows exactly three routes:
+create a task, read a task, send a follow-up.
+
+- **One intake project.** Tasks can only be created in the project named by
+  `AIWERKSTATT_REPORTER_PROJECT`. Without that variable, or for any other project, the API
+  answers **403**.
+- **Own tasks only.** Reading and follow-ups work only for tasks whose origin is the calling
+  token (also **403** for unknown ids, so ids cannot be probed). There are no file uploads and
+  no project listing.
+- **Review gate always on.** Reporter tasks are restricted tasks: snapshot, hold, and an
+  admin decision before anything goes live. There is no way to skip it, fail closed.
+- **Own rate limit.** `AIWERKSTATT_REPORTER_RATE` writes per hour per token (default 8; `0`
+  or an invalid value falls back to 8, never to unlimited), then **429** with `Retry-After`.
+- Kill switch, audit log and origin badge work as for every token.
+
+Keep the token on the host only. Deciding **who** counts as a trusted reporter belongs to the
+calling service, not to AIWerkstatt: identify the reporter by an immutable numeric account id
+rather than a display name or login, which can be renamed or reused. The service should not
+process automatically content that looks suspicious. Hand these to a human instead: prompt
+injection attempts, requests for credentials or privileges, security reports, legal or money
+questions, contact outside the platform, and pull requests containing code.
 
 ## Honest residual risk
 

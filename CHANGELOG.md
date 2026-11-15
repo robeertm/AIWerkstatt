@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.19.0 — 2026-11-15
+### Added — `reporter` service token profile for trusted reporters
+- New profile `reporter` (`service_token.py create|register <name> --profile reporter`). It may only create a task, read a task and send a follow-up. Creating works in one fixed intake project, set by `AIWERKSTATT_REPORTER_PROJECT` (unset: always 403); reading and follow-ups only on tasks this same token created (403 otherwise, also for unknown ids). No file uploads, no project access.
+- Reporter tasks are restricted tasks: the review gate stays fully active (snapshot, hold, admin decision). Fail closed.
+- Own write rate limit `AIWERKSTATT_REPORTER_RATE` (default 8 per hour per token, never unlimited) answering 429 with `Retry-After`. Kill switch and audit log as for all tokens.
+- Docs: README (service tokens) and `docs/security.md` ("Trusted reporters": verify the reporter by an immutable numeric account id in the calling service; hand suspicious content to a human).
+- Tests: `backend/tests/test_reporter_token.py`.
+
 ## 0.18.1 — 2026-11-14
 ### Fixed — one working tree per project, follow-ups never lost
 - A follow-up for thread B while the same project was busy with thread A was taken off the queue and silently dropped: it was neither delivered to the running session (different thread) nor launched (project busy). It now waits in the queue, like a new order does, and starts once the project is free. Two runs never share the project's working tree.

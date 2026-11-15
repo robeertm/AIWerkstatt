@@ -4,7 +4,7 @@ Tokens themselves live in the database as a SHA-256 digest only (see store.py). 
 module adds what the web process needs around them, plus a command line for the operator:
 
     python3 service_token.py list
-    python3 service_token.py create <name> [--profile restricted|coordinator]
+    python3 service_token.py create <name> [--profile restricted|coordinator|reporter]
     python3 service_token.py register <name> [--profile ...] [--sha256 <hex>]
     python3 service_token.py disable <name>      # kill switch on (401 at once)
     python3 service_token.py enable <name>       # kill switch off
@@ -57,6 +57,16 @@ def _write_limit():
         return max(0, int(os.environ.get("AIWERKSTATT_API_WRITE_LIMIT", "30")))
     except ValueError:
         return 30
+
+
+def reporter_rate():
+    """Hourly write limit of a "reporter" token (AIWERKSTATT_REPORTER_RATE, default 8).
+    Unlike the general limit, 0 or junk never means unlimited: a bad value falls back to 8."""
+    try:
+        v = int(os.environ.get("AIWERKSTATT_REPORTER_RATE", "8"))
+    except ValueError:
+        return 8
+    return v if v > 0 else 8
 
 
 class WriteLimiter:

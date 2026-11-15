@@ -192,6 +192,12 @@ set of endpoints. Each token has a **profile**:
 - **coordinator**: for a trusted orchestrator. List and view projects, create tasks, send
   follow-ups and read task status and history in every project; its tasks run and deploy
   like those of a signed-in user. Writes are rate limited (30 per hour by default).
+- **reporter**: for a service that files tasks on behalf of explicitly trusted reporters
+  (for example an issue triage). It can only create a task in one fixed intake project
+  (`AIWERKSTATT_REPORTER_PROJECT`; unset means every create is refused), and read and
+  follow up on the tasks that same token created. Its tasks go through the same review
+  gate as restricted ones. Own rate limit (`AIWERKSTATT_REPORTER_RATE`, 8 per hour by
+  default). No file uploads, no project access, nothing else.
 
 No token can release, publish, create or delete projects, change settings, manage users or
 tokens, or decide a review. Every task shows which token created it (**via &lt;name&gt;**),

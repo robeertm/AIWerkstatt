@@ -56,10 +56,16 @@ API_ENDPOINTS = {
                              "thread_create", "thread_get"}),
     "coordinator": frozenset({"projects_list", "project_detail", "thread_create", "thread_get",
                               "thread_comment"}),
+    # reporter: for a service that files tasks on behalf of explicitly trusted reporters.
+    # Creates tasks in ONE project (AIWERKSTATT_REPORTER_PROJECT; unset = always 403), reads
+    # and follows up on its own tasks only, own (stricter) write rate limit, review gate on.
+    "reporter": frozenset({"thread_create", "thread_get", "thread_comment"}),
 }
-API_WRITES = {"coordinator": frozenset({"thread_create", "thread_comment"})}
+API_WRITES = {"coordinator": frozenset({"thread_create", "thread_comment"}),
+              "reporter": frozenset({"thread_create", "thread_comment"})}
 API_BLOCKLIST = {s.strip() for s in os.environ.get("AIWERKSTATT_API_BLOCKLIST", "").split(",") if s.strip()}
 WRITE_LIMIT = service_token.WriteLimiter()
+REPORTER_LIMIT = service_token.WriteLimiter(service_token.reporter_rate())
 
 
 @app.before_request
@@ -78,7 +84,8 @@ def _service_token_gate():
     if tok["disabled"] or request.endpoint not in API_ENDPOINTS.get(tok["profile"], ()):
         return None   # the route itself answers 401: a token is no user here
     if request.endpoint in API_WRITES.get(tok["profile"], ()):
-        ok, retry = WRITE_LIMIT.allow(tok["name"])
+        limiter = REPORTER_LIMIT if tok["profile"] == "reporter" else WRITE_LIMIT
+        ok, retry = limiter.allow(tok["name"])
         if not ok:
             resp = jsonify(error="Too many requests from this service token. Try again later.")
             resp.status_code = 429
@@ -126,6 +133,21 @@ def _api_user():
 def _coordinator():
     u = current_user()
     return bool(u and u.get("api") and u.get("profile") == "coordinator")
+
+
+def _reporter():
+    u = current_user()
+    return bool(u and u.get("api") and u.get("profile") == "reporter")
+
+
+def _reporter_project():
+    return os.environ.get("AIWERKSTATT_REPORTER_PROJECT", "").strip()
+
+
+def _reporter_owns(tid):
+    """True when the thread exists and was created by the calling reporter token."""
+    th = db.query_one("SELECT origin FROM threads WHERE id=?", (tid,))
+    return bool(th and th["origin"] and th["origin"] == _origin())
 
 
 def _origin():
@@ -482,6 +504,8 @@ def thread_create(pid):
         abort(404)
     if _blocked(pid):
         abort(403)
+    if _reporter() and pid != _reporter_project():
+        abort(403)   # a reporter files into the one intake project; unset = nowhere
     d = request.get_json(force=True) or {}
     title = (d.get("title") or "").strip()
     body = (d.get("request") or d.get("body") or "").strip()
@@ -502,6 +526,8 @@ def thread_create(pid):
 @app.get("/api/threads/<int:tid>")
 @login_required
 def thread_get(tid):
+    if _reporter() and not _reporter_owns(tid):
+        abort(403)   # also for unknown ids: no probing which tasks exist
     tl = engine.thread_timeline(tid)
     if not tl:
         abort(404)
@@ -519,6 +545,8 @@ def thread_get(tid):
 @app.post("/api/threads/<int:tid>/comment")
 @login_required
 def thread_comment(tid):
+    if _reporter() and not _reporter_owns(tid):
+        abort(403)
     th = db.query_one("SELECT project_id FROM threads WHERE id=?", (tid,))
     if not th:
         abort(404)
