@@ -304,6 +304,7 @@ def main():
     bg_empty_since = 0.0      # since when no background task is open (the CLI did not wake the agent)
     bg_anchor = 0.0           # start of the wait / last continuation
     stuck = None              # {"task_id","continuations","description","reason"} -> result
+    answered = set()          # tasks that already have a final reply: no automatic continuation ever starts for them
     rl_size = 0               # last seen runlog size (truncation detection)
     should_close = False
     limited_close = None   # (task_id, reset)
@@ -401,10 +402,12 @@ def main():
                      "continuations (%s). The task is probably not finished; a follow-up continues it. "
                      "Last reply:\n\n%s" % (STUCK_PREFIX, n_cont, desc or reason, text[:5000]))
                 log("open work after %d continuations -> stuck" % n_cont)
+                answered.add(tid)
                 expected.clear()
                 should_close = True
                 return
             LIVE["waiting"] = None
+            answered.add(tid)
             emit(tid, "reply", text[:6000])
         # One result = the agent processed everything fed so far. A mid-turn
         # follow-up folded into this turn → resolve the remaining expected tasks.
@@ -534,6 +537,9 @@ def main():
 
         # 3c) waiting for background work: the CLI did not wake the agent (nothing open for BG_EMPTY_S) or the job
         # runs longer than BG_NUDGE_S -> continue in the same session, at most BG_MAX times per task.
+        if LIVE["waiting"] and bg_tid in answered:
+            LIVE["waiting"] = None      # a final reply exists already -> never continue a finished task
+            bg_tid = None
         if LIVE["waiting"] and not should_close and bg_tid is not None:
             now = time.time()
             if LIVE["background"]:

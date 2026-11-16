@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.23.1 — 2026-11-16
+### Fixed — an automatic background continuation never starts for a task that already has a final reply
+- Hardening of the 0.23.0 self-healing: the session driver remembers which tasks already received their final reply (including the "stuck" reply) and drops a pending wait for such a task instead of feeding a continuation into the session. In the normal flow the case does not occur; it closes the path by which a finished task could be set back to running without a process.
+
 ## 0.23.0 — 2026-11-15
 ### Fixed — a turn that ends with open background work is not a finished task (self-healing)
 - When the agent started a long job in the background (Bash `run_in_background`, the Monitor tool, a background subagent) and ended its turn with "I am waiting for the notification", the session driver took that result for the final reply: the task became `done`, the session closed after the idle timeout and killed the background job. Now the Claude provider reports the CLI's open background tasks as a neutral `background` event (full list from `background_tasks_changed`, fallback `task_started` / `task_updated` / `task_notification`), and the driver keeps the task open when a successful result arrives while background work is open, or (fallback) when a short reply (at most 1200 characters) only announces a wait (narrow pattern on its last 500 characters). A progress event "Waiting for a background run" carries the reply text; no reply is emitted. Other providers never emit the event and are unaffected.
