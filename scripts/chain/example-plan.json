@@ -1,5 +1,5 @@
 {
-  "limits": {"per_day": 3, "per_track": 1, "total": 2},
+  "limits": {"per_day": 3, "per_track": 1},
   "external": {
     "api-credentials": "Credentials for the example API are stored on the host",
     "lib-release": "The shared library release 2.4.0 is published"

@@ -8,7 +8,8 @@ Covers:
   * check_package: only source/ (extra/ only if allowed), no absolute or .. paths, links only inwards, nothing below
     links, no hard links/devices/FIFOs.
   * End to end: exit code, stdout without control lines, JUnit, protocol, result on the "machine", docker limits.
-  * Throttle (deadline, status fails, busy), `result <id>`, collector, `status` keys, busy().
+  * Queue (0.24.0: free slot -> at once despite high CPU, both taken -> FIFO without deadline, order, orphans, the
+    receiver refuses a third run, estimate, collector), `result <id>`, collector, `status` keys, busy().
 Run: python3 -m unittest discover -s scripts/test-runner
 """
 import base64
@@ -22,7 +23,9 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import re
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -559,63 +562,176 @@ class CpusetMode(Base):
         self.assertNotIn("--cpu-quota", build)
 
 
-class Throttle(Base):
-    def test_deadline_over_runs_anyway(self):
-        busy = dict(CALM, test_runs=1)
-        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--quiet-build", "--wait-max-min", "0",
-                        ATT_STATUS=json.dumps(busy))
+class Queue(Base):
+    """0.24.0: no wait lock any more - free slot -> at once; both slots taken -> FIFO queue without deadline."""
+
+    def setUp(self):
+        super().setUp()
+        self.queue = os.path.join(self.status_dir, "queue")
+        self.holders = {}
+        self.addCleanup(lambda: [fh.close() for fh in self.holders.values()])
+
+    def hold_slot(self, i, rid):
+        slots = os.path.join(self.machine, "slots")
+        os.makedirs(slots, exist_ok=True)
+        fh = open(os.path.join(slots, "slot%d.lock" % i), "a+")
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fh.seek(0)
+        fh.truncate()
+        fh.write(json.dumps({"id": rid, "repo": "other", "profile": "app", "mode": "image", "start": 1, "slot": 4, "ref": 9}))
+        fh.flush()
+        self.holders[i] = fh
+
+    def free_slot(self, i):
+        self.holders.pop(i).close()
+
+    def start(self, *extra, **env):
+        e = dict(self.env, **env)
+        if "ATT_STATUS" not in env:
+            e.pop("ATT_STATUS", None)                      # real status of the receiver (real slot locks)
+        return subprocess.Popen([PY, CLIENT, self.repo, "--profile", "app", "--mode", "image", "--quiet-build"] + list(extra),
+                                env=e, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=self.tmp,
+                                stdin=subprocess.DEVNULL)
+
+    def wait_for(self, cond, s=30):
+        end = time.time() + s
+        while time.time() < end:
+            if cond():
+                return True
+            time.sleep(0.1)
+        return False
+
+    def entries(self):
+        return sorted(n for n in os.listdir(self.queue) if n.endswith(".json")) if os.path.isdir(self.queue) else []
+
+    def metas(self):
+        out = []
+        for d in glob.glob(os.path.join(self.logs, "*.json")):
+            with open(d) as fh:
+                out.append(json.load(fh))
+        return out
+
+    def test_free_slot_with_high_cpu_starts_at_once(self):
+        loaded = dict(CALM, cpu_percent=97.0, load=[7.5, 7, 7], psi_cpu=80.0, test_runs=1)
+        t = time.time()
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--quiet-build", "--wait-max-min", "60",
+                        ATT_STATUS=json.dumps(loaded))
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("deadline over", p.stderr)
+        self.assertLess(time.time() - t, 20)
+        self.assertIn("starting at once anyway", p.stderr)
+        self.assertIn("no effect", p.stderr)
+        self.assertNotIn("queue position", p.stderr)
         self.assertIn("3 passed", p.stdout)
+        self.assertEqual(self.meta()["waited_s"], 0)
+        self.assertEqual(self.entries(), [])
 
     def test_status_fails_gives_100_without_run(self):
-        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--quiet-build", "--wait-max-min", "0",
-                        ATT_STATUS_FAIL="1")
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--quiet-build", ATT_STATUS_FAIL="1")
         self.assertEqual(p.returncode, 100, p.stderr)
         self.assertIn("not reachable", p.stderr)
         self.assertEqual(self.docker_calls(), [])
         self.assertFalse(glob.glob(os.path.join(self.machine, "results", "*")))
 
-    def test_busy_gives_100_after_deadline(self):
-        slots = os.path.join(self.machine, "slots")
-        os.makedirs(slots)
-        holders = []
-        for i in range(2):
-            fh = open(os.path.join(slots, "slot%d.lock" % i), "a+")
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            holders.append(fh)
-        try:
-            p = self.client(self.repo, "--profile", "app", "--mode", "image", "--quiet-build", "--wait-max-min", "0")
-            self.assertEqual(p.returncode, 100, p.stderr)
-            self.assertIn("no free slot", p.stderr)
-            self.assertEqual(self.meta()["outcome"], "busy")
-            self.assertEqual([a for a in self.docker_calls() if a and a[0] in ("build", "run")], [])
-            e = self.receiver("run %s" % enc(good()))
-            self.assertEqual(e.returncode, 75)
-            self.assertIn('"kind": "busy"', e.stdout)
-        finally:
-            for fh in holders:
-                fh.close()
+    def test_both_taken_fifo_without_deadline_in_order(self):
+        self.hold_slot(0, "other-111111")
+        self.hold_slot(1, "other-222222")
+        a = self.start("--wait-max-min", "0")             # deadline 0 used to mean exit 100 at once
+        self.assertTrue(self.wait_for(lambda: len(self.entries()) == 1), "A not queued")
+        b = self.start()
+        self.assertTrue(self.wait_for(lambda: len(self.entries()) == 2), "B not queued")
+        c = self.start()
+        self.assertTrue(self.wait_for(lambda: len(self.entries()) == 3), "C not queued")
+        time.sleep(3)                                      # several ticks: nobody aborts, nobody starts
+        self.assertEqual([x.poll() for x in (a, b, c)], [None, None, None])
+        self.assertEqual([x for x in self.docker_calls() if x and x[0] == "run"], [])
+        self.free_slot(0)                                  # one slot free -> only A (the first) starts, then B, then C
+        for x in (a, b, c):
+            self.assertTrue(self.wait_for(lambda: x.poll() is not None))
+        err = [x.communicate()[1] for x in (a, b, c)]
+        self.assertEqual([x.returncode for x in (a, b, c)], [0, 0, 0], err)
+        self.assertIn("queue position 1, ahead of you: running other/image (slot 4 / #9)", err[0])
+        self.assertIn("expected free in ~", err[0])
+        self.assertIn("queue position 2, ahead of you: my-repo/image", err[1])
+        self.assertIn("queue position 3, ahead of you: my-repo/image, my-repo/image", err[2])
+        started = sorted(self.metas(), key=lambda m: m["started"])
+        ids = [re.search(r"run (\S+)\)", e).group(1) for e in err]
+        self.assertEqual([m["id"] for m in started], ids)
+        self.assertEqual(self.entries(), [])
+
+    def test_busy_despite_free_status_stays_in_queue(self):
+        self.hold_slot(0, "other-111111")
+        self.hold_slot(1, "other-222222")
+        p = self.start(ATT_STATUS=json.dumps(CALM))
+        self.assertTrue(self.wait_for(lambda: len(self.entries()) == 1))
+        time.sleep(3)
+        self.assertIsNone(p.poll())
+        self.free_slot(0)
+        self.assertTrue(self.wait_for(lambda: p.poll() is not None))
+        err = p.communicate()[1]
+        self.assertEqual(p.returncode, 0, err)
+        self.assertIn("fully booked after all", err)
+        self.assertEqual(self.entries(), [])
+
+    def test_receiver_refuses_a_third_run(self):
+        self.hold_slot(0, "other-111111")
+        self.hold_slot(1, "other-222222")
+        e = self.receiver("run %s" % enc(good()))
+        self.assertEqual(e.returncode, 75)
+        self.assertIn('"kind": "busy"', e.stdout)
 
     def test_third_run_is_refused_even_if_setting_says_more(self):
         d = profiles([PY, self.docker])
         d["settings"]["max_runs"] = 9
         with open(self.profiles, "w") as fh:
             json.dump(d, fh)
-        slots = os.path.join(self.machine, "slots")
-        os.makedirs(slots)
-        holders = []
-        for i in range(2):
-            fh = open(os.path.join(slots, "slot%d.lock" % i), "a+")
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            holders.append(fh)
-        try:
-            e = self.receiver("run %s" % enc(good()))
-            self.assertEqual(e.returncode, 75)
-            self.assertFalse(os.path.exists(os.path.join(slots, "slot2.lock")))
-        finally:
-            for fh in holders:
-                fh.close()
+        self.hold_slot(0, "other-111111")
+        self.hold_slot(1, "other-222222")
+        e = self.receiver("run %s" % enc(good()))
+        self.assertEqual(e.returncode, 75)
+        self.assertFalse(os.path.exists(os.path.join(self.machine, "slots", "slot2.lock")))
+
+    def test_orphan_entries_are_removed(self):
+        os.makedirs(self.queue)
+        dead = subprocess.Popen([PY, "-c", "pass"])
+        dead.wait()
+        reused = {"id": "x-reused", "pid": os.getpid(), "pid_start": -1, "since": 1, "repo": "r"}
+        alive = {"id": "x-alive-123456", "pid": os.getpid(), "pid_start": CLI._pid_start(os.getpid()), "since": 1, "repo": "r"}
+        for n, d in (("%020d-a.json" % 1, {"id": "x-dead-123456", "pid": dead.pid, "pid_start": 5, "since": 1}),
+                     ("%020d-b.json" % 2, reused), ("%020d-c.json" % 3, alive), ("%020d-d.json" % 4, "broken")):
+            with open(os.path.join(self.queue, n), "w") as fh:
+                fh.write(json.dumps(d) if isinstance(d, dict) else d)
+        with mock.patch.object(CLI, "QUEUE", self.queue):
+            self.assertEqual([x["id"] for x in CLI.queue_read()], ["x-alive-123456"])
+            self.assertEqual(self.entries(), ["%020d-c.json" % 3, "%020d-d.json" % 4])   # half written stays 60 s
+            q = CLI.queue_summary()
+            self.assertEqual((q["length"], q["waiting"][0]["position"]), (1, 1))
+
+    def test_estimate_from_protocols(self):
+        os.makedirs(self.logs, exist_ok=True)
+        for i, d in enumerate((600, 900, 1200)):
+            with open(os.path.join(self.logs, "%d.json" % i), "w") as fh:
+                json.dump({"outcome": "done", "repo": "r", "profile": "app", "mode": "image", "total_s": d + 100,
+                           "waited_s": 100}, fh)
+        with mock.patch.object(CLI, "LOGS", self.logs):
+            self.assertEqual(CLI.typical_duration_s("r", "app", "image"), 900)
+            self.assertEqual(CLI.typical_duration_s("x", "app", "image"), CLI.DEFAULT_DURATION_S)
+            st = {"max_runs": 2, "runs": [{"repo": "r", "profile": "app", "mode": "image", "runtime_s": 300},
+                                          {"repo": "r", "profile": "app", "mode": "image", "runtime_s": 800}]}
+            self.assertEqual(CLI.free_in_s(st, []), 100)
+            self.assertEqual(CLI.free_in_s(st, [{"repo": "r", "profile": "app", "mode": "image"}]), 600)
+
+    def test_collector_shows_the_queue(self):
+        os.makedirs(self.queue)
+        with open(os.path.join(self.queue, "%020d-x.json" % 1), "w") as fh:
+            json.dump({"id": "w-123456", "pid": os.getpid(), "pid_start": CLI._pid_start(os.getpid()),
+                       "since": int(time.time()) - 90, "repo": "lib", "profile": "lib", "mode": "pytest", "slot": 2, "ref": 77}, fh)
+        p = self.client("--collect", "--once")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        with open(os.path.join(self.status_dir, "status.json")) as fh:
+            st = json.load(fh)
+        w = st["queue"]["waiting"][0]
+        self.assertEqual((st["queue"]["length"], w["position"], w["repo"], w["slot"], w["ref"]), (1, 1, "lib", 2, 77))
+        self.assertGreaterEqual(w["since_s"], 90)
 
 
 class Collector(Base):

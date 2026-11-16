@@ -6,7 +6,7 @@ nothing unless you configure it. Nothing in it is specific to one host or vendor
 
 | File | Runs on | Purpose |
 |---|---|---|
-| `remote_test.py` | client | packs a commit, sends it, throttles, shows the output, returns the exit code; `--status`, `--available`, `--collect` |
+| `remote_test.py` | client | packs a commit, sends it, queues when both slots are taken, shows the output, returns the exit code; `--status`, `--available`, `--collect` |
 | `remote_test_receiver.py` | test machine | the forced command: `status`, `run`, `result` (Python 3.8+) |
 | `profiles.example.json` | test machine | allow list of profiles, modes, base images and limits |
 | `install.sh` | client | sets up the key, the receiver and the profiles over SSH, then proves the key is restricted |
@@ -59,13 +59,20 @@ The trust boundary is one SSH key that can only start the receiver (details in
   without quota support. `max_runs` is capped at 2 by the receiver.
 - `docker` is the command used to reach Docker (for example `["sudo", "-n", "/usr/bin/docker"]`).
 
-## Throttle rules
+## Throttle and queue rules (0.24.0: no wait locks, a queue instead)
 
-1. The client reads `status` first. If the runner is busy (a test running, CPU pressure >= 40 %, CPU >= 70 % or load >=
-   3/4 of the cores) it waits and checks every 30 seconds, at most `--wait-max-min` minutes (default 60), then starts
-   anyway. Nothing is ever aborted to make room.
-2. The receiver allows 2 runs at once (one lock file per slot, checked immediately). A third request gets `busy`; the
-   client keeps waiting for a free slot for at most as long again, then gives up with exit 100.
+1. A free slot means the run starts at once - also when the runner is loaded (high CPU, load or pressure). Throttling
+   happens only on the test machine: a low cgroup weight (`cpu_shares`) and the CPU limit of `profiles.json` (`--cpus` or
+   a cpuset). Production services keep priority; the test gets slower but never waits for load.
+2. The receiver allows 2 runs at once (one lock file per slot, checked immediately); a third request gets `busy`. When
+   both slots are taken the client joins a FIFO queue on its own machine (`<STATUS_DIR>/queue/` or
+   `AIWERKSTATT_TEST_RUNNER_QUEUE`, one file per waiting run, named by arrival time, holding PID and process start time)
+   and prints `queue position N, ahead of you: <run>, expected free in ~X min` (estimate = median duration of the own
+   protocols per repo/profile/mode). First come, first served: no deadline, no abort, no overtaking; a run that already
+   holds a slot over there does not count as waiting. Entries whose process is gone (or whose PID was reused) are removed
+   by the next reader. If several users share the queue, make the folder group-writable without sticky bit so anyone can
+   remove orphans. If the receiver still answers `busy` (a run from an older client without the queue came first), the run
+   keeps its queue position. `--wait-max-min` is still accepted but has no effect.
 3. A running test is never aborted, also not when the connection drops (the receiver ignores SIGHUP and SIGPIPE). The
    client fetches the result with `result <id>` until it is there (results stay for 2 days). The only limit is the
    emergency brake `max_run_seconds`.
@@ -77,7 +84,8 @@ The trust boundary is one SSH key that can only start the receiver (details in
 - The exit code of the test run (pytest: 0 green, 1 red, 2 collection error, ...). Output goes to stdout unchanged,
   build and info lines to stderr.
 - **100 = runner unavailable:** switched off, not configured, unreachable, request refused (for example an argument
-  outside the allow list), no free slot in time, result lost, or a fault of the runner instead of the code. The caller
+  outside the allow list), 3 status requests in a row unanswered while waiting, result lost, or a fault of the runner
+  instead of the code - never because of waiting time. The caller
   must then **run the tests locally**; the tool never decides the result of a test it did not run.
 - 2 = wrong use of `remote_test.py` itself.
 
@@ -102,12 +110,13 @@ only, like the rest of the route) then carries an additive field:
 
 ```json
 "test_runner": {"fresh": true, "stand": 1790000000, "load": [3.4, 2.0, 1.0], "cores": 8, "psi_cpu": null,
-                "psi_io": null, "ram_free_gb": 5.5, "cpu_percent": 37.0, "test_runs": 1, "max_runs": 2}
+                "psi_io": null, "ram_free_gb": 5.5, "cpu_percent": 37.0, "test_runs": 1, "max_runs": 2,
+                "queue_waiting": 0}
 ```
 
 `fresh` is true while the last successful sample is younger than 120 seconds, `stand` is its unix time. Without the
 variable, or if the file is missing or unreadable, the field is absent. The "Agents at work" card shows one line, for
-example "Test runner: 37 % CPU · load 3.4 / 8 cores · 1 of 2 runs", and a "stale" chip when the sample is not fresh.
+example "Test runner: 37 % CPU · load 3.4 / 8 cores · 1 of 2 runs" (plus "N waiting in the queue" while runs wait), and a "stale" chip when the sample is not fresh.
 Run details and ids stay out of the field.
 
 ## Tests

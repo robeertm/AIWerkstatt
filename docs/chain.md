@@ -29,7 +29,7 @@ Paths and settings come from options or the environment: `--root` /
              "effort": "medium", "depends_on": ["other-id", "ext:key"], "prompt": "…",
              "check": "…", "release": false, "optional": false, "hours": 1}],
   "order": ["api-schema"],
-  "limits": {"per_day": 4, "per_track": 1, "total": 2},
+  "limits": {"per_day": 4, "per_track": 1},
   "external": {"key": "what a human or another system has to provide"},
   "extern_release": {"key": {"repo": "owner/lib", "version": "2.4.0"}},
   "release": {"repo": "owner/app", "image": "ghcr.io/owner/app", "queue_dir": "/path/to/release-queue",
@@ -45,8 +45,11 @@ Paths and settings come from options or the environment: `--root` /
   [Gate green = release](#gate-green--release)); without one the step `release:<id>` goes to the
   coordinator. The chain never creates a tag.
 - `optional: true` tasks start only after `approve <id>`.
-- `limits` can only lower the fixed ceilings (4 new tasks per day, 1 running per track, 2
-  running in total).
+- `limits` can only lower the fixed ceilings (4 new tasks per day, 1 running per track). There is
+  no total ceiling (0.24.0): every ready task is created at once and waits in the normal FIFO
+  queue of AIWerkstatt, whose slots regulate the load. One per track is a dependency, not a load
+  lock; `status` shows such a task as "waiting for the previous task in track X". An old
+  `"total"` entry is accepted without effect.
 - `hours` is the expected duration; a task without progress for twice that long is stalled.
 
 ## Result file

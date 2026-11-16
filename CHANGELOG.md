@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.24.0 — 2026-11-16
+### Changed — no wait locks, queues instead: remote test runner and task chain
+- **Remote test runner** (`scripts/test-runner/remote_test.py`): a free slot means the run starts at once, also when the
+  runner is loaded (high CPU, load or pressure). Before, the client waited up to `--wait-max-min` as soon as CPU >= 70 %,
+  load >= 3/4 of the cores or a test was running, even with a free slot. Throttling happens only on the test machine (low
+  cgroup weight plus the CPU limit from `profiles.json`).
+- Both slots taken -> **FIFO queue** on the client machine (`<STATUS_DIR>/queue/`, override `AIWERKSTATT_TEST_RUNNER_QUEUE`):
+  one file per waiting run (arrival time, PID and process start time), message "queue position N, ahead of you: <run>,
+  expected free in ~X min" (median of the own protocols). First come, first served; no deadline, no abort, no overtaking;
+  orphaned entries clean themselves up. If the receiver still answers `busy`, the run keeps its position - exit 100 is no
+  longer used for waiting time, only when the runner is really gone or broken (3 unanswered status requests while waiting).
+- `--wait-max-min` is still accepted for old callers but has no effect. Protocol JSON: new fields `started`, `queue`.
+- The collector writes `queue` {`length`, `waiting`} into `status.json`; `GET /api/pool` carries the count as
+  `test_runner.queue_waiting` and the "Agents at work" card shows "N waiting in the queue".
+- **Task chain** (`scripts/chain/chain.py`): the total ceiling ("2 running in total") is gone. Every ready task is created
+  at once and waits in the normal FIFO queue of AIWerkstatt; queue and slots regulate the load. "One per track" stays (a
+  dependency, not a load lock); `status` shows such a task as "waiting for the previous task in track X". A `"total"`
+  entry in old plans is accepted without effect. Per-day ceiling, kill switch and gate rules are unchanged.
+- Tests: `scripts/test-runner/test_remote_test.py` (class `Queue`: free slot at 97 % CPU starts at once, three runs wait
+  without deadline and start strictly in order, `busy` despite a free status keeps the position, the receiver refuses a
+  third run, orphans, estimate, collector), `scripts/chain/test_chain.py` (no total ceiling, one per track, status text),
+  `backend/tests/test_test_runner_status.py` (queue count only, no run ids).
+
 ## 0.23.1 — 2026-11-16
 ### Fixed — an automatic background continuation never starts for a task that already has a final reply
 - Hardening of the 0.23.0 self-healing: the session driver remembers which tasks already received their final reply (including the "stuck" reply) and drops a pending wait for such a task instead of feeding a continuation into the session. In the normal flow the case does not occur; it closes the path by which a finished task could be set back to running without a process.

@@ -75,8 +75,18 @@ class TestRunnerStatus(unittest.TestCase):
         self.assertEqual(d["max_runs"], 2)
         self.assertEqual(d["cpu_percent"], 37.0)
         self.assertIsInstance(d["stand"], int)
+        self.assertEqual(d["queue_waiting"], 0)          # older collector without a queue
         self.assertNotIn("runs", d)                      # no run details, no ids
         self.assertNotIn("secret-run-id", json.dumps(d))
+
+    def test_queue_count_only(self):
+        os.environ[ENV] = self.file
+        self.write(queue={"length": 2, "waiting": [{"id": "secret-run-id", "repo": "r"}, {"id": "x", "repo": "r"}]})
+        d = wk.test_runner_status()
+        self.assertEqual(d["queue_waiting"], 2)
+        self.assertNotIn("secret-run-id", json.dumps(d))
+        self.write(queue={"length": "2"})
+        self.assertEqual(wk.test_runner_status()["queue_waiting"], 0)
 
     def test_stale_and_failed(self):
         os.environ[ENV] = self.file

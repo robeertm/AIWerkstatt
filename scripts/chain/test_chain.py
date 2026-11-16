@@ -84,7 +84,7 @@ class PlanRules(unittest.TestCase):
 
     def test_limits_only_lower(self):
         p = plan([{"id": "a", "track": "t"}], limits={"per_day": 99, "per_track": 5, "total": 1})
-        self.assertEqual(p["limits"], {"per_day": 4, "per_track": 1, "total": 1})
+        self.assertEqual(p["limits"], {"per_day": 4, "per_track": 1})        # "total" is accepted, without effect
         self.assertEqual(plan([{"id": "a", "track": "t"}])["limits"], chain.HARD_LIMITS)
 
     def test_rejections(self):
@@ -121,12 +121,23 @@ class Flow(Base):
         p = plan([{"id": "a", "track": "x"}, {"id": "b", "track": "x"}, {"id": "c", "track": "y"},
                   {"id": "d", "track": "z", "depends_on": ["a"]}])
         ch = self.make(p)
-        self.assertEqual(ch.fill(), ["a", "c"])           # one per track, two in total
+        self.assertEqual(ch.fill(), ["a", "c"])           # one per track
         self.assertEqual(ch.fill(), [])
+        self.assertEqual(ch.status()["tasks"]["b"]["state"], "waiting for the previous task in track x")
         self.assertEqual(ch.ingest("a", self.result("a")), "done")
-        self.assertEqual(ch.fill(), ["b"])                # b before d (plan order), total 2
+        self.assertEqual(ch.fill(), ["b", "d"])           # b before d (plan order)
         self.assertTrue(self.api.titles[1].startswith("[c] a: "))
         self.assertIn("result file", self.api.requests[1])
+
+    def test_no_total_ceiling_every_ready_task_is_queued(self):
+        """0.24.0: no total ceiling - every ready task (up to the per-day ceiling) is created at once and waits in the
+        AIWerkstatt queue; one per track stays."""
+        p = plan([{"id": "t%d" % i, "track": "t%d" % i} for i in range(4)] + [{"id": "t9", "track": "t0"}],
+                 limits={"total": 2})
+        ch = self.make(p)
+        self.assertEqual(ch.fill(), ["t0", "t1", "t2", "t3"])
+        self.assertEqual(ch.fill(), [])
+        self.assertEqual(ch.status()["tasks"]["t9"]["state"], "waiting for the previous task in track t0")
 
     def test_per_day_limit_and_next_day(self):
         p = plan([{"id": "t%d" % i, "track": "t%d" % i} for i in range(6)], limits={"total": 4})
@@ -290,7 +301,7 @@ class Cli(Base):
 
     def test_next_status_pause_and_exit_codes(self):
         code, out, _ = self.run_cli("next")
-        self.assertEqual((code, out), (0, ["started docs-outline", "started api-schema"]))
+        self.assertEqual((code, out), (0, ["started docs-outline", "started api-schema", "started ui-shell"]))  # no total ceiling
         code, out, _ = self.run_cli("status", "--json")
         self.assertEqual(json.loads("\n".join(out))["tasks"]["docs-outline"]["state"], "running")
         self.assertEqual(self.run_cli("pause")[0], 0)

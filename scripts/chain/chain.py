@@ -45,8 +45,11 @@ import time
 import urllib.error
 import urllib.request
 
-# Hard ceilings. A plan can lower them, never raise them.
-HARD_LIMITS = {"per_day": 4, "per_track": 1, "total": 2}
+# Hard ceilings. A plan can lower them, never raise them. Since 0.24.0 there is no "total" ceiling any more: every ready
+# task is created at once and waits in the normal FIFO queue of AIWerkstatt (queue and slots regulate the load).
+# "per_track" stays - it is a dependency (the previous task of the same track), not a load lock.
+HARD_LIMITS = {"per_day": 4, "per_track": 1}
+IGNORED_LIMITS = ("total",)     # accepted in old plans, without effect
 MAX_RED = 3                     # red results in a row before a task is blocked
 DEFAULT_HOURS = 1.0
 STALL_FACTOR = 2                # stalled after this many times the expected hours
@@ -180,12 +183,13 @@ def validate_plan(raw):
         raise ChainError("'order' must list every task id exactly once")
     limits = dict(HARD_LIMITS)
     plan_limits = raw.get("limits") or {}
-    if not isinstance(plan_limits, dict) or set(plan_limits) - set(HARD_LIMITS):
+    if not isinstance(plan_limits, dict) or set(plan_limits) - set(HARD_LIMITS) - set(IGNORED_LIMITS):
         raise ChainError("'limits' may only contain %s" % ", ".join(HARD_LIMITS))
     for k, v in plan_limits.items():
         if isinstance(v, bool) or not isinstance(v, int) or v < 1:
             raise ChainError("limit %s must be an integer >= 1" % k)
-        limits[k] = min(v, HARD_LIMITS[k])   # lower only
+        if k in HARD_LIMITS:
+            limits[k] = min(v, HARD_LIMITS[k])   # lower only
     release = _validate_release(raw.get("release"))
     ext_rel = raw.get("extern_release") or {}
     if not isinstance(ext_rel, dict):
@@ -630,7 +634,8 @@ class Chain:
         return out
 
     def fill(self):
-        """Start every task that is ready, within the limits. Returns the started ids."""
+        """Start every task that is ready (per-day ceiling, one per track). No total ceiling: started tasks wait in the
+        AIWerkstatt queue for a free slot. Returns the started ids."""
         self.guard()
         started = []
         if self.paused():
@@ -643,7 +648,7 @@ class Chain:
             today = sum(1 for c in s["created"] if c[:10] == self._today())
             pick = None
             for t in self._eligible(s):
-                if len(running) >= lim["total"] or today >= lim["per_day"]:
+                if today >= lim["per_day"]:
                     break
                 if sum(1 for i in running if self.plan["tasks"][i]["track"] == t["track"]) >= lim["per_track"]:
                     continue
@@ -1018,6 +1023,9 @@ class Chain:
                 shown = "optional"
             elif shown == "pending" and not self._deps_met(s, t):
                 shown = "waiting"
+            elif shown == "pending" and sum(1 for i, x in s["tasks"].items() if x["state"] in ("running", "starting")
+                                            and self.plan["tasks"][i]["track"] == t["track"]) >= self.plan["limits"]["per_track"]:
+                shown = "waiting for the previous task in track %s" % t["track"]
             tasks[tid] = {"track": t["track"], "state": shown, "thread": v.get("thread"),
                           "red": v.get("red", 0), "note": v.get("note", ""),
                           "branch": v.get("branch", ""), "commit": v.get("commit", ""),

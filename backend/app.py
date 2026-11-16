@@ -746,6 +746,9 @@ def test_runner_status():
     stand = d.get("stand")
     stand = stand if isinstance(stand, (int, float)) and not isinstance(stand, bool) else None
     out = {k: d.get(k) for k in TEST_RUNNER_FIELDS}
+    q = d.get("queue") if isinstance(d.get("queue"), dict) else {}
+    n = q.get("length")
+    out["queue_waiting"] = n if isinstance(n, int) and not isinstance(n, bool) and n >= 0 else 0   # FIFO queue (0.24.0), count only
     out["stand"] = int(stand) if stand is not None else None
     out["fresh"] = bool(d.get("ok")) and stand is not None and 0 <= time.time() - stand < TEST_RUNNER_FRESH_S
     return out

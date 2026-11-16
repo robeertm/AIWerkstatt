@@ -679,12 +679,14 @@ function runTime(iso: string | null): string {
   const m = Math.max(0, Math.floor((Date.now() - t) / 60000))
   return m < 1 ? '<1 min' : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`
 }
-// One line for the optional second test machine: "37 % CPU · load 3.4 / 8 cores · 1 of 2 runs" (+ "no data" when stale).
+// One line for the optional second test machine: "37 % CPU · load 3.4 / 8 cores · 2 of 2 runs · 1 waiting in the queue"
+// (+ "no data" when stale).
 function testRunnerLine(t: TestRunnerLoad): string {
   const parts: string[] = []
   if (t.cpu_percent != null) parts.push(`${Math.round(t.cpu_percent)} % CPU`)
   if (t.load && t.load.length && t.cores) parts.push(`load ${t.load[0].toFixed(1)} / ${t.cores} cores`)
   if (t.test_runs != null && t.max_runs) parts.push(`${t.test_runs} of ${t.max_runs} runs`)
+  if (t.queue_waiting) parts.push(`${t.queue_waiting} waiting in the queue`)
   return parts.join(' · ') || 'no data'
 }
 // Polls only while the tab is visible; rendered for admins only, so everyone else never calls /api/pool.
