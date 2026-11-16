@@ -359,7 +359,7 @@ class Base(unittest.TestCase):
         self.env.update({
             "RTR_BASE": self.machine, "RTR_PROFILES": self.profiles, "RTR_TICK_S": "1",
             P + "SSH": "%s %s" % (PY, self.ssh), P + "LOGS": self.logs, P + "WORK": self.work, P + "TICK_S": "1",
-            P + "STATUS_DIR": self.status_dir,
+            P + "STATUS_DIR": self.status_dir, "AIWERKSTATT_PROGRESS_DIR": os.path.join(t, "progress"),
             "ATT_LOG": self.dlog, "ATT_RECEIVER": RECEIVER, "ATT_JUNIT": self.junit, "ATT_STATUS": json.dumps(CALM),
             "ATT_MODE": "green",
         })
@@ -562,8 +562,8 @@ class CpusetMode(Base):
         self.assertNotIn("--cpu-quota", build)
 
 
-class Queue(Base):
-    """0.24.0: no wait lock any more - free slot -> at once; both slots taken -> FIFO queue without deadline."""
+class QueueTools(Base):
+    """Helpers for tests with taken slots and a queue (no tests of its own)."""
 
     def setUp(self):
         super().setUp()
@@ -610,6 +610,10 @@ class Queue(Base):
             with open(d) as fh:
                 out.append(json.load(fh))
         return out
+
+
+class Queue(QueueTools):
+    """0.24.0: no wait lock any more - free slot -> at once; both slots taken -> FIFO queue without deadline."""
 
     def test_free_slot_with_high_cpu_starts_at_once(self):
         loaded = dict(CALM, cpu_percent=97.0, load=[7.5, 7, 7], psi_cpu=80.0, test_runs=1)
@@ -732,6 +736,85 @@ class Queue(Base):
         w = st["queue"]["waiting"][0]
         self.assertEqual((st["queue"]["length"], w["position"], w["repo"], w["slot"], w["ref"]), (1, 1, "lib", 2, 77))
         self.assertGreaterEqual(w["since_s"], 90)
+
+
+class Progress(QueueTools):
+    """0.25.0: progress file for the remaining-time display (backend/eta.py): queue -> test, own file only without a
+    parent run, a missing module changes nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.progress = self.env["AIWERKSTATT_PROGRESS_DIR"]
+
+    def history(self):
+        out = []
+        for n in glob.glob(os.path.join(self.progress, "history-*.jsonl")):
+            with open(n) as fh:
+                out += [json.loads(z) for z in fh if z.strip()]
+        return out
+
+    def run_files(self):
+        return glob.glob(os.path.join(self.progress, "remote_test-*.json"))
+
+    def test_free_slot_writes_queue_then_test_and_history(self):
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--quiet-build")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        files = self.run_files()
+        self.assertEqual(len(files), 1)
+        with open(files[0]) as fh:
+            d = json.load(fh)
+        self.assertEqual(d["format"], "aiwerkstatt-progress/1")
+        self.assertEqual(d["result"], "ok")
+        self.assertEqual([p["name"] for p in d["phases"]], ["queue", "test"])
+        self.assertEqual(d["title"], "my-repo/image")
+        h = self.history()
+        self.assertEqual(len(h), 1)
+        self.assertEqual(h[0]["kind"], "remote_test")
+        self.assertIn("test", h[0]["phases"])
+
+    def test_queue_phase_has_expected_wait(self):
+        self.hold_slot(0, "other-111111")
+        self.hold_slot(1, "other-222222")
+        a = self.start()
+        self.assertTrue(self.wait_for(lambda: len(self.entries()) == 1), "not queued")
+
+        def expected():
+            for f in self.run_files():
+                try:
+                    with open(f) as fh:
+                        d = json.load(fh)
+                except ValueError:
+                    continue
+                ph = d["phases"][0]
+                if d.get("current") == 0 and ph.get("expected_s") is not None:
+                    return True
+            return False
+        self.assertTrue(self.wait_for(expected), "no expected wait written")
+        self.free_slot(0)
+        self.assertTrue(self.wait_for(lambda: a.poll() is not None))
+        self.assertEqual(a.returncode, 0, a.communicate()[1])
+
+    def test_parent_run_means_no_own_file(self):
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--quiet-build",
+                        AIWERKSTATT_PROGRESS_PARENT="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.run_files(), [])
+        self.assertEqual(self.history(), [])
+
+    def test_unwritable_folder_changes_nothing(self):
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--quiet-build",
+                        AIWERKSTATT_PROGRESS_DIR="/proc/no-folder-possible")
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_missing_module_changes_nothing(self):
+        lone = os.path.join(self.tmp, "lone")
+        os.makedirs(lone)
+        shutil.copy(CLIENT, os.path.join(lone, "remote_test.py"))     # no eta.py next to it, none in ../../backend
+        p = subprocess.run([PY, os.path.join(lone, "remote_test.py"), self.repo, "--profile", "app", "--mode", "image",
+                            "--quiet-build"], env=self.env, capture_output=True, text=True, timeout=60, cwd=self.tmp,
+                           stdin=subprocess.DEVNULL)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.run_files(), [])
 
 
 class Collector(Base):

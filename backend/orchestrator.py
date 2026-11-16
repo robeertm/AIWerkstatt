@@ -21,6 +21,7 @@ Volumes (all owned by uid 10001, shared with the runner):
 """
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import shutil
@@ -29,6 +30,7 @@ import threading
 import time
 
 import config
+import eta
 import context_pack
 import db
 import engine
@@ -41,6 +43,27 @@ except Exception:  # pragma: no cover - import guard for tooling
 
 APP_UID = os.environ.get("AIWERKSTATT_APP_UID", "10001")
 TASK_QUEUE = os.path.join(config.DATA, "task-queue")
+
+
+def _round60(x):
+    return None if x is None else int(60 * round(float(x) / 60))
+
+
+def _utc_epoch(iso):
+    """Task timestamps are UTC ("2026-11-12T10:00:00Z"); None when missing or unreadable."""
+    try:
+        return calendar.timegm(time.strptime(str(iso)[:19], "%Y-%m-%dT%H:%M:%S")) if iso else None
+    except ValueError:
+        return None
+
+
+def _run_brief(e):
+    return {"run": e.get("run"), "title": e.get("title"), "profile": e.get("profile"), "kind": e.get("kind"),
+            "state": e.get("state"), "phase": e.get("phase"), "phase_name": e.get("phase_name"),
+            "phase_index": e.get("phase_index"), "phase_count": e.get("phase_count"), "progress": e.get("progress"),
+            "after": e.get("after") or [], "eta_s": _round60(e.get("eta_s")), "lo_s": _round60(e.get("lo_s")),
+            "hi_s": _round60(e.get("hi_s")), "eta_text": e.get("text"), "reliability": e.get("reliability"),
+            "start": e.get("start"), "line": eta.line(e, with_title=True)}
 FIRST_DIR = "/inbox"          # per-thread subdir created here
 EVENTS_BIND = "/events"
 # Same variable the web side already reads (app.py, publish.py); only tests change it.
@@ -368,6 +391,7 @@ class Orchestrator:
             runs.append(run)
         runs.sort(key=lambda r: (r["started_at"] or "", r["project"]))
         waiting = 0
+        waiting_orders = []
         try:
             names = os.listdir(TASK_QUEUE)
         except OSError:
@@ -386,7 +410,67 @@ class Orchestrator:
             if kind == "followup" and live_threads.get(d.get("slug")) == int(d.get("thread_id") or 0):
                 continue
             waiting += 1
-        return {"max": max(MAX_PARALLEL_RUNS, 0), "busy": len(runs), "waiting": waiting, "runs": runs}
+            waiting_orders.append(d)
+        snap = {"max": max(MAX_PARALLEL_RUNS, 0), "busy": len(runs), "waiting": waiting, "runs": runs}
+        try:
+            self._add_eta(snap, live_threads, waiting_orders)
+        except Exception:   # the remaining-time display is an extra, never a reason for a broken overview
+            pass
+        return snap
+
+    def _add_eta(self, snap, live_threads, waiting_orders):
+        """Additive remaining-time fields (0.25.0): per busy slot ``eta_s``, ``eta_text``, ``eta_spanne``, ``phase``,
+        ``run`` {...}, ``eta_line``; per waiting order (``waiting_list``) ``start_in_s``, ``start_text``; at the top
+        ``eta_runs`` (all active progress runs, also those without a slot). Existing fields stay unchanged."""
+        now = time.time()
+        folder = eta.progress_dir()
+        hist = eta.load_history(folder)
+        ests = [eta.estimate(r, hist, load=eta.load_sample(), now=now) for r in eta.load_runs(folder, now=now)]
+        experience = self._experience_s()
+        free_in = []
+        for r in snap["runs"]:
+            tid = live_threads.get(r["project"])
+            mine = [e for e in ests if tid and e.get("thread") == tid and e.get("state") != "done"]
+            est = mine[-1] if mine else None
+            started = _utc_epoch(r.get("started_at"))
+            runtime = max(0.0, now - started) if started else 0
+            t = eta.task_eta(runtime, None, None, run_est=est, experience_s=experience)
+            text = eta.eta_text(t["eta_s"], t["lo_s"], t["hi_s"], unknown="unknown (first task of this kind)")
+            r["eta_s"] = _round60(t["eta_s"])
+            r["eta_text"] = text
+            r["eta_spanne"] = [_round60(t["lo_s"]), _round60(t["hi_s"])] if t["eta_s"] is not None else None
+            r["phase"] = (est or {}).get("phase")
+            r["run"] = _run_brief(est) if est else None
+            r["eta_line"] = eta.line(dict(est, text=text)) if est else text
+            free_in.append(t["eta_s"] if t["eta_s"] is not None else max(600, (experience or 45 * 60) - runtime))
+        slots = snap["max"] if snap["max"] > 0 else len(snap["runs"]) + len(waiting_orders)
+        free_in += [0] * max(0, slots - len(free_in))
+        durations = [experience] * len(waiting_orders)
+        starts = eta.start_times(free_in, durations, fallback_s=45 * 60)
+        waiting_list = []
+        for d, t in zip(waiting_orders, starts):
+            text = ("starts shortly" if t is not None and t < 60 else
+                    eta.eta_text(t, prefix="starts in", unknown="start unknown"))
+            waiting_list.append({"project": d.get("slug"), "start_in_s": _round60(t), "start_text": text})
+        snap["waiting_list"] = waiting_list
+        snap["eta_runs"] = [dict(_run_brief(e), thread=e.get("thread")) for e in ests]
+
+    def _experience_s(self):
+        """Median duration of the latest finished tasks (None without enough data)."""
+        try:
+            rows = db.query_all("SELECT started_at, finished_at FROM tasks WHERE status = 'done' AND finished_at IS NOT NULL "
+                                "AND started_at IS NOT NULL ORDER BY id DESC LIMIT 200")
+        except Exception:
+            return None
+        vals = []
+        for r in rows:
+            a, b = _utc_epoch(r["started_at"]), _utc_epoch(r["finished_at"])
+            if a and b and b > a:
+                vals.append(b - a)
+        if len(vals) < 3:
+            return None
+        vals.sort()
+        return vals[len(vals) // 2]
 
     def _handle(self, d, pool_full=False):
         """Route one descriptor. Returns "requeued_pool" when it had to wait for a free slot."""

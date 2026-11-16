@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   Me, User, Provider, Project, ThreadSummary, ThreadDetail, FileEntry, FileListing,
   UsageSummary, LimitStatus, UpdateInfo, GithubStatus, ActivityItem, ScanResult, PublishStatus,
-  LiveEntry, LiveFeed, PlanLimit, PoolSnapshot, TestRunnerLoad,
+  LiveEntry, LiveFeed, PlanLimit, PoolRun, PoolSnapshot, TestRunnerLoad,
 } from './types'
 import * as api from './api'
 import { focusInField, hasDraft, loopGuard, reloadAllowed } from './updateReload'
@@ -689,6 +689,33 @@ function testRunnerLine(t: TestRunnerLoad): string {
   if (t.queue_waiting) parts.push(`${t.queue_waiting} waiting in the queue`)
   return parts.join(' · ') || 'no data'
 }
+// Remaining time of a busy slot: bold "done in ~X", phase · phase i/n · tests · then ..., slim bar. Nothing without the fields.
+function EtaBlock({ r }: { r: PoolRun }) {
+  const l = r.run
+  const text = r.eta_text || l?.eta_text
+  if (!text && !l) return null
+  const f = l?.progress
+  const share = f && f.share != null ? f.share : null
+  const parts: string[] = []
+  if (l?.phase || r.phase) parts.push((l?.phase || r.phase) as string)
+  if (l?.phase_index && l.phase_count) parts.push(`phase ${l.phase_index}/${l.phase_count}`)
+  if (f && f.done != null && f.total) parts.push(`${f.done}/${f.total} tests`)
+  if (l?.after && l.after.length) parts.push(`then ${l.after.join(' + ')}`)
+  const unknown = !!text && /unknown/i.test(text)
+  return (
+    <div className="pt-eta" data-testid="eta" style={{ marginTop: '.35rem' }}>
+      {text ? <div style={{ fontWeight: 800, fontSize: '.85rem', color: unknown ? 'var(--muted)' : 'var(--text)' }}>⏱ {text}</div> : null}
+      {parts.length > 0 ? <div className="muted" style={{ fontSize: '.7rem' }}>{parts.join(' · ')}</div> : null}
+      {share != null ? (
+        <div style={{ height: 4, borderRadius: 99, background: 'var(--border)', overflow: 'hidden', marginTop: '.3rem' }}
+             role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(share * 100)}>
+          <div style={{ width: `${Math.max(0, Math.min(100, Math.round(share * 100)))}%`, height: '100%', borderRadius: 99,
+                        background: 'var(--accent)', opacity: f?.estimated ? 0.55 : 1, transition: 'width .4s' }} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
 // Polls only while the tab is visible; rendered for admins only, so everyone else never calls /api/pool.
 function PoolStrip({ names }: { names: Record<string, string> }) {
   const [pool, setPool] = useState<PoolSnapshot | null>(null)
@@ -724,11 +751,19 @@ function PoolStrip({ names }: { names: Record<string, string> }) {
             <div className="pt-meta">{r.api_error
               ? (r.api_error.gave_up ? 'gave up' : r.api_error.next_attempt ? `retry ${new Date(r.api_error.next_attempt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })} · ${r.api_error.attempt}/${r.api_error.max}` : 'retrying')
               : ([r.model, runTime(r.started_at)].filter(Boolean).join(' · ') || '—')}</div>
+            <EtaBlock r={r} />
           </div>
         ) : (
           <div key={'free' + i} className="pooltile free"><div className="pt-name">free</div></div>
         ))}
       </div>
+      {(pool.waiting_list || []).some((w) => w.start_text) && (
+        <div className="muted" style={{ fontSize: '.75rem', marginTop: '.5rem' }} data-testid="waiting-starts">
+          {(pool.waiting_list || []).filter((w) => w.start_text).map((w, i) => (
+            <div key={i}>{names[w.project || ''] || w.project || 'task'}: {w.start_text}</div>
+          ))}
+        </div>
+      )}
       {pool.test_runner && (
         <div className="testrunner-line muted" title={pool.test_runner.fresh ? 'Second test machine' : 'No fresh sample from the second test machine'}>
           <b>Test runner</b>{!pool.test_runner.fresh && <span className="chip" style={{ cursor: 'default', color: 'var(--warn)' }}>stale</span>}

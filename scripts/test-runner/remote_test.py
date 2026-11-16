@@ -69,6 +69,34 @@ WAIT_NOTE_S = 300               # waiting message at most every 5 min (or at onc
 STATUS_FAILS_MAX = 3            # while waiting: this many status requests in a row without answer = runner gone
 DEFAULT_DURATION_S = 20 * 60    # estimate without own protocols
 
+# Progress file for the remaining-time display (backend/eta.py). Own file only without a parent run (the variable
+# AIWERKSTATT_PROGRESS_PARENT is set by a calling script that writes its own file). Missing module or failing writes:
+# everything runs as before.
+for _p in (os.path.dirname(os.path.abspath(__file__)),
+           os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "backend")):
+    if os.path.exists(os.path.join(_p, "eta.py")) and _p not in sys.path:
+        sys.path.insert(0, _p)
+        break
+try:
+    import eta
+except Exception:  # noqa: BLE001
+    eta = None
+
+
+class _NoProgress:
+    def __getattr__(self, _n):
+        return lambda *a, **k: self
+
+
+def progress_start(profile, mode, repo, rid):
+    if eta is None or os.environ.get("AIWERKSTATT_PROGRESS_PARENT"):
+        return _NoProgress()
+    try:
+        return eta.Run("%s/%s" % (profile, mode), "remote_test", ["queue", "test"], title="%s/%s" % (repo, mode),
+                       run_id="remote_test-%s" % rid).start()
+    except Exception:  # noqa: BLE001
+        return _NoProgress()
+
 
 def info(text):
     sys.stderr.write("[remote-test] %s\n" % text)
@@ -530,6 +558,8 @@ def execute(a):
             "extra": extra_commit, "start": datetime.datetime.now().isoformat(timespec="seconds")}
     t0 = time.time()
     own = None
+    progress = progress_start(a.profile, a.mode, name, rid)
+    progress.phase("queue")
     try:
         package = os.path.join(work, "package.tar")
         size = build_package(package, repo, commit, extra_path, extra_commit, a.extra_path)
@@ -551,6 +581,7 @@ def execute(a):
             t_wait = time.time()
 
             def got_slot():
+                progress.phase("test")
                 queue_leave(own)
                 meta["started"] = round(run.started, 3)
                 w = int(run.started - t_wait)
@@ -579,6 +610,7 @@ def execute(a):
                     info("%squeue position %d, ahead of you: %s, expected free in ~%d min (no deadline, no abort)"
                          % ((note + " - ") if note else "", pos, before, max(1, round(free_in_s(st, ahead) / 60))))
                     last_note, last_pos = time.time(), pos
+                    progress.expected(free_in_s(st, ahead))
                 time.sleep(WAIT_TICK_S)
                 new = runner_status(tries=1, timeout=60)
                 if new is None:
@@ -621,6 +653,8 @@ def execute(a):
         rc = e.get("rc")
         return rc if isinstance(rc, int) else 3
     finally:
+        ran = meta.get("outcome") == "done" and not (meta.get("runner") or {}).get("infra")
+        progress.end(("ok" if meta.get("rc") == 0 else "failed") if ran else "aborted")
         meta["end"] = datetime.datetime.now().isoformat(timespec="seconds")
         with open(base + ".json", "w") as fh:
             json.dump(meta, fh, ensure_ascii=False, indent=1)

@@ -31,9 +31,19 @@ export type PlanLimit = { connected: boolean; available?: boolean; session?: Pla
 // Worker pool overview (admins): max 0 = unlimited.
 export type ApiErrorState = { attempt: number; max: number; next_attempt: number; gave_up: boolean; reason: string }
 export type BackgroundWait = { since: number; count: number; continuations: number; max: number; reason: string; description: string }
-export type PoolRun = { project: string; title: string; started_at: string | null; model: string; api_error?: ApiErrorState; background_wait?: BackgroundWait }
+// Remaining-time fields (0.25.0) are all optional: an older backend simply does not send them.
+export type EtaRun = {
+  run?: string; title?: string; state?: string; phase?: string | null; phase_index?: number | null; phase_count?: number
+  progress?: { done: number | null; total: number | null; share: number | null; estimated?: boolean } | null
+  after?: string[]; eta_s?: number | null; eta_text?: string; reliability?: string; line?: string
+}
+export type PoolRun = {
+  project: string; title: string; started_at: string | null; model: string; api_error?: ApiErrorState; background_wait?: BackgroundWait
+  eta_s?: number | null; eta_text?: string; eta_spanne?: (number | null)[] | null; phase?: string | null; run?: EtaRun | null; eta_line?: string
+}
+export type WaitingStart = { project: string | null; start_in_s?: number | null; start_text?: string }
 export type TestRunnerLoad = { fresh: boolean; stand: number | null; load: number[] | null; cores: number | null; cpu_percent: number | null; test_runs: number | null; max_runs: number | null; queue_waiting?: number }
-export type PoolSnapshot = { max: number; busy: number; waiting: number; runs: PoolRun[]; test_runner?: TestRunnerLoad }
+export type PoolSnapshot = { max: number; busy: number; waiting: number; runs: PoolRun[]; test_runner?: TestRunnerLoad; waiting_list?: WaitingStart[]; eta_runs?: EtaRun[] }
 export type LimitStatus = { active: boolean; until?: number; resumes_at?: string; reset_known?: boolean }
 export type UpdateInfo = { current: string; latest: string | null; update_available: boolean; url: string }
 export type GithubStatus = { connected: boolean; login: string | null }

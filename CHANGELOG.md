@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.25.0 — 2026-11-17
+### Added — remaining time per run and per task: "done in ~X min / ~X h / ~X days"
+- **`backend/eta.py`**: writer `Run` (progress file per run in `AIWERKSTATT_PROGRESS_DIR`, default
+  `~/.local/state/aiwerkstatt/progress`; phases with status, tests done/total, heartbeat every minute with a load sample;
+  at the end one line of measured phase durations into `history-<user>.jsonl`; every error is swallowed, without write
+  permission the writer is silent) and reader (`estimate()`, `task_eta()`, `start_times()`, `duration_text()`).
+- Estimate = rest of the current phase (test progress x measured rate, else moving median of the last 10 runs minus
+  elapsed; a writer that knows the duration itself, e.g. the queue wait, takes precedence) + median of the remaining phases
+  (repeat phases weighted by how often they ran) x load factor (clamped 0.75-1.6). Range from the 20/80 % quantiles.
+  Without history: "unknown (first run of this kind)"; with default durations from the writer: reliability "rough".
+  A run without heartbeat for 15 min counts as gone. Format "~12 min", "~2 h 10 min", "~1 day 4 h", from 48 h "~3 days".
+- Whole task: running run + remaining steps, else the median of finished tasks. Waiting tasks: FIFO onto the slots that
+  free up first.
+- **Remote test runner** (`scripts/test-runner/remote_test.py`) writes progress (queue with the expected wait, then test);
+  its own file only without a parent run (`AIWERKSTATT_PROGRESS_PARENT`); a missing module or an unwritable folder changes
+  nothing. `AIWERKSTATT_PROGRESS_THREAD` links a run to its task thread.
+- **`GET /api/pool`** (additive, existing fields unchanged, errors never break the view): per busy slot `eta_s`, `eta_text`,
+  `eta_spanne`, `phase`, `run`, `eta_line`; `waiting_list` with `start_in_s` and `start_text` per waiting order; `eta_runs`.
+- **"Agents at work" card**: remaining time in bold per slot, `phase - phase i/n - tests - then ...`, slim progress bar
+  (estimated share paler), "starts in ~X" per waiting order; nothing extra when the fields are missing.
+- Tests: `backend/tests/test_eta.py` (format, with/without history, load factor, test rate, repeat-phase frequency, task
+  estimate, FIFO start, missing/broken files, vanished runs, writer without permission), `backend/tests/test_pool_snapshot.py`
+  (new fields additive, broken progress never breaks the view), `scripts/test-runner/test_remote_test.py` (class `Progress`:
+  queue then test, expected wait, parent run, unwritable folder, missing module).
+
 ## 0.24.0 — 2026-11-16
 ### Changed — no wait locks, queues instead: remote test runner and task chain
 - **Remote test runner** (`scripts/test-runner/remote_test.py`): a free slot means the run starts at once, also when the

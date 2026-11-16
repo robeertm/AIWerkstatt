@@ -119,7 +119,29 @@ variable, or if the file is missing or unreadable, the field is absent. The "Age
 example "Test runner: 37 % CPU · load 3.4 / 8 cores · 1 of 2 runs" (plus "N waiting in the queue" while runs wait), and a "stale" chip when the sample is not fresh.
 Run details and ids stay out of the field.
 
+## Remaining time (0.25.0)
+
+`remote_test.py` writes a progress file per run (phases `queue` -> `test`; while queued with the expected wait from the
+estimate above) into the folder `AIWERKSTATT_PROGRESS_DIR` (default `~/.local/state/aiwerkstatt/progress`; point the web
+service at the same folder). At the end one line with the measured phase durations goes to `history-<user>.jsonl`; the
+moving median of the last 10 runs of the same kind feeds the estimate (`backend/eta.py`). A run started by another
+script that writes its own progress file sets `AIWERKSTATT_PROGRESS_PARENT=1`, then `remote_test.py` writes none.
+`AIWERKSTATT_PROGRESS_THREAD` (a number) links a run to the task thread it belongs to. If `eta.py` is missing or the
+folder is not writable, everything runs as before.
+
+`GET /api/pool` carries these additive fields (nothing existing changes; errors never break the view):
+
+- per busy slot: `eta_s`, `eta_text` ("done in ~25 min (15-40 min)" or "unknown (first task of this kind)"), `eta_spanne`
+  (`[low, high]` seconds), `phase`, `run` (phase `i/n`, tests done/total, `after`, reliability), `eta_line`;
+- `waiting_list`: per waiting order `project`, `start_in_s`, `start_text` ("starts in ~35 min"; FIFO onto the slots that
+  free up first);
+- `eta_runs`: all active progress runs, also those without a slot.
+
+The "Agents at work" card shows the remaining time in bold per slot, below it `phase · phase i/n · tests · then ...`, a slim
+progress bar and "starts in ~X" per waiting order; without the fields it shows nothing extra. Format: "~12 min",
+"~2 h 10 min", "~1 day 4 h", from 48 h "~3 days"; without any history "unknown (first run of this kind)".
+
 ## Tests
 
 `python3 -m unittest discover -s scripts/test-runner` (stand-ins for ssh and docker, no real machine) and
-`cd backend && python3 -m unittest tests.test_test_runner_status`. CI runs both.
+`cd backend && python3 -m unittest tests.test_test_runner_status tests.test_eta tests.test_pool_snapshot`. CI runs both.
