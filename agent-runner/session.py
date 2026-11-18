@@ -72,9 +72,11 @@ LIMIT_WAIT   = int(os.environ.get("WK_LIMIT_WAIT", "1800"))
 # attempt; empty = off (the older immediate stream-resume path stays in charge).
 API_RETRY_DELAYS = [int(x) for x in os.environ.get("AIW_API_RETRY_DELAYS", "120,300,900").split(",")
                     if x.strip().isdigit()]
+PLAN_HINT = ("As the FIRST action update your todo list (TaskUpdate the existing steps or recreate them with "
+             "TaskCreate, exactly one in_progress).")
 API_CONTINUE = ("The previous attempt ended with an API error. Continue exactly where you left off - do not "
                 "start over and do not repeat steps you already completed. Check the current state briefly, "
-                "then finish the task.")
+                "then finish the task. " + PLAN_HINT)
 # A turn that ends with open background work is not a finished task (0.23.0). When the agent starts a long job in the
 # background and ends its turn with "I am waiting for the notification", the result is NOT the final reply: the task stays
 # open, the CLI wakes the agent itself when the job ends, and if it does not (nothing open for BG_EMPTY_S) or the job runs
@@ -152,8 +154,12 @@ def emit(task_id, etype, text, payload=None):
 _live_seq = 0
 LIVE = {"api_error": None,     # api_error state shown in the status file
         "background": {},      # open background tasks: id -> {description, type, since}
-        "waiting": None}       # turn ended with open work: {since, continuations, reason}
+        "waiting": None,       # turn ended with open work: {since, continuations, reason}
+        "sid": None,           # session id of this run (saved with the plan)
+        "tasks": None,         # full todo list (id -> step), for the plan file
+        "todo": None}          # plan summary shown in the status file: {done, total, current[, carried_over]}
 EVIDENCE = Evidence([KNOWLEDGE_DIR])
+PLAN_MAX_AGE_S = 7 * 86400   # a saved plan older than this is ignored
 RUN_STARTED = int(time.time())  # when THIS run began (a restart/resume is a new run) → "run since" in the UI
 _last_output = [time.time()]   # when did the agent last produce ANY output (silent thinking included)? → status file
 
@@ -203,6 +209,63 @@ def _background_fields():
     return d
 
 
+# Plan survives a resume: the last known todo list is saved next to the status file on every change (with the
+# session id). A resumed run shows it at once (always) and continues the task list only when it resumes the SAME
+# session (otherwise the CLI numbers its tasks from 1 again). A real reply discards it; older than 7 days is ignored.
+def _plan_path():
+    return os.path.join(os.path.dirname(STATUS_FILE), "plan-%d.json" % THREAD_ID)
+
+
+def plan_summary(tasks):
+    live = [t for t in tasks.values() if t.get("status") != "deleted"]
+    cur = next((t for t in live if t.get("status") == "in_progress"), None)
+    return {"done": sum(1 for t in live if t.get("status") == "completed"), "total": len(live),
+            "current": ((cur or {}).get("active") or (cur or {}).get("subject") or "")[:100]}
+
+
+def plan_save():
+    """Save the last known plan (never raises)."""
+    if not LIVE.get("todo"):
+        return
+    d = {"sid": LIVE.get("sid") or RESUME_SID or "", "todo": {k: v for k, v in LIVE["todo"].items() if k != "carried_over"},
+         "tasks": LIVE.get("tasks") or {}, "saved": int(time.time())}
+    try:
+        _atomic_write(_plan_path(), json.dumps(d, ensure_ascii=False))
+    except OSError:
+        pass
+
+
+def plan_take_over(resume_sid):
+    """At start: take over this thread's last plan. Returns the task list to continue (same session only)
+    or None; the summary is shown either way (LIVE["todo"] with carried_over)."""
+    try:
+        with open(_plan_path(), "r", encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    todo = d.get("todo") if isinstance(d, dict) else None
+    try:
+        age = time.time() - int(d.get("saved") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(todo, dict) or not todo.get("total") or age > PLAN_MAX_AGE_S:
+        return None
+    LIVE["todo"] = dict(todo, carried_over=True)
+    same = bool(resume_sid) and d.get("sid") == resume_sid and isinstance(d.get("tasks"), dict)
+    if same:
+        LIVE["tasks"] = d["tasks"]
+    log("plan carried over (%s/%s, %s)" % (todo.get("done"), todo.get("total"),
+                                           "same session" if same else "display only"))
+    return d["tasks"] if same else None
+
+
+def plan_discard():
+    try:
+        os.remove(_plan_path())
+    except OSError:
+        pass
+
+
 def write_status(ctx_pct, alive, pending, compacting=False):
     # model/effort ride along so the live "what the agent is doing" view can show WHICH model
     # and intensity this run actually uses (the values this session was launched with).
@@ -211,7 +274,8 @@ def write_status(ctx_pct, alive, pending, compacting=False):
          "compacting": bool(compacting), "thread_id": THREAD_ID, "slug": SLUG,
          "model": MODEL, "effort": EFFORT, "updated": int(time.time()), "run_started": RUN_STARTED,
          "last_output": int(_last_output[0]), "api_error": LIVE["api_error"],
-         "evidence": EVIDENCE.as_dict(), **_background_fields()}, ensure_ascii=False))
+         "evidence": EVIDENCE.as_dict(), **_background_fields(),
+         **({"todo": LIVE["todo"]} if LIVE.get("todo") else {})}, ensure_ascii=False))
 
 
 def write_limit(until, since, known=False):
@@ -253,6 +317,9 @@ def main():
         return
     log("start (provider=%s model=%s effort=%s resume=%s)"
         % (PROVIDER, MODEL, EFFORT or "default", RESUME_SID or "no"))
+    carried = plan_take_over(RESUME_SID)
+    if carried is not None and hasattr(adapter, "seed_plan"):
+        adapter.seed_plan(carried)
     proc = start_agent()
 
     def feed(text):
@@ -265,7 +332,7 @@ def main():
     with open(FIRST_MSG_F, "r", encoding="utf-8") as f:
         first = f.read()
     emit(FIRST_TASK, "ack", "Received — the agent is starting.")
-    feed(first)
+    feed(first + ("\n\n" + PLAN_HINT if RESUME_SID and LIVE.get("todo") else ""))
     expected = deque()
     expected.append(("task", FIRST_TASK))
 
@@ -409,6 +476,8 @@ def main():
             LIVE["waiting"] = None
             answered.add(tid)
             emit(tid, "reply", text[:6000])
+            plan_discard()      # a real reply: the next follow-up starts with its own plan
+            LIVE["todo"] = None
         # One result = the agent processed everything fed so far. A mid-turn
         # follow-up folded into this turn → resolve the remaining expected tasks.
         while expected:
@@ -438,6 +507,7 @@ def main():
                 if kind == "session":
                     if not sid:
                         sid = ev["id"]; save_session_id(sid)
+                    LIVE["sid"] = ev["id"]
                 elif kind == "ctx":
                     if ev.get("window"):
                         ctx_window = ev["window"]
@@ -454,6 +524,10 @@ def main():
                         EVIDENCE.tool(ev["tool"].get("name", ""), ev["tool"].get("input") or {})
                     if LIVE["waiting"] and ev.get("top") and ev.get("act") in ("say", "think", "tool"):
                         LIVE["waiting"] = None   # the CLI woke the agent itself - it works again
+                    if ev.get("act") == "plan" and ev.get("top") and isinstance(ev.get("plan"), dict):
+                        LIVE["tasks"] = ev["plan"]
+                        LIVE["todo"] = plan_summary(ev["plan"])
+                        plan_save()
                     emit_activity(ev.get("act", "say"), ev.get("text", ""))
                     last_activity = time.time()
                 elif kind == "background":
@@ -589,7 +663,7 @@ def main():
             # Do NOT re-send the order — it is already in the transcript.
             feed("The stream dropped because of an API error. Continue exactly where you "
                  "left off — do not start over and do not repeat steps you already "
-                 "completed. Check the current state briefly, then finish the task.")
+                 "completed. Check the current state briefly, then finish the task. " + PLAN_HINT)
             now = time.time()
             last_activity = last_output = now
             _last_output[0] = now

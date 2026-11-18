@@ -52,6 +52,24 @@ def audit(entry):
         print("service-token audit: could not write: %s" % e, file=sys.stderr)
 
 
+STOP_LOG = os.path.join(config.DATA, "coordinator-stops.jsonl")
+
+
+def stop_log(entry):
+    """Append one coordinator stop (thread, reason, replacement) to an append-only JSONL file."""
+    line = json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
+    try:
+        with _audit_lock:
+            os.makedirs(os.path.dirname(STOP_LOG), exist_ok=True)
+            fd = os.open(STOP_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(fd, line.encode("utf-8"))
+            finally:
+                os.close(fd)
+    except OSError as e:
+        print("coordinator stop log: could not write: %s" % e, file=sys.stderr)
+
+
 def _write_limit():
     try:
         return max(0, int(os.environ.get("AIWERKSTATT_API_WRITE_LIMIT", "30")))

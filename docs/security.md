@@ -137,6 +137,7 @@ token from stdin (hidden on a terminal), hashes it and never prints it. Token na
 | View a task (status, history) | ✅ | ✅ |
 | Create a task | ✅, restricted (review gate) | ✅, runs and deploys normally |
 | Send a follow-up | ❌ | ✅ |
+| Stop a task with a reason (`POST /api/coordinator/threads/<id>/stop`) | ❌ | ✅ |
 | Create a project | ✅ | ❌ |
 | Choose model / effort per task | ❌ (member rights) | ✅ |
 | Write rate limit | — | 30 per hour per token |
@@ -158,6 +159,12 @@ before profiles existed are restricted and behave exactly as before.
 
 - **Chain tasks** are restricted too, unless the operator sets `AIWERKSTATT_CHAIN_REVIEW=off`
   (then they run like coordinator tasks). See [Task chain](#task-chain).
+
+**Stopping.** The coordinator can stop a task with `POST /api/coordinator/threads/<id>/stop` and
+a body `{"reason": "<4-500 characters>", "replacement": <thread id>}` (`replacement` optional). The reason is
+required (400 without), an unknown replacement answers 404. The thread gets a note with the reason, and each
+stop is appended to `<data>/coordinator-stops.jsonl`. No other token profile can use the route; the plain
+stop route stays sign-in only.
 
 **Origin.** A task created with a token carries `origin = "api:<token name>"`, set on the
 server from the verified token and never from the request body. Follow-ups record the

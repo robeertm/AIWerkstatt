@@ -57,7 +57,7 @@ API_ENDPOINTS = {
     "restricted": frozenset({"projects_list", "projects_create", "project_detail",
                              "thread_create", "thread_get"}),
     "coordinator": frozenset({"projects_list", "project_detail", "thread_create", "thread_get",
-                              "thread_comment"}),
+                              "thread_comment", "thread_stop_coordinator"}),
     # reporter: for a service that files tasks on behalf of explicitly trusted reporters.
     # Creates tasks in ONE project (AIWERKSTATT_REPORTER_PROJECT; unset = always 403), reads
     # and follows up on its own tasks only, own (stricter) write rate limit, review gate on.
@@ -681,6 +681,41 @@ def thread_stop(tid):
         abort(404)
     engine.enqueue_stop(engine.get_project(th["project_id"]), tid)
     return jsonify(ok=True), 202
+
+
+@app.post("/api/coordinator/threads/<int:tid>/stop")
+@login_required
+def thread_stop_coordinator(tid):
+    """Stop a task WITH a reason (and optionally the thread that continues the work). Only for
+    the trusted coordinator token or a signed-in admin; every other token profile never gets
+    here (401, the route is not in its endpoint list). The plain stop route stays sign-in only."""
+    u = current_user()
+    if not (_coordinator() or u["role"] == "admin"):
+        return jsonify(error="Coordinator or admin only."), 403
+    th = db.query_one("SELECT project_id FROM threads WHERE id=?", (tid,))
+    if not th:
+        abort(404)
+    d = request.get_json(force=True, silent=True) or {}
+    reason = d.get("reason")
+    reason = reason.strip() if isinstance(reason, str) else ""
+    if not 4 <= len(reason) <= 500:
+        return jsonify(error="A reason of 4 to 500 characters is required."), 400
+    repl = d.get("replacement")
+    if repl in (None, ""):
+        repl = None
+    else:
+        if isinstance(repl, bool) or not isinstance(repl, (int, str)) or not str(repl).lstrip("#").isdigit():
+            return jsonify(error="replacement must be a thread id."), 400
+        repl = int(str(repl).lstrip("#"))
+        if not db.query_one("SELECT id FROM threads WHERE id=?", (repl,)):
+            return jsonify(error="Unknown replacement thread."), 404
+    note = "⏹️ stopped by the coordinator: %s" % reason
+    if repl:
+        note += " (continued in #%d)" % repl
+    engine.enqueue_stop(engine.get_project(th["project_id"]), tid, note=note)
+    service_token.stop_log({"at": store.now(), "thread": tid, "project": th["project_id"],
+                            "by": u["name"], "reason": reason, "replacement": repl})
+    return jsonify(ok=True, thread=tid, replacement=repl), 202
 
 
 @app.post("/api/threads/<int:tid>/seen")

@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.27.0 — 2026-11-18
+### Added — stop with a reason for the coordinator, and the plan survives a resume
+- **Stop with a reason** (`POST /api/coordinator/threads/<id>/stop`): body `{"reason": "<4-500 chars, required>",
+  "replacement": <thread id, optional>}`. Only for the trusted coordinator token or a signed-in admin; every other token
+  profile (restricted, reporter, chain) gets 401, a signed-in non-admin 403. A missing or out-of-range reason answers 400,
+  an unknown thread or replacement 404. The effect is the same as the normal stop (queued, running and retrying tasks are
+  cancelled), and the thread gets the note "stopped by the coordinator: <reason> (continued in #<replacement>)". Each stop is
+  also appended to `<data>/coordinator-stops.jsonl` (append-only) and, like every token call, to the audit log. The plain
+  `POST /api/threads/<id>/stop` stays sign-in only (a token still gets 401 there).
+- **The plan survives a resume** (`agent-runner/session.py`): on every change of the agent's todo list (TaskCreate /
+  TaskUpdate / TodoWrite) the list is saved next to the status file together with the session id. A resumed run shows it at
+  once in the status file (`todo`, flagged `carried_over: true` so the UI can label it "last plan") and continues the task list
+  only when it resumes the same session (otherwise the CLI numbers its tasks from 1 again). A real reply discards it, a plan
+  older than 7 days is ignored. The resume prompts now ask the agent to update its todo list as the first action.
+
 ## 0.26.0 — 2026-11-18
 ### Added — release train: a check result is valid for exactly one commit, and "built but not published" is visible
 - **The tag goes on the checked commit** (`scripts/chain/chain.py`): the release request to the broker now carries `commit`

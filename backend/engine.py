@@ -260,7 +260,7 @@ _STOPPABLE = ("(status IN ('queued','running','retrying','waiting') "
               "OR (status='failed' AND error IS NULL))")
 
 
-def enqueue_stop(project, thread_id):
+def enqueue_stop(project, thread_id, note=None):
     # Cancel every task of the thread that could still run — including one that is waiting for
     # its next automatic retry, otherwise a stopped task would be re-queued by the self-healer.
     # A descriptor that was not claimed yet is removed; the live agent (if any) gets a stop signal.
@@ -273,7 +273,7 @@ def enqueue_stop(project, thread_id):
             os.remove(os.path.join(TASK_QUEUE, "%d.json" % tid))
         except OSError:
             pass
-    _add_event(thread_id, None, "stopped", "⏹️ Stop requested.", "System")
+    _add_event(thread_id, None, "stopped", note or "⏹️ Stop requested.", "System")
     review_settle(thread_id)
     _drop_descriptor(int(time.time()), project, thread_id, "stop", "")
 

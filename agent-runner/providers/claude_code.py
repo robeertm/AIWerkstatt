@@ -215,6 +215,12 @@ class ClaudeAdapter(AgentAdapter):
         except (TypeError, ValueError):
             return None
 
+    def seed_plan(self, tasks: dict) -> None:
+        """Continue a todo list carried over from an earlier run of the SAME session (the CLI keeps
+        numbering its tasks there; a new session counts from 1 again)."""
+        if isinstance(tasks, dict):
+            self._tasks = {str(k): dict(v) for k, v in tasks.items() if isinstance(v, dict)}
+
     def _track_plan(self, name: str, inp: dict) -> None:
         """Fold the agent's todo calls into a step list (TaskCreate/TaskUpdate or TodoWrite)."""
         if name == "TodoWrite" and isinstance(inp.get("todos"), list):
@@ -270,7 +276,9 @@ class ClaudeAdapter(AgentAdapter):
                         name, inp = bl.get("name", "?"), bl.get("input") or {}
                         if name in ("TaskCreate", "TaskUpdate", "TodoWrite") and not o.get("parent_tool_use_id"):
                             self._track_plan(name, inp)
-                            out.append(_act("plan", _clip(_plan_line(self._tasks))))
+                            ev = _act("plan", _clip(_plan_line(self._tasks)))
+                            ev["plan"] = {k: dict(v) for k, v in self._tasks.items()}   # full list, for the session driver
+                            out.append(ev)
                             continue
                         ev = _act("tool", _clip(_tool_line(name, inp)), _tool_full(name, inp))
                         ev["tool"] = {"name": name, "input": inp}   # raw call, for the per-run evidence counters

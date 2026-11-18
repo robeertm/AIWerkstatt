@@ -324,6 +324,48 @@ class CoordinatorToken(unittest.TestCase):
         self.assertEqual(engine.get_review(tid)["state"], "running")
         self.assertTrue(engine.project_held(self.pid))
 
+    # ---- stop with a reason ----
+    def stop(self, tid, token=None, **body):
+        return self.c.post("/api/coordinator/threads/%d/stop" % tid, headers=self.h(token), json=body)
+
+    def test_stop_with_reason(self):
+        tid = self.task().get_json()["id"]
+        other = self.task().get_json()["id"]
+        r = self.stop(tid, reason="superseded by a smaller task", replacement=other)
+        self.assertEqual(r.status_code, 202, r.get_data(as_text=True))
+        ev = db.query_all("SELECT text FROM events WHERE thread_id=? AND type='stopped'", (tid,))
+        self.assertIn("stopped by the coordinator: superseded by a smaller task (continued in #%d)" % other,
+                      ev[-1]["text"])
+        st = [r["status"] for r in db.query_all("SELECT status FROM tasks WHERE thread_id=?", (tid,))]
+        self.assertTrue(st and all(x == "cancelled" for x in st))
+        with open(service_token.STOP_LOG, encoding="utf-8") as f:
+            last = json.loads(f.read().strip().splitlines()[-1])
+        self.assertEqual((last["thread"], last["replacement"]), (tid, other))
+        self.assertTrue(any(a["route"] == "/api/coordinator/threads/<int:tid>/stop" and a["status"] == 202
+                            for a in self.audit_lines()))
+
+    def test_stop_needs_a_reason_and_known_replacement(self):
+        tid = self.task().get_json()["id"]
+        for body in ({}, {"reason": "abc"}, {"reason": "x" * 501}, {"reason": 5}):
+            self.assertEqual(self.stop(tid, **body).status_code, 400, body)
+        self.assertEqual(self.stop(tid, reason="valid reason", replacement=999999).status_code, 404)
+        self.assertEqual(self.stop(999999, reason="valid reason").status_code, 404)
+        self.assertEqual(self.stop(tid, reason="valid reason", replacement="abc").status_code, 400)
+
+    def test_stop_never_for_other_tokens(self):
+        tid = self.task().get_json()["id"]
+        other = {n: store.api_token_create("stop-" + n, n) for n in ("reporter", "chain")}
+        for tok in (self.rtoken, *other.values()):
+            self.assertEqual(self.stop(tid, token=tok, reason="valid reason").status_code, 401)
+        self.assertEqual(self.stop(tid, token="nope", reason="valid reason").status_code, 401)
+        store.api_token_set_disabled("coord-test", True)
+        self.assertEqual(self.stop(tid, reason="valid reason").status_code, 401)
+
+    def test_plain_stop_route_stays_closed(self):
+        tid = self.task().get_json()["id"]
+        r = self.c.post("/api/threads/%d/stop" % tid, headers=self.h(), json={"reason": "valid reason"})
+        self.assertEqual(r.status_code, 401)
+
 
 if __name__ == "__main__":
     unittest.main()
