@@ -941,7 +941,8 @@ def release_go(pid):
         return jsonify(error=_HELD), 409
     d = request.get_json(force=True) or {}
     try:
-        res = publish.release_project(pid, d.get("version", ""), d.get("notes", ""))
+        res = publish.release_project(pid, d.get("version", ""), d.get("notes", ""),
+                                      str(d.get("commit") or ""))
     except ValueError as e:
         return jsonify(error=str(e)), 400
     return jsonify(ok=True, **res, status=publish.pub_status(pid))

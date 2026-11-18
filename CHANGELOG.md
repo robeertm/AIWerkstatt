@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.26.0 — 2026-11-18
+### Added — release train: a check result is valid for exactly one commit, and "built but not published" is visible
+- **The tag goes on the checked commit** (`scripts/chain/chain.py`): the release request to the broker now carries `commit`
+  (the full 40-character SHA of `origin/<branch>` that the gate log was verified against). A broker tags exactly that
+  commit, never whatever the branch has moved to in the meantime; several single gates racing against a moving branch can
+  no longer all go stale. A short or unreadable commit is refused (fail closed). The GitHub release path of the app does
+  the same: `publish.release_payload()` / `release_project(..., commit)` set `target_commitish` to a full SHA, and
+  `POST .../release` accepts an optional `commit`.
+- **Gate result bound to the commit, not to a clock**: the age ceiling of a gate log rises from 48 hours to 7 days
+  (`release.max_age_hours` can still only lower it). The binding is the commit comparison, which already refused a log
+  whose commit is no longer on the branch.
+- **Release stand** (`chain.py stand [--json]`, also part of `check` and of `status.json` as `release_stand`): compares
+  the version on `origin/<branch>` (and entries under an `Unreleased` changelog heading) with the newest `vX.Y.Z` tag of
+  the clone. Levels `ok`, `open`, `stale` (unpublished for 2 h, hint to file the release), `critical` (6 h, exactly one
+  alert in the status that clears itself when published) and `unknown` (an unreadable clone is never shown as "ok"). The
+  clock restarts whenever a new tag appears. New optional `release` keys: `changelog_file`, `stale_after_h`,
+  `alert_after_h`.
+- **`waiting_for_release`**: a release task whose gate is green but whose release is not published yet shows this state in
+  `status` instead of `done`; it counts as finished only when tag, release and image are measured.
+- **Acceptance before an announcement** (`chain.py proof <version> <file> <pattern>`): exit 0 only when the evidence is in
+  the PUBLISHED state (the tag `v<version>`), not just on the branch; "fixed in" replies should be gated on it.
+- **Other tasks of a release plan** are told to run no release gate of their own, not to bump the version and to put
+  changelog entries under `Unreleased`; the release task assigns the version.
+- Tests: `scripts/chain/test_chain.py` (classes `ReleaseStand`, `ReleaseStandGit` against a real git clone: levels,
+  restarting clock, alert cleanup, unreadable clone, changelog parser, threshold validation, `waiting_for_release`,
+  100-hour-old log accepted for the same commit and refused after the branch moved, short commit refused, prompt, proof
+  incl. path/pattern/version validation, request carries the commit), `backend/tests/test_release_commit.py`
+  (release payload pinned to a full SHA, short or odd values refused).
+
 ## 0.25.0 — 2026-11-17
 ### Added — remaining time per run and per task: "done in ~X min / ~X h / ~X days"
 - **`backend/eta.py`**: writer `Run` (progress file per run in `AIWERKSTATT_PROGRESS_DIR`, default

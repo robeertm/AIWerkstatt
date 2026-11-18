@@ -11,6 +11,8 @@ docs/security.md). Python standard library only; works with ``python3 -I``.
     chain.py approve <id>                         allow an optional task
     chain.py release --id <id> --gate-log <name>  gate green = release: verify a gate log, then file a broker request
     chain.py verify [<version>]                   measure a release (tag, GitHub release, image digest, latest)
+    chain.py stand [--json]                       release stand: main against the newest tag, how long unpublished
+    chain.py proof <version> <file> <pattern>     acceptance: is the evidence in the PUBLISHED state (tag)?
     chain.py check                                self-healing (run it from a timer)
     chain.py simulate                             dry run of the whole plan, no API, no state
 
@@ -60,10 +62,13 @@ TASK_KEYS = {"id", "track", "title", "model", "effort", "depends_on", "prompt", 
 RESULT_KEYS = {"id", "branch", "commit", "tests", "gate", "manual_steps"}
 BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+COMMIT_FULL_RE = re.compile(r"^[0-9a-f]{40}$")
 RESULT_RELEASES = ("published", "requested", "held", "none")
 RESULT_KEYS.add("release")
 # ---- gate green = release
-GATE_MAX_AGE_H = 48
+GATE_MAX_AGE_H = 168            # a gate result is bound to one commit (checked against origin/<branch>); the age is only a backstop
+STALE_AFTER_H = 2               # release stand: unpublished for this long = "stale" (the status says what to do)
+ALERT_AFTER_H = 6               # ... and for this long = "critical": one alert in the status
 GATE_MAX_BYTES = 2 * 1024 * 1024
 GATE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
@@ -73,7 +78,8 @@ SUMMARY_RE = re.compile(r"SUMMARY \(version (\S+), commit (\S+), image (.+)\)\s*
 CHECK_INTERVAL_S = 10 * 60      # external releases: look at most every 10 minutes (rate limits)
 REQUESTED_MAX_S = 3 * 3600      # a broker request without an answer for this long is raised as an alert
 RELEASE_KEYS = {"repo", "image", "queue_dir", "broker_status", "gate_logs", "clone", "branch",
-                "version_file", "identity", "slug", "max_age_hours"}
+                "version_file", "identity", "slug", "max_age_hours", "changelog_file",
+                "stale_after_h", "alert_after_h"}
 # What really needs a person at the main workstation. Everything else is the chain's or the
 # coordinator's business. A plan may add its own reasons under "human_reasons".
 HUMAN_REASONS = (
@@ -247,8 +253,21 @@ def _validate_release(raw):
     if not BRANCH_RE.match(branch) or ".." in branch or not isinstance(version_file, str) \
             or version_file.startswith("/") or ".." in version_file.split("/"):
         raise ChainError("release.branch or release.version_file is malformed")
+    changelog = raw.get("changelog_file") or "CHANGELOG.md"
+    if not isinstance(changelog, str) or changelog.startswith("/") or ".." in changelog.split("/"):
+        raise ChainError("release.changelog_file is malformed")
+    thresholds = {}
+    for k, std in (("stale_after_h", STALE_AFTER_H), ("alert_after_h", ALERT_AFTER_H)):
+        v = raw.get(k, std)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v <= 24 * 30:
+            raise ChainError("release.%s must be a number of hours in (0, 720]" % k)
+        thresholds[k] = float(v)
+    if thresholds["alert_after_h"] < thresholds["stale_after_h"]:
+        raise ChainError("release.alert_after_h must not be smaller than release.stale_after_h")
     out = {"repo": repo, "image": image, "identity": raw["identity"], "slug": raw["slug"],
-           "branch": branch, "version_file": version_file, "max_age_hours": float(hours)}
+           "branch": branch, "version_file": version_file, "max_age_hours": float(hours),
+           "changelog_file": changelog}
+    out.update(thresholds)
     for k in ("queue_dir", "broker_status", "gate_logs", "clone"):
         out[k] = _abs_path(raw[k], k) if raw.get(k) else ""
     if not out["queue_dir"] or not out["clone"]:
@@ -283,6 +302,10 @@ def validate_result(obj, expect_id):
     return {"id": expect_id, "branch": branch, "commit": commit, "tests": obj["tests"],
             "gate": obj["gate"], "release": obj.get("release", "none"),
             "manual_steps": [s.strip() for s in steps]}
+
+
+def _vtuple(v):
+    return tuple(int(x) for x in str(v).split("."))
 
 
 def clean(v, n):
@@ -546,6 +569,8 @@ class Chain:
         # seams for tests and for other hosts: each takes plain values and returns plain values
         self.evidence = lambda repo, image, version: release_evidence(repo, image, version)
         self.main_state = self._main_state
+        self.tags = self._tags
+        self.changelog = self._changelog
         self.broker = self._broker
 
     # state
@@ -566,6 +591,7 @@ class Chain:
         s.setdefault("external_auto", {})
         s.setdefault("external_checked", {})
         s.setdefault("alerts", {})
+        s.setdefault("stand", {})
         s.setdefault("taken_over", [])
         for tid in self.plan["tasks"]:
             s["tasks"].setdefault(tid, {"state": "pending", "red": 0})
@@ -677,6 +703,12 @@ class Chain:
         parts = [t["prompt"].strip()]
         if t["check"]:
             parts.append("Check before you finish:\n" + t["check"].strip())
+        if self.plan["release"] and not t["release"]:
+            parts.append(
+                "A release train publishes this repository, so run no release gate of your own and do not "
+                "bump the version or create a dated release section: put changelog entries under an "
+                "\"Unreleased\" heading; the release task assigns the version and the train tags exactly "
+                "the commit its gate ran for.")
         parts.append(
             "When you are done, write a result file as JSON to %s with exactly these fields: "
             "id (\"%s\"), branch, commit, tests (\"green\" or \"red\"), gate (\"green\", \"open\" "
@@ -827,6 +859,10 @@ class Chain:
         if self.plan["release"] and not self.killed():
             if any(r.get("state") == "requested" for r in self.load()["releases"].values()):
                 self.verify()
+        if self.plan["release"] and not self.killed():
+            stand = self.release_stand()
+            if stand.get("level") in ("stale", "critical"):
+                self.hints.append("release stand: %s - file the release (a release task with a green gate)" % stand["line"])
         if self.plan["extern_release"] and not self.killed():
             for key in self.check_external_releases():
                 self.hints.append("external condition %s resolved: release is out" % key)
@@ -906,7 +942,7 @@ class Chain:
             return 1, "no release: origin/%s of %s not readable (fail closed)" % (rel["branch"], rel["repo"])
         if main_ver != ver:
             return 1, "no release: the gate ran for %s, origin/%s is %s: run the gate again" % (ver, rel["branch"], main_ver)
-        if not main_commit.startswith(commit):
+        if not COMMIT_FULL_RE.match(main_commit) or not main_commit.startswith(commit):
             return 1, "no release: the gate ran for commit %s, origin/%s is %s: run the gate again" % (
                 commit, rel["branch"], main_commit[:8])
         s = self.load()
@@ -928,7 +964,9 @@ class Chain:
                                       state="held", reason=halt, at=iso(self.clock.now()), ts=self.clock.now())
             self.save(s)
             return 3, "gate green, but %s: not published, keep building (result: \"release\": \"held\")" % halt
-        ok, why = self.broker({"mode": "release", "by": rel["identity"], "gate": "green", "gate_log": log_name})
+        # the broker tags exactly this commit (the one the gate ran for), never whatever origin/<branch> is by then
+        ok, why = self.broker({"mode": "release", "by": rel["identity"], "gate": "green", "gate_log": log_name,
+                               "commit": main_commit})
         if not ok:
             return 1, "broker request failed: %s" % why
         self._record_release(s, ver, tid, log_name, commit, "requested")
@@ -988,6 +1026,113 @@ class Chain:
         self.save(s)
         return out
 
+    # release stand: main against the newest tag
+    def _git_show(self, ref, path):
+        r = self.plan["release"]
+        try:
+            p = subprocess.run(["git", "-C", r["clone"], "show", "%s:%s" % (ref, path)],
+                               capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return p.stdout if p.returncode == 0 else None
+
+    def _tags(self):
+        """Newest release tag vX.Y.Z of the clone (fresh fetch) -> (version or None, commit or None, ok)."""
+        r = self.plan["release"]
+        git = ["git", "-C", r["clone"]]
+        try:
+            subprocess.run(git + ["fetch", "-q", "--tags", "origin"], capture_output=True, timeout=90)
+            p = subprocess.run(git + ["tag", "-l", "v*"], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return None, None, False
+        if p.returncode:
+            return None, None, False
+        best = None
+        for name in p.stdout.split():
+            if re.match(r"^v\d+\.\d+\.\d+$", name):
+                key = tuple(int(x) for x in name[1:].split("."))
+                if best is None or key > best[0]:
+                    best = (key, name)
+        if best is None:
+            return None, None, True
+        c = subprocess.run(git + ["rev-list", "-n", "1", best[1]], capture_output=True, text=True, timeout=30)
+        return best[1][1:], (c.stdout.strip() if c.returncode == 0 else None), True
+
+    def _changelog(self):
+        """Has the changelog on origin/<branch> entries under an Unreleased heading? None = unreadable."""
+        r = self.plan["release"]
+        text = self._git_show("origin/" + r["branch"], r["changelog_file"])
+        if text is None:
+            return None
+        m = re.search(r"^##\s*\[?Unreleased\]?[^\n]*\n(.*?)(?=^## |\Z)", text, re.S | re.M | re.I)
+        return bool(m and re.search(r"^\s*[-*]\s+\S", m.group(1), re.M))
+
+    def release_stand(self):
+        """Is what is on origin/<branch> also published? Compares the version on the branch with the newest tag.
+        Unpublished for STALE hours -> level "stale", for ALERT hours -> "critical" plus one alert in the status.
+        The time starts when the chain first sees the unpublished version (the check runs from a timer).
+        -> dict (also kept in the state and shown by ``status``); never raises on a broken clone, then level "unknown"."""
+        rel = self.plan["release"]
+        if not rel:
+            return {}
+        s = self.load()
+        now = self.clock.now()
+        ver, commit = self.main_state()
+        tag, tag_commit, tags_ok = self.tags()
+        unreleased = self.changelog()
+        out = {"repo": rel["repo"], "main_version": ver, "main_commit": (commit or "")[:12],
+               "published": tag, "unreleased_entries": bool(unreleased), "since": None, "age_h": 0.0,
+               "level": "unknown", "at": iso(now), "ts": now}
+        if not ver or not tags_ok:
+            out["line"] = "release stand unknown: origin/%s or the tags are not readable" % rel["branch"]
+            s["stand"] = out
+            self.save(s)
+            return out
+        unpublished = tag is None or (VERSION_RE.match(ver) and _vtuple(ver) > _vtuple(tag)) \
+            or bool(unreleased)
+        out["unpublished"] = bool(unpublished)
+        prev = s.get("stand") or {}
+        if unpublished:
+            # still the same unpublished stretch (nothing new was tagged since the last look)?
+            since = prev.get("since_ts") if prev.get("unpublished") and prev.get("published") == tag else None
+            since = float(since) if since else now
+            out.update(since_ts=since, since=iso(since), age_h=round((now - since) / 3600.0, 1))
+            level = "critical" if now - since >= rel["alert_after_h"] * 3600 else \
+                "stale" if now - since >= rel["stale_after_h"] * 3600 else "open"
+            out["level"] = level
+            out["line"] = "%s: main %s, published %s, unpublished for %g h" % (
+                rel["repo"].split("/")[1], ver, tag or "nothing", out["age_h"])
+        else:
+            out.update(level="ok", line="%s: main %s = published" % (rel["repo"].split("/")[1], ver))
+        if out["level"] == "critical":
+            s["alerts"]["stand"] = "release stand: %s (over %g h)" % (out["line"], rel["alert_after_h"])
+        else:
+            s["alerts"].pop("stand", None)
+        s["stand"] = out
+        self.save(s)
+        return out
+
+    def proof(self, version, path, pattern):
+        """Acceptance before anyone is told "fixed in <version>": does the PUBLISHED state (tag v<version>) contain the
+        evidence? ``path`` is a file in the repository, ``pattern`` a regular expression. -> (ok, reason)"""
+        self.guard()
+        if not self.plan["release"]:
+            return False, "no release block in the plan"
+        if not VERSION_RE.match(str(version)):
+            return False, "version %r is invalid" % clean(version, 20)
+        if not isinstance(path, str) or path.startswith("/") or ".." in path.split("/") or not path:
+            return False, "path must be a relative file path"
+        try:
+            rx = re.compile(pattern)
+        except (re.error, TypeError):
+            return False, "pattern is not a valid regular expression"
+        text = self._git_show("v" + version, path)
+        if text is None:
+            return False, "tag v%s or file %s not found in the published state" % (version, clean(path, 80))
+        if rx.search(text):
+            return True, "evidence found in %s at v%s" % (clean(path, 80), version)
+        return False, "pattern not found in %s at v%s: not published yet, do not announce it" % (clean(path, 80), version)
+
     def check_external_releases(self, force=False):
         """Resolve external conditions that are releases (plan ``extern_release``) once tag, release
         and image are provably out. At most every 10 minutes per condition."""
@@ -1026,6 +1171,9 @@ class Chain:
             elif shown == "pending" and sum(1 for i, x in s["tasks"].items() if x["state"] in ("running", "starting")
                                             and self.plan["tasks"][i]["track"] == t["track"]) >= self.plan["limits"]["per_track"]:
                 shown = "waiting for the previous task in track %s" % t["track"]
+            if shown == "done" and t["release"] and self.plan["release"] and any(
+                    m["task"] == tid and m.get("kind") == "chain" and not m["done"] for m in s["manual"].values()):
+                shown = "waiting_for_release"        # built, gate green, but not published: not finished
             tasks[tid] = {"track": t["track"], "state": shown, "thread": v.get("thread"),
                           "red": v.get("red", 0), "note": v.get("note", ""),
                           "branch": v.get("branch", ""), "commit": v.get("commit", ""),
@@ -1052,6 +1200,7 @@ class Chain:
             "external_auto": s["external_auto"],
             "releases": {v: {k: r.get(k) for k in ("state", "task", "commit", "at", "reason", "proof")}
                          for v, r in sorted(s["releases"].items(), key=lambda kv: kv[1].get("ts", 0))[-10:]},
+            "release_stand": {k: v for k, v in (s.get("stand") or {}).items() if k not in ("since_ts", "ts")},
             "release_off": bool(self.plan["release"]) and bool(self.release_off()),
             "alerts": dict(sorted(s["alerts"].items())),
             "taken_over": s["taken_over"][-10:],
@@ -1164,6 +1313,12 @@ def build_parser():
     rl.add_argument("--id", required=True)
     rl.add_argument("--gate-log", required=True)
     sub.add_parser("verify").add_argument("version", nargs="?")
+    sd = sub.add_parser("stand")
+    sd.add_argument("--json", action="store_true")
+    pf = sub.add_parser("proof")
+    pf.add_argument("version")
+    pf.add_argument("path")
+    pf.add_argument("pattern")
     return ap
 
 
@@ -1243,6 +1398,16 @@ def main(argv=None, out=print, api=None, clock=None):
             elif a.cmd == "verify":
                 for r in ch.verify(a.version):
                     out("v%s: %s%s" % (r["version"], r["state"], " (%s)" % r["reason"] if r.get("reason") else ""))
+            elif a.cmd == "stand":
+                if not plan["release"]:
+                    raise ChainError("no release block in the plan")
+                stand = ch.release_stand()
+                out(json.dumps({k: v for k, v in stand.items() if k not in ("since_ts", "ts")}, indent=1, sort_keys=True)
+                    if a.json else "%s [%s]" % (stand.get("line", ""), stand.get("level")))
+            elif a.cmd == "proof":
+                ok, why = ch.proof(a.version, a.path, a.pattern)
+                out(why)
+                return 0 if ok else 1
             elif a.cmd == "check":
                 for tid, outcome in ch.check():
                     out("%s: %s" % (tid, outcome))

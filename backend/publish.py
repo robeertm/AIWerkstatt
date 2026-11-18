@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import io
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -214,8 +215,24 @@ def publish_project(pid: str, project_name: str, repo: str, private: bool) -> di
     return {"full_name": full, "html_url": html, "visibility": vis}
 
 
-def release_project(pid: str, version: str, notes: str) -> dict:
-    """Create a GitHub release/tag on the project's already-published repo."""
+_COMMIT_FULL = re.compile(r"^[0-9a-f]{40}$")
+
+
+def release_payload(tag: str, notes: str, commit: str = "") -> dict:
+    """Request body of a GitHub release. With ``commit`` (the full SHA a check ran for) the tag is created on exactly
+    that commit and never on whatever the default branch points to by the time the call arrives: a check result is
+    valid for one commit."""
+    body = {"tag_name": tag, "name": tag, "body": notes or "", "draft": False, "prerelease": False}
+    commit = (commit or "").strip().lower()
+    if commit:
+        if not _COMMIT_FULL.match(commit):
+            raise ValueError("The commit must be a full 40-character SHA.")
+        body["target_commitish"] = commit
+    return body
+
+
+def release_project(pid: str, version: str, notes: str, commit: str = "") -> dict:
+    """Create a GitHub release/tag on the project's already-published repo (on ``commit`` if given)."""
     import db
     meta = db.query_one("SELECT * FROM pubmeta WHERE project_id=?", (pid,))
     if not meta or not meta["repo"]:
@@ -231,8 +248,7 @@ def release_project(pid: str, version: str, notes: str) -> dict:
         tag = "v" + tag
     r = requests.post("%s/repos/%s/%s/releases" % (API, login, meta["repo"]),
                       headers=_headers(token), timeout=20,
-                      json={"tag_name": tag, "name": tag, "body": notes or "",
-                            "draft": False, "prerelease": False})
+                      json=release_payload(tag, notes, commit))
     if r.status_code not in (200, 201):
         msg = ""
         try:

@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import sys
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -354,6 +355,9 @@ class GateBase(Base):
         ch = self.make(plan(tasks, release=self.rel(), **kw))
         ch.evidence = lambda repo, image, ver: dict(self.proof)
         ch.main_state = lambda: self.main
+        self.tags, self.unreleased = ("1.2.2", "f" * 40, True), False
+        ch.tags = lambda: self.tags
+        ch.changelog = lambda: self.unreleased
         return ch
 
     def log(self, text=GATE_OK, name="gate.log", age_h=0):
@@ -431,7 +435,8 @@ class Release(GateBase):
         rc, text = self.ch.release("a", self.log())
         self.assertEqual(rc, 0, text)
         with open(self.req()) as f:
-            self.assertEqual(json.load(f), {"mode": "release", "by": "chain", "gate": "green", "gate_log": "gate.log"})
+            self.assertEqual(json.load(f), {"mode": "release", "by": "chain", "gate": "green", "gate_log": "gate.log",
+                              "commit": self.main[1]})                      # the broker tags exactly this commit
         self.assertEqual([n for n in os.listdir(self.q)], ["app.req"])        # no temp leftovers
         rc, text = self.ch.release("a", "gate.log")
         self.assertEqual(rc, 0)
@@ -564,6 +569,152 @@ class Release(GateBase):
         chain.validate_result({"id": "a", "tests": "green", "gate": "green", "release": "held"}, "a")
         with self.assertRaises(chain.ChainError):
             chain.validate_result({"id": "a", "tests": "green", "gate": "green", "release": "yes"}, "a")
+
+
+class ReleaseStand(GateBase):
+    def setUp(self):
+        super().setUp()
+        self.ch = self.chain()
+
+    def test_published_main_is_ok(self):
+        self.tags = ("1.2.3", "a" * 40, True)
+        st = self.ch.release_stand()
+        self.assertEqual((st["level"], st["unpublished"]), ("ok", False))
+        self.assertNotIn("stand", self.ch.status()["alerts"])
+
+    def test_unpublished_gets_stale_then_critical_with_one_alert(self):
+        self.assertEqual(self.ch.release_stand()["level"], "open")          # main 1.2.3, newest tag 1.2.2
+        self.clock.t += 2 * 3600 + 1
+        self.assertEqual(self.ch.release_stand()["level"], "stale")
+        self.ch.check()
+        self.assertTrue(any("release stand" in h for h in self.ch.hints))
+        self.assertNotIn("stand", self.ch.status()["alerts"])
+        self.clock.t += 4 * 3600
+        st = self.ch.release_stand()
+        self.assertEqual((st["level"], st["age_h"] >= 6), ("critical", True))
+        self.assertIn("stand", self.ch.status()["alerts"])
+        self.assertEqual(self.ch.status()["release_stand"]["level"], "critical")
+
+    def test_clock_restarts_after_a_new_tag_and_alert_clears_when_published(self):
+        self.ch.release_stand()
+        self.clock.t += 7 * 3600
+        self.assertEqual(self.ch.release_stand()["level"], "critical")
+        self.tags = ("1.2.3", "a" * 40, True)
+        self.assertEqual(self.ch.release_stand()["level"], "ok")
+        self.assertNotIn("stand", self.ch.status()["alerts"])
+        self.main = ("1.3.0", "b" * 40)
+        self.assertEqual(self.ch.release_stand()["age_h"], 0.0)             # a new stretch starts at zero
+
+    def test_unreleased_changelog_entries_count_as_unpublished(self):
+        self.tags = ("1.2.3", "a" * 40, True)
+        self.unreleased = True
+        st = self.ch.release_stand()
+        self.assertEqual((st["level"], st["unreleased_entries"]), ("open", True))
+
+    def test_unreadable_is_unknown_not_ok(self):
+        self.tags = (None, None, False)
+        self.assertEqual(self.ch.release_stand()["level"], "unknown")
+
+    def test_changelog_unreleased_parser(self):
+        ch = self.ch
+        for text, want in (("# C\n\n## [Unreleased]\n- a\n\n## 1.0.0\n- b\n", True),
+                           ("# C\n\n## Unreleased\n\n## 1.0.0\n- b\n", False),
+                           ("# C\n\n## 1.0.0\n- b\n", False)):
+            ch2 = self.make(plan([{"id": "a", "track": "x"}], release=self.rel()))
+            ch2._git_show = lambda ref, path, t=text: t
+            self.assertEqual(ch2._changelog(), want)
+
+    def test_thresholds_are_validated(self):
+        with self.assertRaises(chain.ChainError):
+            chain.validate_plan(plan([{"id": "a", "track": "x"}], release=self.rel(stale_after_h=5, alert_after_h=1)))
+        with self.assertRaises(chain.ChainError):
+            chain.validate_plan(plan([{"id": "a", "track": "x"}], release=self.rel(stale_after_h=0)))
+
+    def test_release_task_waits_for_release_until_published(self):
+        ch = self.chain()
+        ch.fill()
+        ch.ingest("a", self.result("a"))
+        self.assertEqual(ch.status()["tasks"]["a"]["state"], "waiting_for_release")   # built, not published
+        self.assertEqual(ch.fill(), [])
+        ch.release("a", self.log())
+        self.proof = dict(PROOF)
+        ch.verify("1.2.3")
+        self.assertEqual(ch.status()["tasks"]["a"]["state"], "done")
+        self.assertEqual(ch.fill(), ["b"])
+
+    def test_gate_result_is_bound_to_the_commit_not_to_a_48_hour_clock(self):
+        ch = self.chain()
+        ch.fill()
+        ch.ingest("a", self.result("a"))
+        self.assertEqual(ch.release("a", self.log(age_h=100))[0], 0)                # 100 h old, same commit: valid
+        os.remove(self.req())
+        self.main = ("1.2.3", "9" * 40)
+        self.assertEqual(ch.release("a", self.log(age_h=1))[0], 1)                  # main moved: gate must run again
+
+    def test_short_main_commit_is_refused(self):
+        ch = self.chain()
+        ch.fill()
+        ch.ingest("a", self.result("a"))
+        self.main = ("1.2.3", "abc1234d")
+        self.assertEqual(ch.release("a", self.log())[0], 1)
+
+    def test_prompt_of_other_tasks_says_no_own_gate(self):
+        ch = self.chain()
+        ch.fill()
+        self.assertNotIn("Unreleased", ch._request(ch.plan["tasks"]["a"]))
+        self.assertIn("Unreleased", ch._request(ch.plan["tasks"]["b"]))
+
+    def test_proof_reads_the_published_tag(self):
+        ch = self.chain()
+        ch._git_show = lambda ref, path: "def fix():\n    return 1\n" if ref == "v1.2.3" else None
+        self.assertTrue(ch.proof("1.2.3", "src/x.py", r"def fix")[0])
+        self.assertFalse(ch.proof("1.2.3", "src/x.py", r"def other")[0])
+        self.assertFalse(ch.proof("1.2.4", "src/x.py", r"def fix")[0])             # no such tag
+        self.assertFalse(ch.proof("1.2.3", "../etc/passwd", "x")[0])
+        self.assertFalse(ch.proof("1.2.3", "/abs", "x")[0])
+        self.assertFalse(ch.proof("1.2.3", "a", "(")[0])
+        self.assertFalse(ch.proof("v1", "a", "x")[0])
+
+
+class ReleaseStandGit(GateBase):
+    """The same against a real git clone (tags, CHANGELOG, tag content)."""
+    def git(self, *a):
+        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
+                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
+        return subprocess.run(["git", "-C", self.repo] + list(a), capture_output=True, text=True, env=env, check=True)
+
+    def setUp(self):
+        super().setUp()
+        self.origin = os.path.join(self.root, "origin.git")
+        self.repo = os.path.join(self.root, "clone")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", self.origin], check=True)
+        subprocess.run(["git", "clone", "-q", self.origin, self.repo], check=True, capture_output=True)
+        self.commit_file("VERSION", "1.0.0\n", "one")
+        self.git("tag", "v1.0.0")
+        self.git("push", "-q", "origin", "main", "--tags")
+        self.ch = self.make(plan([{"id": "a", "track": "x"}], release=self.rel(clone=self.repo)))
+
+    def commit_file(self, name, text, msg):
+        with open(os.path.join(self.repo, name), "w") as f:
+            f.write(text)
+        self.git("add", name)
+        self.git("commit", "-q", "-m", msg)
+
+    def test_stand_and_proof(self):
+        self.assertEqual(self.ch.release_stand()["level"], "ok")
+        self.commit_file("CHANGELOG.md", "# C\n\n## [Unreleased]\n- fix\n", "log")
+        self.git("push", "-q", "origin", "main")
+        self.assertEqual(self.ch.release_stand()["level"], "open")           # unreleased entry
+        self.commit_file("VERSION", "1.1.0\n", "two")
+        self.git("push", "-q", "origin", "main")
+        st = self.ch.release_stand()
+        self.assertEqual((st["main_version"], st["published"], st["level"]), ("1.1.0", "1.0.0", "open"))
+        # the evidence is on main but not in the tag: do not announce it
+        self.assertFalse(self.ch.proof("1.0.0", "CHANGELOG.md", "fix")[0])
+        self.git("tag", "v1.1.0")
+        self.git("push", "-q", "origin", "--tags")
+        self.assertTrue(self.ch.proof("1.1.0", "CHANGELOG.md", "- fix")[0])
+        self.assertEqual(self.ch.release_stand()["published"], "1.1.0")
 
 
 class ExternalRelease(GateBase):
