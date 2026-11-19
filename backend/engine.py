@@ -251,6 +251,13 @@ def create_comment(project, thread_id, text, author, model=None, effort=None, or
                      req_model=req_m, req_effort=req_e)
 
 
+def thread_is_open(thread_id):
+    """True while the thread still has work that could run (queued, running, retrying, waiting,
+    or failed without a final error). A finished or stopped task is not open."""
+    return bool(db.query_one("SELECT 1 FROM tasks WHERE thread_id=? AND " + _STOPPABLE,
+                             (thread_id,)))
+
+
 def enqueue_compact(project, thread_id):
     _drop_descriptor(int(time.time()), project, thread_id, "compact", "")
 

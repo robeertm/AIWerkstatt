@@ -134,7 +134,7 @@ def provider_connected(provider_id):
 # for any other profile. Kill switch: a file <DATA>/service-token-disabled/<name> makes the
 # token answer 401 immediately, without a restart.
 
-TOKEN_PROFILES = ("restricted", "coordinator", "reporter", "chain")
+TOKEN_PROFILES = ("restricted", "coordinator", "reporter", "chain", "peer")
 DISABLED_DIR = os.path.join(config.DATA, "service-token-disabled")
 _TOKEN_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")

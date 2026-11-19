@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.28.0 — 2026-11-19
+### Added — notes between parallel tasks (token profile `peer`)
+- **New token profile `peer`** (`service_token.py create <name> --profile peer`): its only route is
+  `POST /api/threads/<id>/peer-note` with `{"from": <own thread id>, "text": "<1-4000 chars>"}`. Allowed only between two
+  different **open** tasks (queued, running, retrying or waiting); a restricted (review-gated) receiver answers 409, so a
+  note cannot slip past the review gate. The text is delivered as a follow-up prefixed with `↳ from #<id>:`. No stopping, no
+  queue priority, no task creation, no attachments; every other route answers 401 for this profile.
+- **Limits and trail:** own hourly limit `AIWERKSTATT_PEER_RATE` (default 30; 0 or junk falls back to 30), kill switch and
+  audit log like every token, plus an append-only `<data>/peer-notes.jsonl` (sender, receiver, size; never the text).
+- Tests: `backend/tests/test_peer_note.py`. Docs: README and `docs/security.md`.
+
 ## 0.27.0 — 2026-11-18
 ### Added — stop with a reason for the coordinator, and the plan survives a resume
 - **Stop with a reason** (`POST /api/coordinator/threads/<id>/stop`): body `{"reason": "<4-500 chars, required>",

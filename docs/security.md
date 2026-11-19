@@ -166,6 +166,14 @@ required (400 without), an unknown replacement answers 404. The thread gets a no
 stop is appended to `<data>/coordinator-stops.jsonl`. No other token profile can use the route; the plain
 stop route stays sign-in only.
 
+**Peer notes.** A token of the `peer` profile can do exactly one thing: `POST /api/threads/<id>/peer-note`
+with `{"from": <own thread id>, "text": "<1-4000 characters>"}`. Both threads must be open (queued, running,
+retrying or waiting), different from each other, and the receiver must not be a restricted (review-gated) task
+(409 otherwise); no attachments. The receiver gets the text as a follow-up prefixed with `↳ from #<id>:`. It
+never stops a task, never moves one up the queue and never creates one. Own limit `AIWERKSTATT_PEER_RATE`
+(default 30 per hour, 0 or junk falls back to 30). Each note appends sender, receiver and size (never the text)
+to `<data>/peer-notes.jsonl`, and the audit log records the call like any token call.
+
 **Origin.** A task created with a token carries `origin = "api:<token name>"`, set on the
 server from the verified token and never from the request body. Follow-ups record the
 sending token too. The task list and the task view show it as a **via &lt;name&gt;** badge.

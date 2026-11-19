@@ -192,6 +192,10 @@ set of endpoints. Each token has a **profile**:
 - **coordinator**: for a trusted orchestrator. List and view projects, create tasks, send
   follow-ups and read task status and history in every project; its tasks run and deploy
   like those of a signed-in user. Writes are rate limited (30 per hour by default).
+- **peer**: for parallel agents that hand each other a note. One route only: a note from
+  one open task to a different open task (`POST /api/threads/<id>/peer-note`). It cannot
+  create, stop, read or reprioritise anything. Own rate limit (`AIWERKSTATT_PEER_RATE`,
+  30 per hour by default).
 - **reporter**: for a service that files tasks on behalf of explicitly trusted reporters
   (for example an issue triage). It can only create a task in one fixed intake project
   (`AIWERKSTATT_REPORTER_PROJECT`; unset means every create is refused), and read and

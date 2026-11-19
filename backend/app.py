@@ -67,14 +67,20 @@ API_ENDPOINTS = {
     # standard models only, no attachments; reads and follows up on its own tasks only.
     # Unset project or prefix = always 403. Own write rate limit. No other route.
     "chain": frozenset({"thread_create", "thread_get", "thread_comment"}),
+    # peer: for parallel agents that hand each other a note. One route only (thread_peer_note):
+    # a note from one OPEN task to a different OPEN task. No create, no stop, no read.
+    "peer": frozenset({"thread_peer_note"}),
 }
 API_WRITES = {"coordinator": frozenset({"thread_create", "thread_comment"}),
               "reporter": frozenset({"thread_create", "thread_comment"}),
-              "chain": frozenset({"thread_create", "thread_comment"})}
+              "chain": frozenset({"thread_create", "thread_comment"}),
+              "peer": frozenset({"thread_peer_note"})}
 API_BLOCKLIST = {s.strip() for s in os.environ.get("AIWERKSTATT_API_BLOCKLIST", "").split(",") if s.strip()}
 WRITE_LIMIT = service_token.WriteLimiter()
 REPORTER_LIMIT = service_token.WriteLimiter(service_token.reporter_rate())
 CHAIN_LIMIT = service_token.WriteLimiter(service_token.chain_rate())
+PEER_LIMIT = service_token.WriteLimiter(service_token.peer_rate())
+PEER_NOTE_MAX = 4000
 
 
 @app.before_request
@@ -93,7 +99,7 @@ def _service_token_gate():
     if tok["disabled"] or request.endpoint not in API_ENDPOINTS.get(tok["profile"], ()):
         return None   # the route itself answers 401: a token is no user here
     if request.endpoint in API_WRITES.get(tok["profile"], ()):
-        limiter = {"reporter": REPORTER_LIMIT, "chain": CHAIN_LIMIT}.get(tok["profile"], WRITE_LIMIT)
+        limiter = {"reporter": REPORTER_LIMIT, "chain": CHAIN_LIMIT, "peer": PEER_LIMIT}.get(tok["profile"], WRITE_LIMIT)
         ok, retry = limiter.allow(tok["name"])
         if not ok:
             resp = jsonify(error="Too many requests from this service token. Try again later.")
@@ -716,6 +722,46 @@ def thread_stop_coordinator(tid):
     service_token.stop_log({"at": store.now(), "thread": tid, "project": th["project_id"],
                             "by": u["name"], "reason": reason, "replacement": repl})
     return jsonify(ok=True, thread=tid, replacement=repl), 202
+
+
+@app.post("/api/threads/<int:tid>/peer-note")
+@login_required
+def thread_peer_note(tid):
+    """A note from one open task to ANOTHER open task. Only for the "peer" token profile.
+    Body {"from": <own thread id>, "text": "..."}.
+    The receiver gets the text prefixed with "from #<id>:". It never stops anything, never moves
+    a task up the queue, never creates a task and takes no attachments. Targets that wait for a
+    review decision are refused (409): a note must not slip past the review gate."""
+    u = current_user()
+    if not (u and u.get("api") and u.get("profile") == "peer"):
+        return jsonify(error="Peer notes need a peer token."), 403
+    d = request.get_json(force=True, silent=True) or {}
+    src = d.get("from")
+    if isinstance(src, bool) or not isinstance(src, (int, str)) or not str(src).lstrip("#").isdigit():
+        return jsonify(error="from must be the sending thread id."), 400
+    src = int(str(src).lstrip("#"))
+    text = d.get("text")
+    text = text.strip() if isinstance(text, str) else ""
+    if not text or len(text) > PEER_NOTE_MAX:
+        return jsonify(error="text of 1 to %d characters is required." % PEER_NOTE_MAX), 400
+    if d.get("files") or d.get("attachments") or d.get("attachment"):
+        return jsonify(error="No attachments in peer notes."), 400
+    if src == tid:
+        return jsonify(error="A task cannot send a note to itself."), 400
+    th = db.query_one("SELECT project_id FROM threads WHERE id=?", (tid,))
+    sender = db.query_one("SELECT project_id FROM threads WHERE id=?", (src,))
+    if not th or not sender:
+        abort(404)
+    if not (engine.thread_is_open(src) and engine.thread_is_open(tid)):
+        return jsonify(error="Sender and receiver must both be open tasks."), 409
+    if engine.get_review(tid):
+        return jsonify(error="The receiving task is restricted (review gate)."), 409
+    note = "\u21b3 from #%d: %s" % (src, text)
+    engine.create_comment(engine.get_project(th["project_id"]), tid, note, current_user()["name"],
+                          origin=_origin())
+    service_token.peer_log({"at": store.now(), "token": u["name"], "from": src, "to": tid,
+                            "project": th["project_id"], "chars": len(text)})
+    return jsonify(ok=True, thread=tid, **{"from": src}), 201
 
 
 @app.post("/api/threads/<int:tid>/seen")

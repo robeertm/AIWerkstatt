@@ -53,6 +53,7 @@ def audit(entry):
 
 
 STOP_LOG = os.path.join(config.DATA, "coordinator-stops.jsonl")
+PEER_LOG = os.path.join(config.DATA, "peer-notes.jsonl")
 
 
 def stop_log(entry):
@@ -85,6 +86,31 @@ def reporter_rate():
     except ValueError:
         return 8
     return v if v > 0 else 8
+
+
+def peer_rate():
+    """Hourly write limit of a "peer" token (AIWERKSTATT_PEER_RATE, default 30). 0 or junk
+    never means unlimited: a bad value falls back to 30."""
+    try:
+        v = int(os.environ.get("AIWERKSTATT_PEER_RATE", "30"))
+    except ValueError:
+        return 30
+    return v if v > 0 else 30
+
+
+def peer_log(entry):
+    """Append one peer note (from, to, size; never the text) to an append-only JSONL file."""
+    line = json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
+    try:
+        with _audit_lock:
+            os.makedirs(os.path.dirname(PEER_LOG), exist_ok=True)
+            fd = os.open(PEER_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(fd, line.encode("utf-8"))
+            finally:
+                os.close(fd)
+    except OSError as e:
+        print("peer log write failed: %s" % e, file=sys.stderr)
 
 
 def chain_rate():
