@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.30.0 — 2026-11-20
+### Added — result store "green stays green" (`scripts/test-runner/`)
+- **`result_store.py`**: a per-test result store (SQLite, standard library only). Results are keyed by project, environment and
+  test id and carry commit, outcome, duration, run id and attempt kind. A green result is reused when nothing it depends on
+  changed: same commit; test-side-only changes (except changed test files and importers of a changed helper; `conftest.py`
+  never invalidates others); app-side changes rerun the affected test files via a pluggable `--selector` command (prints
+  test files or `FULL`) or, by default, transitive Python imports (non-Python app files rerun everything). Results older than 7
+  days, red, aborted and never-run tests always run. Every result is committed at once, so an aborted run resumes with
+  `--deselect`. Flaky tests (red, then green in a serial retry) are stored green plus a row in the `flaky` table. Includes the
+  JUnit and `pytest -v` parsers, target collapsing, a nightly `report` and a CLI (`ingest`, `plan`, `status`, `flaky`, `report`).
+- **`remote_test.py --only-needed`** (opt-in, default off): for a full-suite request, runs only the needed targets, records
+  streamed results, retries red tests serially up to twice and prints a summary with reused and new counts.
+- Tests: `scripts/test-runner/test_result_store.py` and new cases in `test_remote_test.py`. Docs: `docs/test-runner.md`.
+
 ## 0.29.0 — 2026-11-20
 ### Added — reading proof (opt-in)
 - **Reading list + proof line.** With `AIW_READING_PROOF=1` (default off - nothing changes for existing installations) the first

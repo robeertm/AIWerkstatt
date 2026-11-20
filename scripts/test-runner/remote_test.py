@@ -4,7 +4,7 @@ wait lock since 0.24.0).
 
     remote_test.py <repo-path> --profile NAME --mode NAME [--commit REF] [-n N] [--extra <repo-path>[@REF]]
                    [--extra-path sub/dir] [--env K=V] [--pins a==1,b==2] [--junit FILE]
-                   [--quiet-build] [-- test-runner-arguments ...]
+                   [--quiet-build] [--only-needed [--selector CMD] [--tests-dir DIR]] [-- test-runner-arguments ...]
     remote_test.py --status                  # state of the runner (load, CPU, running tests) as JSON
     remote_test.py --available               # exit 0 = runner reachable and set up
     remote_test.py --collect [--once]        # collector: status.json + one jsonl per day (14 days)
@@ -24,6 +24,10 @@ What happens:
      the test run. If the connection drops, the run keeps going over there and the result is fetched afterwards.
   4. A protocol per run (duration, build/test time, load and CPU of the runner, unhealthy containers before/during/after)
      is written to the log folder.
+
+--only-needed (opt-in, 0.30.0): for a full-suite request (no test-runner arguments) the result store (result_store.py)
+decides what has to run: green results of unchanged code are reused, red/affected/never-run tests run, red tests are retried
+serially (n=1) up to twice, and a pytest-style summary line counts reused + new tests.
 
 Exit 100 = runner really gone or broken (not set up, unreachable at start, 3 status requests in a row unanswered while
 waiting), request refused (for example an argument outside the allow list), a fault of the runner instead of the code, or
@@ -357,6 +361,9 @@ def version_of(repo, commit):
     return v if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?", v) else ""
 
 
+LINE_HOOK = None                 # set by execute_only_needed() while a run is streamed
+
+
 class Run:
     def __init__(self, args, protocol):
         self.args = args
@@ -367,6 +374,7 @@ class Run:
         self.error = None
         self.started = None              # time of the first line after the slot was granted
         self.on_start = None
+        self.on_line = LINE_HOOK         # optional callback for every plain output line (--only-needed)
 
     def _started(self):
         if self.started is None:
@@ -407,6 +415,11 @@ class Run:
         self.protocol.write(z + "\n")
         sys.stdout.write(z + "\n")
         sys.stdout.flush()
+        if self.on_line:
+            try:
+                self.on_line(z)
+            except Exception as ex:  # noqa: BLE001 - recording must never break a run
+                info("result store: %s" % ex)
 
 
 def read_stream(run, cmd, stdin=None, skip=0):
@@ -662,6 +675,101 @@ def execute(a):
         shutil.rmtree(work, ignore_errors=True)        # only our own run folder
 
 
+def execute_only_needed(a):
+    """Full suite through the result store: plan -> run only what is needed -> record every result at once -> retry red
+    tests serially (at most twice) -> summary. Returns the exit code like execute()."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import result_store as rs
+    repo = os.path.abspath(a.repo)
+    commit = commit_of(repo, a.commit)
+    project = repo_name(repo)
+    env_name = "%s/%s" % (a.profile, a.mode) + "".join("+%s" % e for e in sorted(a.env or []))
+    store = rs.Store(project)
+    run_id = "on-%s-%s" % (datetime.datetime.now().strftime("%m%d%H%M%S"), secrets.token_hex(3))
+    files = rs.list_test_files(repo, commit, a.tests_dir)
+    deps = rs.Dependencies(repo, commit, tests_dir=a.tests_dir, selector=a.selector)
+    plan = rs.plan(store, env_name, commit, files, deps)
+    reused = len(plan.green)
+    t0 = time.time()
+    store.run_begin(run_id, env_name, commit, {"reused": reused})
+    info("result store: %d results reused, %d whole files + %d single tests to run" % (reused, len(plan.whole), len(plan.single)))
+
+    def counts():
+        rows = store.run_results(run_id, env_name).values()
+        out = {"passed": 0, "failed": 0, "error": 0, "skipped": 0}
+        for r in rows:
+            out[r["outcome"]] += 1
+        return out, [r["test_id"] for r in rows if r["outcome"] in rs.RED]
+
+    def attempt(args, n, kind, number, whole):
+        global LINE_HOOK
+        fd, junit = tempfile.mkstemp(prefix="junit-", suffix=".xml", dir=WORK if os.path.isdir(WORK) else None)
+        os.close(fd)
+        b = argparse.Namespace(**vars(a))
+        b.runner_args, b.n, b.junit = list(args) + ["-vv"], n, junit
+
+        def hook(line):
+            parsed = rs.output_line(line)
+            if parsed:
+                store.record(env_name, parsed[0], parsed[1], commit, run_id, kind=kind, attempt=number)
+        LINE_HOOK = hook
+        try:
+            rc = execute(b)
+        finally:
+            LINE_HOOK = None
+        try:
+            if rc in (0, 1) and os.path.getsize(junit) > 0:
+                if a.junit and number == 0:
+                    shutil.copyfile(junit, a.junit)
+                store.ingest_junit(junit, env_name, commit, run_id, files, whole_files=whole, kind=kind, attempt=number)
+        except (OSError, ValueError, rs.ET.ParseError) as ex:
+            info("result store: report not usable (%s)" % ex)
+        finally:
+            try:
+                os.remove(junit)
+            except OSError:
+                pass
+        return rc
+
+    rc = 0
+    try:
+        if not plan.empty:
+            targets = plan.targets()
+            # files with --deselect entries ran incompletely: their test list must not be learned from this run
+            partial = {t.split("::")[0] for t in plan.deselect}
+            args = targets + plan.deselect_args(targets)
+            rc = attempt(args, a.n, "parallel", 0, [f for f in plan.whole if f not in partial])
+            for number in (1, 2):
+                if rc not in (0, 1):
+                    break
+                red = counts()[1]
+                if not red:
+                    break
+                info("result store: retrying %d red test(s) serially (attempt %d of 2)" % (len(red), number))
+                again = rs.Plan(env_name, commit)
+                again.single = red
+                rc = attempt(again.targets(), 1, "serial", number, [])
+        done, red = counts()
+        flaky = len(store.flaky_since(t0 - 1, env_name))
+        if rc not in (0, 1):
+            store.run_end(run_id, "aborted", {"reused": reused})
+            return rc
+        final = 1 if red else 0
+        new = done["passed"] + done["skipped"]
+        line = "%d passed (%d reused, %d new)" % (reused + new, reused, new)
+        if done["failed"] + done["error"]:
+            line = "%d failed, %s" % (done["failed"] + done["error"], line)
+        if flaky:
+            line += ", %d flaky (red, then green serially)" % flaky
+        sys.stdout.write("=== %s in %.1fs ===\n" % (line, time.time() - t0))
+        sys.stdout.flush()
+        store.run_end(run_id, "red" if red else "green", {"new": new, "reused": reused, "flaky": flaky, "red": len(red),
+                                                           "duration_s": int(time.time() - t0)})
+        return final
+    finally:
+        store.close()
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     runner_args = []
@@ -682,6 +790,10 @@ def main(argv=None):
     p.add_argument("--wait-max-min", type=int, default=None,
                    help="no effect since 0.24.0 (queue without deadline), only accepted for old callers")
     p.add_argument("--quiet-build", action="store_true", help="build lines only into the protocol")
+    p.add_argument("--only-needed", action="store_true",
+                   help="full suite only: reuse green results of unchanged code (result_store.py), run the rest, retry red serially")
+    p.add_argument("--selector", help="with --only-needed: command that gets changed app files and prints test files or FULL")
+    p.add_argument("--tests-dir", default="tests", help="with --only-needed: folder with the test files")
     p.add_argument("--status", action="store_true")
     p.add_argument("--available", action="store_true")
     p.add_argument("--collect", action="store_true", help="collector for the load (run it as a service)")
@@ -702,6 +814,11 @@ def main(argv=None):
         p.error("repo, --profile and --mode are required")
     if a.wait_max_min is not None:
         info("--wait-max-min has no effect (since 0.24.0: queue without deadline, never local because of waiting)")
+    if a.only_needed:
+        if runner_args:
+            info("--only-needed applies to full-suite requests only (no arguments after --) - running normally")
+        else:
+            return execute_only_needed(a)
     return execute(a)
 
 

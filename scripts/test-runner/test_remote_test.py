@@ -938,6 +938,118 @@ class StatusCommand(Base):
             fh.close()
 
 
+NEEDED_DOCKER_STUB = '''import base64, json, os, sys
+a = sys.argv[1:]
+with open(os.environ["ATT_LOG"], "a") as f:
+    f.write(json.dumps(a) + "\\n")
+c = a[0] if a else ""
+if c == "ps":
+    sys.exit(0)
+if c == "image":
+    if "--format" in a:
+        print("sha256:abc")
+        sys.exit(0)
+    sys.exit(1)
+if c == "build":
+    print("Successfully built abc")
+    sys.exit(0)
+if c in ("tag", "rmi", "images", "stop"):
+    sys.exit(0)
+if c == "run":
+    rest = a[a.index("pytest") + 1:]
+    xdist = "-n" in rest
+    spec = json.loads(os.environ["ATT_SPEC"])
+    red = set(json.loads(os.environ.get("ATT_RED", "[]")))
+    flaky = set(json.loads(os.environ.get("ATT_FLAKY", "[]")))
+    deselect = {x.split("=", 1)[1] for x in rest if x.startswith("--deselect=")}
+    targets = [x for x in rest if x.startswith("tests")]
+    ids = []
+    for t in targets:
+        if "::" in t:
+            ids.append(t)
+        else:
+            ids += ["%s::%s" % (t, n) for n in spec[t]]
+    ids = [i for i in ids if i not in deselect]
+    cases, rc = [], 0
+    for k, i in enumerate(ids):
+        bad = i in red and not (i in flaky and not xdist)
+        rc = 1 if bad else rc
+        word = "FAILED" if bad else "PASSED"
+        pct = (k + 1) * 100 // len(ids)
+        print(("[gw0] [%3d%%] %s %s" % (pct, word, i)) if xdist else ("%s %s  [%3d%%]" % (i, word, pct)))
+        f, n = i.split("::", 1)
+        cases.append('<testcase classname="%s" name="%s" time="0.1">%s</testcase>' % (
+            f[:-3].replace("/", "."), n, '<failure message="boom">x</failure>' if bad else ""))
+    xml = "<testsuite>%s</testsuite>" % "".join(cases)
+    print("done")
+    print("\\x1eRTR-JUNIT-BEGIN")
+    print(base64.b64encode(xml.encode()).decode())
+    print("\\x1eRTR-JUNIT-END")
+    print("\\x1eRTR-RC %d" % rc)
+    sys.exit(rc)
+sys.exit(0)
+'''
+
+
+class OnlyNeeded(Base):
+    """--only-needed: plan through the result store, retry red tests serially, summary with reused + new."""
+
+    def setUp(self):
+        super().setUp()
+        with open(self.docker, "w") as fh:
+            fh.write(NEEDED_DOCKER_STUB)
+        self.store_dir = os.path.join(self.tmp, "results")
+        self.env[ "AIWERKSTATT_RESULT_STORE_DIR"] = self.store_dir
+        for rel, text in (("tests/test_a.py", "def test_one(): pass\n"), ("tests/test_b.py", "def test_two(): pass\n"),
+                          ("app/mod.py", "X = 1\n")):
+            p = os.path.join(self.repo, rel)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as fh:
+                fh.write(text)
+        self.commit("tests")
+        self.env["ATT_SPEC"] = json.dumps({"tests/test_a.py": ["test_one"], "tests/test_b.py": ["test_two"]})
+
+    def commit(self, msg):
+        for cmd in (["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q",
+                                    "-m", msg]):
+            subprocess.run(["git", "-C", self.repo] + cmd, check=True, capture_output=True)
+
+    def run_args(self):
+        return [a for a in self.docker_calls() if a and a[0] == "run"]
+
+    def test_flaky_then_green_reused_next_time(self):
+        red = json.dumps(["tests/test_b.py::test_two"])
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--only-needed", "--quiet-build",
+                        ATT_RED=red, ATT_FLAKY=red)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("2 passed (0 reused, 2 new), 1 flaky", p.stdout)
+        runs = self.run_args()
+        self.assertEqual(len(runs), 2)                                   # parallel run + one serial retry
+        self.assertIn("-vv", runs[0])
+        self.assertIn("-n", runs[0])
+        self.assertNotIn("-n", runs[1])
+        self.assertIn("tests/test_b.py::test_two", runs[1])
+        # second request on the same commit: everything is reused, nothing runs
+        before = len(self.run_args())
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--only-needed", "--quiet-build")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("2 passed (2 reused, 0 new)", p.stdout)
+        self.assertEqual(len(self.run_args()), before)
+
+    def test_stably_red_retried_twice_and_fails(self):
+        red = json.dumps(["tests/test_b.py::test_two"])
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--only-needed", "--quiet-build", ATT_RED=red)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertEqual(len(self.run_args()), 3)                        # parallel + two serial retries
+        self.assertIn("1 failed, 1 passed (0 reused, 1 new)", p.stdout)
+
+    def test_explicit_arguments_run_normally(self):
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--only-needed", "--quiet-build", "--", "tests/test_a.py")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("running normally", p.stderr)
+        self.assertNotIn("-vv", self.run_args()[0])
+
+
 class Install(unittest.TestCase):
     def test_script_has_no_default_hosts_and_valid_syntax(self):
         path = os.path.join(HERE, "install.sh")

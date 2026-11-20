@@ -10,6 +10,7 @@ nothing unless you configure it. Nothing in it is specific to one host or vendor
 | `remote_test_receiver.py` | test machine | the forced command: `status`, `run`, `result` (Python 3.8+) |
 | `profiles.example.json` | test machine | allow list of profiles, modes, base images and limits |
 | `install.sh` | client | sets up the key, the receiver and the profiles over SSH, then proves the key is restricted |
+| `result_store.py` | client | per-test result store: plan, ingest, flaky, report (used by `--only-needed`) |
 | `remote-test-collector.service` | client | example unit for the load collector |
 
 ## Security model
@@ -140,6 +141,51 @@ folder is not writable, everything runs as before.
 The "Agents at work" card shows the remaining time in bold per slot, below it `phase · phase i/n · tests · then ...`, a slim
 progress bar and "starts in ~X" per waiting order; without the fields it shows nothing extra. Format: "~12 min",
 "~2 h 10 min", "~1 day 4 h", from 48 h "~3 days"; without any history "unknown (first run of this kind)".
+
+## Result store: green stays green (0.30.0)
+
+`result_store.py` keeps one result per test in a small SQLite file (standard library only) so a repeated or resumed run
+only executes what can have changed. A result is stored with the project, the environment (for example `profile/mode`),
+the test id, the commit, the outcome, the duration, the run id and the kind of attempt (`parallel` or `serial`). Storage:
+`$AIWERKSTATT_RESULT_STORE_DIR`, default `~/.local/share/aiwerkstatt-results/<project>.sqlite`.
+
+**How it decides.** A green result is reused only if nothing it depends on changed between its commit and the current one:
+
+- same commit: valid;
+- only files below the tests folder changed: valid, except the changed test files and the tests that import a changed
+  test helper (a changed `conftest.py` invalidates nobody);
+- app-side files changed: the affected test files run again. With `--selector "<command>"` (or
+  `AIWERKSTATT_RESULT_STORE_SELECTOR`) the command gets the changed app files as arguments and prints the affected test
+  files, one per line, or the word `FULL`. Without a selector the default rule follows Python imports transitively; any
+  non-Python app file means everything runs again;
+- results older than 7 days, red, aborted and never-run tests always run. Environments are never mixed.
+
+The test ids of a file are learned from the last run that executed the whole file, so partial collections do not count.
+Every result is committed the moment it is seen, so an aborted run loses nothing; the next plan deselects the tests that are
+already green on the current commit (`--deselect`).
+
+**Flaky tests.** A test that is red in the run and green in the serial retry is stored green and gets a row in the `flaky`
+table. Flakiness is always visible, never silent.
+
+```bash
+python3 result_store.py ingest --project app --env image/full --commit <sha> --run r1 --junit report.xml --repo . --whole
+python3 result_store.py plan   --project app --env image/full --repo . --json [--selector "python3 pick_tests.py"]
+python3 result_store.py status --project app --red
+python3 result_store.py flaky  --project app --hours 24
+python3 result_store.py report --hours 24      # JSON for a nightly summary
+```
+
+**Opt-in in the client.** `remote_test.py <repo> --profile P --mode M --only-needed [--selector CMD] [--tests-dir DIR]`
+plans through the store for a full-suite request (no arguments after `--`; otherwise it runs as usual), sends only the
+needed targets plus `-vv` and the `--deselect` arguments, records results from the streamed `-v` lines and the JUnit report,
+retries red tests serially (`-n 1`) up to twice and prints a pytest-style summary such as
+`=== 2 passed (1 reused, 1 new), 1 flaky (red, then green serially) in 12.0s ===`. Default is off; existing behaviour is
+unchanged.
+
+**Limits.** The dependency rule is conservative and static: dynamic imports, data files read by tests and external services
+are not seen, so use a project selector (or leave the 7-day expiry) where that matters. A changed environment variable or
+base image is not a code change; put such inputs into the environment name. Targets collapse to files when more than 380
+would be sent.
 
 ## Tests
 
