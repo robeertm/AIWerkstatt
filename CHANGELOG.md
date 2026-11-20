@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.31.0 — 2026-11-20
+### Added — branch check: is the work of a "waiting for the release" task really on main? (`scripts/branch-check/`)
+- **`branch_check.py`** (standard library only, read-only): given a clone and the branches/commits a task named in its final
+  answer (`--branch`, `--commit`, or `--text FILE|-` to extract them), it says where the work is: `in_tag` (on main and in the
+  newest `v*` tag), `on_main` (on main, in a release-train branch `origin/*train*` / `origin/release/*`, or the same patch on
+  main under another SHA), `not_pushed` (only local, or only on an unrelated remote branch) or `unclear`. Without a branch the
+  newest resolvable commit counts, so squashed work-in-progress commits do not matter. Exit code 0 in tag/on main, 3 not pushed,
+  2 unclear or error; `--json` for tools. It never merges, pushes or deletes.
+- Why: a task whose work only lives on a local branch that nobody pushed kept reading "built, waiting for the release" for days,
+  and a later release did not contain it. Wire it into the chain or a task rule: a task that waits for a release must name its
+  branch and commit, and the check must find them on main.
+- Tests `scripts/branch-check/test_branch_check.py` (real git in throw-away repositories), CI step, `docs/branch-check.md`.
+
 ## 0.30.0 — 2026-11-20
 ### Added — result store "green stays green" (`scripts/test-runner/`)
 - **`result_store.py`**: a per-test result store (SQLite, standard library only). Results are keyed by project, environment and
