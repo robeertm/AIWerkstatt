@@ -164,6 +164,18 @@ part of it into the first message (a request to "please read" is not reliable). 
 | `AIWERKSTATT_KNOWLEDGE_DIR` | empty (off) | Folder of markdown master documents (path as seen inside the web container). A file is used when its normalised name starts with the project slug, otherwise when its name matches keywords of the order title (at most 2). |
 | `AIWERKSTATT_MEMORY_DIR` | empty (off) | Folder with `MEMORY.md` and `index_<topic>.md` files. `MEMORY.md` is never inserted; the `index_*.md` that best matches the project slug contributes its newest `- [` lines. |
 | `AIW_API_RETRY_DELAYS` | `120,300,900` | Seconds to wait before each retry after an API error; empty turns the retry off. |
+| `AIW_READING_PROOF` | empty (off) | `1` turns on the reading proof (see below). |
+| `AIW_READING_MAX_NUDGES` | `1` | How many follow-ups a missing proof line may trigger before the reply goes out anyway. |
+
+**Reading proof (opt-in, `AIW_READING_PROOF=1`).** A new run's first message then starts with a reading list: the
+matching master document(s), the matching memory topic index and up to four memory notes that match words of the order
+title (title words that appear in most notes do not count). The agent has to end its result with a line
+`READ: <file1>, <file2>, ...`; `READ: none - <reason>` is accepted when no place was listed. Without a valid line (it
+must name at least one listed place) the task stays open and one follow-up asks for it in the same session; after that the
+reply goes out in any case, so nothing is aborted or lost. Pure release-train fixes and test orders only have to read the
+project's master document. The run result carries `reading` (`required`, `entries`, `valid`, `nudges`, `missing`). Off
+by default: nothing changes unless you set it. The listed files can only be opened by the agent if those folders are
+reachable from the runner; the stems are checked by name either way.
 
 Inserted from each document: the head, the three newest dated `##` sections, one pitfalls/gotchas section — each
 with path and line number. The pack is capped at **12000 bytes** (UTF-8) and ends with a pointer to the rest when

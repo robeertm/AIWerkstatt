@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.29.0 — 2026-11-20
+### Added — reading proof (opt-in)
+- **Reading list + proof line.** With `AIW_READING_PROOF=1` (default off - nothing changes for existing installations) the first
+  message of a new run starts with a "Reading duty" section: the master document(s) of the project (`find_docs`), the best
+  matching memory topic index (`find_index`) and up to four memory notes that match key words of the order title (a file name hit
+  counts 3, a hit in the file head 1, weighted by rarity; words found in more than 30 % of the notes do not count). The agent has to
+  end its result with a line `READ: <file1>, <file2>, ...`. New: `reading_list()` in `backend/context_pack.py`.
+- **Exception "light".** Release-train fixes and test orders (title starts with "release train" or "test:", mentions a red gate,
+  "tests only") only have to read the project's master document - no index, no memory pass; the proof line stays required.
+- **A missing proof keeps the task open, once.** `agent-runner/session.py` checks the reply of the task that started the run
+  (parser and check in the new `agent-runner/reading_proof.py`). A line is valid when it names at least one listed place (file
+  name without `.md`, spelling aside); without listed places any line with content counts, also `READ: none - <reason>`; the
+  template `<file1>` does not. If it is missing the task stays open, a progress event says so and ONE follow-up ("Reading proof
+  missing: read first, then confirm.", plus the listed places) goes into the same session (`AIW_READING_MAX_NUDGES`, default 1).
+  After that the reply goes out in every case: no abort, no loop, nothing discarded. The session result gets `reading`
+  (`required`, `entries`, `valid`, `nudges`, `missing`).
+- **Wiring.** The orchestrator hands `AIW_READING_PROOF`, `AIW_READING_STEMS` and `AIW_READING_PATHS` (JSON lists) and
+  `AIW_READING_MAX_NUDGES` to the runner of a new run and stores the list as `reading-list-<thread>.json` in the events volume.
+  Follow-ups of an existing thread do not repeat the duty.
+- Tests: `backend/tests/test_reading_proof.py`. Docs: README ("Knowledge folder and memory folder"); `.env.example` and
+  `docker-compose.yml` list the new settings.
+
 ## 0.28.0 — 2026-11-19
 ### Added — notes between parallel tasks (token profile `peer`)
 - **New token profile `peer`** (`service_token.py create <name> --profile peer`): its only route is

@@ -47,6 +47,9 @@ services:
       AIWERKSTATT_MEMORY_DIR: ${AIWERKSTATT_MEMORY_DIR:-}
       # Pauses (seconds) before each retry after an API error; set to empty in .env = off.
       AIW_API_RETRY_DELAYS: ${AIW_API_RETRY_DELAYS-120,300,900}
+      # Opt-in reading proof for new runs (1 = on): reading list in the first message, `READ:` line in the result.
+      AIW_READING_PROOF: ${AIW_READING_PROOF:-}
+      AIW_READING_MAX_NUDGES: ${AIW_READING_MAX_NUDGES:-1}
     volumes:
       # SQLite, provider credentials (0600), queues, journal — persists across redeploys.
       - data:/data

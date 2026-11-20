@@ -28,6 +28,7 @@ from collections import deque
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from providers import get_adapter, RunContext  # noqa: E402
 from evidence import Evidence  # noqa: E402
+import reading_proof  # noqa: E402
 
 # ---------------------------------------------------------------- env contract
 SLUG        = os.environ["WK_SLUG"]
@@ -90,6 +91,21 @@ BG_CONTINUE = ("Automatic continuation by the workshop: your last turn ended whi
                "background tasks now (read the output file or wait in the foreground with a timeout and a sleep "
                "loop) and carry on until the task is really done. End your turn only when nothing is open.")
 STUCK_PREFIX = "\u23f3 Stuck on a background run"
+# Reading proof (0.29.0, opt-in): with AIW_READING_PROOF=1 the result of the task that started this run must carry
+# a valid `READ: <files>` line (AIW_READING_PATHS / AIW_READING_STEMS = JSON lists from the reading list in the first
+# message). Without it the task is NOT finished: ONE follow-up ("Reading proof missing: read first, then confirm.") goes into
+# the same session (AIW_READING_MAX_NUDGES, default 1). If the line is still missing the reply goes out anyway - no abort,
+# no loop, nothing discarded; the session result (`reading`) says so. Unset = unchanged behaviour.
+READING_PROOF = os.environ.get("AIW_READING_PROOF") == "1"
+try:
+    READING_STEMS = [str(x) for x in json.loads(os.environ.get("AIW_READING_STEMS") or "[]")]
+    READING_PATHS = [str(x) for x in json.loads(os.environ.get("AIW_READING_PATHS") or "[]")]
+except ValueError:
+    READING_STEMS, READING_PATHS = [], []
+try:
+    READING_MAX_NUDGES = max(0, int(os.environ.get("AIW_READING_MAX_NUDGES", "1")))
+except ValueError:
+    READING_MAX_NUDGES = 1
 # Fallback without a state event: short replies that only announce a wait (kept narrow; German variants because agents
 # may answer in the language of the task).
 _WAIT_PATTERN = re.compile(
@@ -372,6 +388,8 @@ def main():
     bg_anchor = 0.0           # start of the wait / last continuation
     stuck = None              # {"task_id","continuations","description","reason"} -> result
     answered = set()          # tasks that already have a final reply: no automatic continuation ever starts for them
+    reading_nudges = {}       # reading-proof follow-ups per task id (at most READING_MAX_NUDGES)
+    reading = {}              # reading proof state for the session result: required, entries, valid, nudges, missing
     rl_size = 0               # last seen runlog size (truncation detection)
     should_close = False
     limited_close = None   # (task_id, reset)
@@ -473,6 +491,25 @@ def main():
                 expected.clear()
                 should_close = True
                 return
+            if READING_PROOF and tid == FIRST_TASK:
+                valid, entries = reading_proof.check(text, READING_STEMS)
+                n_r = reading_nudges.get(tid, 0)
+                reading.update({"required": True, "entries": entries or [], "valid": valid, "nudges": n_r,
+                                "missing": not valid})
+                if not valid and n_r < READING_MAX_NUDGES:
+                    # Not finished: one follow-up into the same session (the first answer stays in the history).
+                    reading_nudges[tid] = n_r + 1
+                    reading["nudges"] = n_r + 1
+                    expected.appendleft(head)
+                    emit(tid, "progress", "\U0001F4DA Reading proof missing: read first, then confirm. The workshop sent a "
+                         "follow-up - the task stays open, nothing is aborted or done twice.")
+                    log("reading proof: no valid READ line -> follow-up %d/%d for task %s" % (n_r + 1, READING_MAX_NUDGES, tid))
+                    feed(reading_proof.nudge_text(READING_PATHS))
+                    last_activity = time.time()
+                    return
+                if not valid:
+                    log("reading proof: still no valid READ line after %d follow-up(s) (task %s) - the reply goes out anyway"
+                        % (n_r, tid))
             LIVE["waiting"] = None
             answered.add(tid)
             emit(tid, "reply", text[:6000])
@@ -699,7 +736,9 @@ def main():
     # ---------------------------------------------------------------- teardown
     result = {"session_id": sid, "limited": None, "reset": 0, "requeue": [], "ok": True,
               "api_gave_up": api_gave_up, "api_error": LIVE["api_error"],
-              "stuck": stuck, "continuations": sum(bg_continuations.values())}
+              "stuck": stuck, "continuations": sum(bg_continuations.values()),
+              "reading": (dict(reading) if reading else {"required": True, "entries": [], "valid": False,
+                                                         "nudges": 0, "missing": True}) if READING_PROOF else None}
     if api_gave_up:
         result["ok"] = False
 

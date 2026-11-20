@@ -15,10 +15,14 @@ as YYYY-MM-DD or DD.MM.YYYY anywhere in the heading; documents may be newest-fir
 The size is capped hard (12000 bytes of UTF-8). Sections that look like they contain a secret are omitted
 with a note instead of their content. Without any matching master document the pack says so explicitly.
 
+``reading_list()`` (opt-in, ``AIW_READING_PROOF=1``) names the places the agent has to read in full before it acts
+and asks for a ``READ: <files>`` line in the result; the runner checks that line (``agent-runner/reading_proof.py``).
+
 Standard library only. ``build()`` returns ``(text, meta)``.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 
@@ -262,3 +266,130 @@ def build(slug: str, title: str = "", vault_dir: str = "", knowledge_dir: str = 
         text = raw[:max_bytes - len(note.encode("utf-8"))].decode("utf-8", errors="ignore").rstrip() + note
     meta["bytes"] = len(text.encode("utf-8"))
     return text, meta
+
+
+# ---------------------------------------------------------------- reading list (opt-in reading proof)
+# The pack above inserts excerpts. The reading list names the PLACES the agent has to read in full before it acts
+# and asks for a `READ: <files>` line in the result. Pure release-train fixes and tests only need the project's
+# master document (no memory pass).
+LIGHT_RX = re.compile(
+    r"(?i)^\s*release[- ]train\b|\b(?:red gate|gate (?:is )?red)\b|^\s*(?:[\w-]+-)?tests?\s*[:\u00b7]"
+    r"|\b(?:tests? only|only tests?)\b|^\s*tests?\b[^\n]{0,30}\b(?:repair|fix)")
+READING_STOPWORDS = STOPWORDS | {
+    "about", "after", "before", "should", "could", "would", "there", "their", "which", "while", "where",
+    "these", "those", "other", "using", "without", "within", "every", "again", "still", "also", "only",
+    "nicht", "oder", "auch", "eine", "einer", "einem", "einen", "eines", "nach", "statt", "ohne", "beim",
+    "sind", "wird", "werden", "wurde", "mehr", "alle", "alles", "dass", "damit", "dann", "noch", "sowie",
+    "sonst", "ueber", "fertig", "neue", "neuer", "neues", "neuen"}
+MAX_MEMORY_HITS = 4
+READ_MARK = "READ:"
+
+
+def is_light(title: str) -> bool:
+    """Exception to the reading duty: a pure release-train fix or test order -> only the project's master document."""
+    return bool(LIGHT_RX.search(title or ""))
+
+
+def title_words(title: str, n: int = 8) -> list[str]:
+    """Key words of an order title (lower case, 5+ characters, no filler words, order kept)."""
+    out: list[str] = []
+    for w in re.findall(r"[a-z0-9\u00e4\u00f6\u00fc\u00df][a-z0-9\u00e4\u00f6\u00fc\u00df-]{3,}", (title or "").lower()):
+        w = w.strip("-")
+        if len(w) >= 5 and w not in READING_STOPWORDS and w not in out:
+            out.append(w)
+    return out[:n]
+
+
+def memory_hits(memory_dir: str, title: str, n: int = MAX_MEMORY_HITS, exclude=()) -> list[str]:
+    """Single memory files (not ``MEMORY.md``, not an index) that match key words of the title, best first.
+
+    Score: a word in the file name counts 3, in the file head (front matter + first 700 characters) 1, each weighted
+    by the word's rarity. A word that occurs in more than 30 % of the files (and in more than 3) does not count."""
+    words = title_words(title)
+    if not words or not memory_dir or not os.path.isdir(memory_dir):
+        return []
+    try:
+        names = sorted(f for f in os.listdir(memory_dir) if f.endswith(".md") and f != "MEMORY.md"
+                       and not f.startswith("index_") and not f.startswith("."))
+    except OSError:
+        return []
+    if not names:
+        return []
+    heads = {f: _read(os.path.join(memory_dir, f))[:1100].lower() for f in names}
+    total = len(names)
+    weight: dict[str, float] = {}
+    for w in words:
+        df = sum(1 for f in names if w in f.lower() or w in heads[f])
+        if 0 < df <= max(3, int(total * 0.30)):
+            weight[w] = math.log(1 + total / df)
+    scored = []
+    for f in names:
+        if f in exclude:
+            continue
+        score, hits = 0.0, 0
+        for w, g in weight.items():
+            if w in f.lower():
+                score, hits = score + 3 * g, hits + 1
+            elif w in heads[f]:
+                score, hits = score + g, hits + 1
+        if hits >= 2 or (hits == 1 and score >= 3 * 1.5):
+            try:
+                mtime = os.path.getmtime(os.path.join(memory_dir, f))
+            except OSError:
+                mtime = 0
+            scored.append((score, mtime, f))
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return [f for _s, _m, f in scored[:n]]
+
+
+def reading_list(slug: str, title: str = "", knowledge_dir: str = "", memory_dir: str = "") -> tuple[str, dict]:
+    """Places the agent must read before it acts -> (text, meta). Never raises.
+
+    meta: required (always True), light, paths (as shown to the agent), stems (file names without ``.md``, lower
+    case - checked against the ``READ:`` line), docs, index, memory, none (no place found). Without a knowledge or
+    memory folder the list is empty and the ``READ:`` line is still required."""
+    light = is_light(title)
+    meta = {"required": True, "light": light, "paths": [], "stems": [], "docs": [], "index": "", "memory": [],
+            "none": False}
+    places: list[tuple[str, str]] = []        # (path, why)
+    try:
+        docs = find_docs(knowledge_dir, slug, title)[0] if knowledge_dir and os.path.isdir(knowledge_dir) else []
+    except Exception:    # noqa - a broken folder must never block a run
+        docs = []
+    for f in docs:
+        places.append((os.path.join(knowledge_dir, f), "master document"))
+        meta["docs"].append(f)
+    if not light:
+        idx = ""
+        try:
+            idx = find_index(memory_dir, slug, title) if memory_dir and os.path.isdir(memory_dir) else ""
+        except Exception:    # noqa
+            idx = ""
+        if idx:
+            meta["index"] = idx
+            places.append((os.path.join(memory_dir, idx), "memory topic index"))
+        try:
+            hits = memory_hits(memory_dir, title, exclude=(idx,))
+        except Exception:    # noqa
+            hits = []
+        for f in hits:
+            meta["memory"].append(f)
+            places.append((os.path.join(memory_dir, f), "memory note matching words of the title"))
+    meta["paths"] = [p for p, _w in places]
+    meta["stems"] = [os.path.splitext(os.path.basename(p))[0].lower() for p in meta["paths"]]
+    meta["none"] = not places
+    lines = ["## Reading duty - read first, act second, prove it at the end", ""]
+    if places:
+        lines.append("Places to read in full before you act (not only the excerpts below):" if not light else
+                     "Place to read (pure release-train fix or test order: only the project's master document, "
+                     "no full memory pass):")
+        lines += ["%d. `%s` - %s" % (i, p, w) for i, (p, w) in enumerate(places, 1)]
+    else:
+        lines.append("No master document or topic index matched this order. Search the knowledge and memory "
+                     "folders yourself and read what fits.")
+    lines += ["",
+              "**Proof:** put a line of its own into your result: `%s <file1>, <file2>, ...` naming the files you "
+              "really read%s. If the line is missing, the workshop does not treat the order as finished but sends "
+              "one follow-up (\"Reading proof missing: read first, then confirm.\") - nothing is aborted."
+              % (READ_MARK, " (nothing fitting: `READ: none - <reason>`)" if not places else "")]
+    return "\n".join(lines), meta

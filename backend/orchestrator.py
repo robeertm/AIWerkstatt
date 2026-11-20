@@ -185,6 +185,31 @@ class Orchestrator:
             pass
         return text + "\n\n" if text else ""
 
+    @staticmethod
+    def _reading_proof(slug, title, thread_id) -> tuple[str, dict]:
+        """Opt-in reading proof for a NEW run (``AIW_READING_PROOF=1``, default off) -> (text for the first message,
+        runner environment). Off or on any error: ("", {}) - nothing changes for existing installations."""
+        if os.environ.get("AIW_READING_PROOF") != "1":
+            return "", {}
+        try:
+            text, meta = context_pack.reading_list(slug, title, knowledge_dir=KNOWLEDGE_DIR, memory_dir=MEMORY_DIR)
+        except Exception as e:   # a broken knowledge folder must never block a run
+            _log("reading list failed for %s/%s: %r" % (slug, thread_id, e))
+            return "", {}
+        _log("reading list %s/%s: places=%d light=%s" % (slug, thread_id, len(meta["paths"]), meta["light"]))
+        try:
+            p = os.path.join(EVENTS_BIND, "reading-list-%s.json" % thread_id)
+            with open(p + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False)
+            os.replace(p + ".tmp", p)
+        except OSError:
+            pass
+        env = {"AIW_READING_PROOF": "1",
+               "AIW_READING_STEMS": json.dumps(meta["stems"]),
+               "AIW_READING_PATHS": json.dumps(meta["paths"]),
+               "AIW_READING_MAX_NUDGES": os.environ.get("AIW_READING_MAX_NUDGES", "1") or "1"}
+        return text + "\n\n", env
+
     def _drop_inbox(self, thread_id, payload):
         d = self._thread_inbox(thread_id)
         name = "%d.json" % time.time_ns()
@@ -259,6 +284,7 @@ class Orchestrator:
         # heard it); the vault path is still exported for every run.
         vault_path = self._ensure_vault(slug)
         first_text = d.get("text", "")
+        reading_env: dict = {}
         if vault_path and d.get("kind") == "new":
             title = d.get("title") or ""
             if not title:
@@ -268,7 +294,8 @@ class Orchestrator:
                 except Exception:
                     title = ""
             title = title or (first_text.strip().split("\n")[0] if first_text.strip() else "")
-            first_text = (self._vault_preamble(vault_path)
+            reading_text, reading_env = self._reading_proof(slug, title, thread_id)
+            first_text = (self._vault_preamble(vault_path) + reading_text
                           + self._context_pack(slug, title, vault_path, thread_id) + first_text)
         first = self._write_first(thread_id, first_text)
         env = {
@@ -305,6 +332,7 @@ class Orchestrator:
             "CLAUDE_CONFIG_DIR": cfg_dir,
             "WK_RESUME_SID": resume_sid,
         }
+        env.update(reading_env)                      # opt-in reading proof (new runs only)
         env.update(self._creds_fn(provider) or {})   # e.g. {"ANTHROPIC_API_KEY": "..."}
         volumes = {
             VOL_WORKSPACES: {"bind": WORKSPACES_BIND, "mode": "rw"},
