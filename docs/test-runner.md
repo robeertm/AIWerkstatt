@@ -6,11 +6,11 @@ nothing unless you configure it. Nothing in it is specific to one host or vendor
 
 | File | Runs on | Purpose |
 |---|---|---|
-| `remote_test.py` | client | packs a commit, sends it, queues when both slots are taken, shows the output, returns the exit code; `--status`, `--available`, `--collect` |
-| `remote_test_receiver.py` | test machine | the forced command: `status`, `run`, `result` (Python 3.8+) |
+| `remote_test.py` | client | packs a commit (or the work tree with `--worktree`), sends it, queues when both slots are taken, shows the output, returns the exit code; `--status`, `--available`, `--images`, `--meta`, `--collect` |
+| `remote_test_receiver.py` | test machine | the forced command: `status`, `run`, `result`, `images` (Python 3.8+) |
 | `profiles.example.json` | test machine | allow list of profiles, modes, base images and limits |
 | `install.sh` | client | sets up the key, the receiver and the profiles over SSH, then proves the key is restricted |
-| `result_store.py` | client | per-test result store: plan, ingest, flaky, report (used by `--only-needed`) |
+| `result_store.py` | client | per-test result store: plan, ingest, flaky, report, full runs (used by `--only-needed`) |
 | `remote-test-collector.service` | client | example unit for the load collector |
 
 ## Security model
@@ -20,7 +20,7 @@ The trust boundary is one SSH key that can only start the receiver (details in
 
 - `authorized_keys` line: `restrict,from="<client address>",command="/usr/bin/python3 -I <dir>/remote_test_receiver.py" <public key>`.
   `restrict` disables forwarding and the terminal, `from` pins the source address, `command` ignores whatever the
-  caller asks for; the receiver reads the request from `SSH_ORIGINAL_COMMAND` and accepts three subcommands only.
+  caller asks for; the receiver reads the request from `SSH_ORIGINAL_COMMAND` and accepts four subcommands only (`status`, `run`, `result`, and the read-only `images`).
 - `run` works only for profiles and modes in `profiles.json` (owned by root or the runner user, not writable by
   others). Arguments are checked against a deny list (`--junitxml`, `--basetemp`, `--rootdir`, `-c`, `-o`, ... and
   absolute or `..` paths), environment variables only from the profile's allow list.
@@ -53,8 +53,10 @@ The trust boundary is one SSH key that can only start the receiver (details in
   Order the template by how often things change: system packages and browsers depend only on `pins.txt`
   (`COPY pins.txt` + install first), `COPY requirements.txt` + install last. A changed requirements file then
   rebuilds only the last layer; browser installs on a slow machine can otherwise take an hour per change.
-- Mode keys: `command`, `targets` (default pytest targets), `read_only` (default true), `env` (fixed variables),
-  `workdir`, `junit` (default true for pytest) and `extra`.
+- Mode keys: `command`, `targets` (default pytest targets), `targets_required` (default false; when true a request needs at
+  least one test target, for example `tests/test_x.py[::test_y]` - for modes meant to run a few chosen tests, never a whole
+  suite by accident), `read_only` (default true), `env` (fixed variables), `workdir`, `junit` (default true for pytest) and
+  `extra`.
 - **CPU limit:** `cpu_mode: "cpus"` uses `--cpus` (the kernel needs CFS quota; image builds get the equivalent
   `--cpu-quota`). `cpu_mode: "cpuset"` uses `--cpuset-cpus` with one set per slot from `cpusets`, for kernels
   without quota support. `max_runs` is capped at 2 by the receiver.
@@ -186,6 +188,62 @@ unchanged.
 are not seen, so use a project selector (or leave the 7-day expiry) where that matters. A changed environment variable or
 base image is not a code change; put such inputs into the environment name. Targets collapse to files when more than 380
 would be sent.
+
+## Image environment and full-run rule (0.32.0)
+
+A green result is only as good as the environment it ran in. The code of a test run is decided by the commit and the
+dependency rule above; the rest is the **image environment**: the base image and the dependency layers that were built before
+the source code was copied in. If a base image is updated or a dependency layer is rebuilt, green results of the old
+environment must not count.
+
+**What the receiver reports.** After every build it sends a control line `{"kind": "image", "id": <image id>, "fp": <fingerprint>,
+"fp_type": ..., "base": ..., "base_id": ..., "layers": N, "env_layers": M}` and puts the same object into the end record
+(the field is `fp_type`, not `kind`, because `kind` is the control line type). The environment is the base image (the last
+`FROM`) plus all layers before the first copy of a directory (`COPY dir:` / `ADD dir:` / `multi:` in `docker history`, i.e. the
+source code). `fp_type` is `layers` (boundary found), `base_only` (history and layers do not match, so only the base image
+counts - the dependencies are then covered by the code rule), `base` (base profile: the code is only mounted, the whole image
+is the environment) or `unknown` (no usable base information, `fp` is null). The mapping assumes the classic builder
+(`DOCKER_BUILDKIT=0`, which the receiver uses): `RUN`, `COPY`, `ADD` and `WORKDIR` create a layer. Failing to find the identity
+never fails a run.
+
+**What the result store does with it.** Every result carries `image` and `env_fp` (older stores are migrated in place with
+`ALTER TABLE ADD COLUMN`; results without a fingerprint behave as before). `plan(..., env_fp=...)` never reuses a green result
+with a known, different fingerprint; `foreign_env(green, env_fp)` answers after the run, when the fingerprint of the run is
+known, which reused results came from another environment - `remote_test.py --only-needed` runs exactly those again. The
+fingerprint it plans with is the one seen last for the same environment family (`profile/mode`).
+
+**Full-run rule.** At least one full green run (nothing reused) must exist per minor version (`X.Y`) and per image
+environment. `full_run_reason(store, family, version, env_fp)` returns `None` or the reason; with a reason the plan runs
+everything (`plan(..., everything=True)`). The first run on a new minor version or after an environment change is therefore a
+full run, recorded with `record_full_run()`. Transition: full runs without a fingerprint count as long as no other environment
+is known. Repositories without a `VERSION` file are not subject to the rule. Runs recorded before this version are taken over
+with `backfill-full-runs`.
+
+```bash
+python3 result_store.py full-runs --project app [--family image/full]
+python3 result_store.py backfill-full-runs --project app --repo . --family image/full   # green runs with >= 200 new tests, none reused
+```
+
+## Variants (0.32.0)
+
+Two environments that differ only by one environment variable (for example `image+FLAG=0` and `image+FLAG=1`) are siblings.
+`plan(..., variants=[(environment, excluded_files)])` and `--variant ENV:NAME[,NAME]` (result store CLI and `--only-needed`)
+let results of a sibling count too: per test the **newest** result wins (red stays red), except for the excluded test files.
+`variant_exclusions(repo, commit, names)` finds them with `git grep`: if a name appears only in test files, those files are
+excluded (they read the variable themselves); if it appears anywhere else (application code, `conftest.py`, a test helper) every
+test may be affected and the result is `None`, meaning nothing is taken over. A git error also gives `None`.
+
+## Work tree, meta file and image identity (0.32.0)
+
+- `remote_test.py <repo> --profile P --mode M --worktree -- tests/test_x.py` tests the work tree **including uncommitted
+  changes and new, not ignored files**. It builds a throw-away commit from a private index (`GIT_INDEX_FILE` = temp file,
+  `read-tree HEAD`, `add -A`, `write-tree`, `commit-tree -p HEAD`): the real index, branches and stash stay untouched, and a
+  clean tree simply means `HEAD`. The commit is unreferenced and disappears with the next `git gc`.
+- `--meta FILE` writes the result of the run as JSON (outcome, `rc`, durations, `commit`, `image`), also for red runs. A caller
+  that keeps its own result store can read the image identity from it.
+- `--images` prints what the receiver's read-only `images` command answers: per base profile the checksum of the Dockerfile
+  template, the `FROM` reference and its image id (`null` if it is not on the test machine) and a checksum of the pins. Use it
+  to put the base identity into a result key before anything runs. Exit 100 if the runner is unavailable.
 
 ## Tests
 

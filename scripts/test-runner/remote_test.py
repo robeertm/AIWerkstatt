@@ -4,8 +4,10 @@ wait lock since 0.24.0).
 
     remote_test.py <repo-path> --profile NAME --mode NAME [--commit REF] [-n N] [--extra <repo-path>[@REF]]
                    [--extra-path sub/dir] [--env K=V] [--pins a==1,b==2] [--junit FILE]
-                   [--quiet-build] [--only-needed [--selector CMD] [--tests-dir DIR]] [-- test-runner-arguments ...]
+                   [--quiet-build] [--only-needed [--selector CMD] [--tests-dir DIR] [--variant ENV:NAME[,NAME]]]
+                   [--worktree] [--meta FILE] [-- test-runner-arguments ...]
     remote_test.py --status                  # state of the runner (load, CPU, running tests) as JSON
+    remote_test.py --images                  # identity of the base test images without code (JSON, 0.32.0)
     remote_test.py --available               # exit 0 = runner reachable and set up
     remote_test.py --collect [--once]        # collector: status.json + one jsonl per day (14 days)
 
@@ -28,6 +30,15 @@ What happens:
 --only-needed (opt-in, 0.30.0): for a full-suite request (no test-runner arguments) the result store (result_store.py)
 decides what has to run: green results of unchanged code are reused, red/affected/never-run tests run, red tests are retried
 serially (n=1) up to twice, and a pytest-style summary line counts reused + new tests.
+
+--worktree / --meta / --images (0.32.0): `--worktree` tests the work tree INCLUDING uncommitted changes and new (not ignored)
+files, via a throw-away commit built from a private index (GIT_INDEX_FILE = temp file, read-tree HEAD, add -A, write-tree,
+commit-tree -p HEAD): the real index, branches and stash stay untouched; a clean tree means HEAD. `--meta FILE` writes the
+result of the run as JSON (rc, durations, `image` with image id and environment fingerprint `fp`). `--images` asks the receiver
+for the identity of the base test images (Dockerfile checksum + image id of the FROM image) without running anything.
+After every build the receiver reports the image identity; the client keeps it in the protocol and in the meta file, and
+`--only-needed` stores it with every result (a green result from another image environment is never reused, and a full run
+is forced once per minor version and image environment, see docs/test-runner.md).
 
 Exit 100 = runner really gone or broken (not set up, unreachable at start, 3 status requests in a row unanswered while
 waiting), request refused (for example an argument outside the allow list), a fault of the runner instead of the code, or
@@ -362,6 +373,34 @@ def version_of(repo, commit):
 
 
 LINE_HOOK = None                 # set by execute_only_needed() while a run is streamed
+LAST_IMAGE = None                # image identity of the latest run (reset at the start of execute())
+
+
+def worktree_commit(repo):
+    """Throw-away commit of the work tree (committed + changed + new, not ignored files) built from a PRIVATE index: the real
+    index, HEAD, branches and stash stay untouched. A clean tree gives HEAD itself."""
+    if not git(repo, "status", "--porcelain").strip():
+        return commit_of(repo, "HEAD")
+    fd, index = tempfile.mkstemp(prefix="remote-test-index-")
+    os.close(fd)
+    os.remove(index)                    # git creates it; an existing empty file is not a valid index
+    env = dict(os.environ, GIT_INDEX_FILE=index, GIT_AUTHOR_NAME="remote-test", GIT_AUTHOR_EMAIL="remote-test@localhost",
+               GIT_COMMITTER_NAME="remote-test", GIT_COMMITTER_EMAIL="remote-test@localhost")
+    try:
+        def g(*args):
+            p = subprocess.run(["git", "-C", repo] + list(args), capture_output=True, text=True, env=env)
+            if p.returncode != 0:
+                raise SystemExit("git %s failed: %s" % (args[0], p.stderr.strip()[:200]))
+            return p.stdout.strip()
+        g("read-tree", "HEAD")
+        g("add", "-A")
+        tree = g("write-tree")
+        return g("commit-tree", tree, "-p", "HEAD", "-m", "remote-test: work tree (throw-away commit, no reference)")
+    finally:
+        try:
+            os.remove(index)
+        except OSError:
+            pass
 
 
 class Run:
@@ -372,6 +411,7 @@ class Run:
         self.end = None
         self.busy = False
         self.error = None
+        self.image = None                # image identity reported by the receiver (id, fp, fp_type, ...)
         self.started = None              # time of the first line after the slot was granted
         self.on_start = None
         self.on_line = LINE_HOOK         # optional callback for every plain output line (--only-needed)
@@ -408,7 +448,14 @@ class Run:
             elif kind == "info":
                 self.protocol.write("[info] %s\n" % d.get("text", ""))
                 info(d.get("text", ""))
-            if kind in ("build", "info", "junit", "end"):
+            elif kind == "image":
+                global LAST_IMAGE
+                self.image = {k: v for k, v in d.items() if k != "kind"}
+                LAST_IMAGE = self.image
+                self.protocol.write("[image] %s\n" % json.dumps(self.image, ensure_ascii=False))
+                info("image %s - environment %s (%s)" % ((d.get("id") or "?")[7:19], (d.get("fp") or "unknown")[:12],
+                                                          d.get("fp_type") or "?"))
+            if kind in ("build", "info", "image", "junit", "end"):
                 self._started()
             return
         self._started()
@@ -547,8 +594,10 @@ def execute(a):
     if reason:
         info("runner unavailable: %s -> run locally" % reason)
         return UNAVAILABLE
+    global LAST_IMAGE
+    LAST_IMAGE = None
     repo = os.path.abspath(a.repo)
-    commit = commit_of(repo, a.commit)
+    commit = worktree_commit(repo) if getattr(a, "worktree", False) else commit_of(repo, a.commit)
     name = repo_name(repo)
     extra_path, extra_commit = None, None
     if a.extra:
@@ -647,7 +696,10 @@ def execute(a):
                     meta.update(outcome="lost")
                     return UNAVAILABLE
         e = run.end
-        meta.update(outcome="done", rc=e.get("rc"), reason=e.get("reason"), runner=e, total_s=int(time.time() - t0))
+        meta.update(outcome="done", rc=e.get("rc"), reason=e.get("reason"), runner=e, total_s=int(time.time() - t0),
+                    image=run.image or e.get("image"))
+        if meta["image"]:
+            LAST_IMAGE = meta["image"]
         if run.junit and a.junit:
             try:
                 with open(a.junit, "wb") as fh:
@@ -671,6 +723,11 @@ def execute(a):
         meta["end"] = datetime.datetime.now().isoformat(timespec="seconds")
         with open(base + ".json", "w") as fh:
             json.dump(meta, fh, ensure_ascii=False, indent=1)
+        if getattr(a, "meta", None):
+            try:
+                write_atomic(a.meta, json.dumps({k: v for k, v in meta.items() if k != "runner_before"}, ensure_ascii=False))
+            except OSError as ex:
+                info("--meta not written: %s" % ex)
         queue_leave(own)
         shutil.rmtree(work, ignore_errors=True)        # only our own run folder
 
@@ -681,14 +738,25 @@ def execute_only_needed(a):
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import result_store as rs
     repo = os.path.abspath(a.repo)
-    commit = commit_of(repo, a.commit)
+    commit = worktree_commit(repo) if a.worktree else commit_of(repo, a.commit)
     project = repo_name(repo)
     env_name = "%s/%s" % (a.profile, a.mode) + "".join("+%s" % e for e in sorted(a.env or []))
+    family = rs.family_of(env_name)
     store = rs.Store(project)
     run_id = "on-%s-%s" % (datetime.datetime.now().strftime("%m%d%H%M%S"), secrets.token_hex(3))
     files = rs.list_test_files(repo, commit, a.tests_dir)
     deps = rs.Dependencies(repo, commit, tests_dir=a.tests_dir, selector=a.selector)
-    plan = rs.plan(store, env_name, commit, files, deps)
+    variants = []
+    for spec in a.variant or []:
+        env2, _, names = spec.partition(":")
+        variants.append((env2, rs.variant_exclusions(repo, commit, [n for n in names.split(",") if n], a.tests_dir)))
+    # the image environment measured last is the best guess for this run; the real one is known after the build
+    expected = (store.env_last(family) or {}).get("env_fp")
+    version = version_of(repo, commit)
+    reason = rs.full_run_reason(store, family, version, expected) if rs.minor_of(version) else None
+    if reason:
+        info("result store: full-run rule: %s -> everything runs" % reason)
+    plan = rs.plan(store, env_name, commit, files, deps, variants=variants, env_fp=expected, everything=bool(reason))
     reused = len(plan.green)
     t0 = time.time()
     store.run_begin(run_id, env_name, commit, {"reused": reused})
@@ -707,11 +775,14 @@ def execute_only_needed(a):
         os.close(fd)
         b = argparse.Namespace(**vars(a))
         b.runner_args, b.n, b.junit = list(args) + ["-vv"], n, junit
+        b.commit, b.worktree = commit, False             # the commit of this plan (a work tree commit is already made)
 
         def hook(line):
             parsed = rs.output_line(line)
             if parsed:
-                store.record(env_name, parsed[0], parsed[1], commit, run_id, kind=kind, attempt=number)
+                img = LAST_IMAGE or {}
+                store.record(env_name, parsed[0], parsed[1], commit, run_id, kind=kind, attempt=number,
+                             image=img.get("id"), env_fp=img.get("fp"))
         LINE_HOOK = hook
         try:
             rc = execute(b)
@@ -721,7 +792,9 @@ def execute_only_needed(a):
             if rc in (0, 1) and os.path.getsize(junit) > 0:
                 if a.junit and number == 0:
                     shutil.copyfile(junit, a.junit)
-                store.ingest_junit(junit, env_name, commit, run_id, files, whole_files=whole, kind=kind, attempt=number)
+                img = LAST_IMAGE or {}
+                store.ingest_junit(junit, env_name, commit, run_id, files, whole_files=whole, kind=kind, attempt=number,
+                                   image=img.get("id"), env_fp=img.get("fp"))
         except (OSError, ValueError, rs.ET.ParseError) as ex:
             info("result store: report not usable (%s)" % ex)
         finally:
@@ -739,6 +812,18 @@ def execute_only_needed(a):
             partial = {t.split("::")[0] for t in plan.deselect}
             args = targets + plan.deselect_args(targets)
             rc = attempt(args, a.n, "parallel", 0, [f for f in plan.whole if f not in partial])
+            fp = (LAST_IMAGE or {}).get("fp")
+            foreign = rs.foreign_env(plan.green, fp) if rc in (0, 1) else []
+            if foreign:
+                info("result store: %d reused result(s) came from another image environment (now %s) - running them again"
+                     % (len(foreign), fp[:12]))
+                again = rs.Plan(env_name, commit)
+                again.single = foreign
+                for t in foreign:
+                    plan.green.pop(t, None)
+                reused = len(plan.green)
+                rc2 = attempt(again.targets(), a.n, "parallel", 0, [])
+                rc = rc2 if rc2 not in (0, 1) else (1 if 1 in (rc, rc2) else 0)
             for number in (1, 2):
                 if rc not in (0, 1):
                     break
@@ -751,6 +836,8 @@ def execute_only_needed(a):
                 rc = attempt(again.targets(), 1, "serial", number, [])
         done, red = counts()
         flaky = len(store.flaky_since(t0 - 1, env_name))
+        img = LAST_IMAGE or {}
+        store.env_note(family, img.get("fp"), image=img.get("id"), run=run_id)
         if rc not in (0, 1):
             store.run_end(run_id, "aborted", {"reused": reused})
             return rc
@@ -764,7 +851,11 @@ def execute_only_needed(a):
         sys.stdout.write("=== %s in %.1fs ===\n" % (line, time.time() - t0))
         sys.stdout.flush()
         store.run_end(run_id, "red" if red else "green", {"new": new, "reused": reused, "flaky": flaky, "red": len(red),
-                                                           "duration_s": int(time.time() - t0)})
+                                                           "duration_s": int(time.time() - t0), "env_fp": img.get("fp"),
+                                                           "image": img.get("id")})
+        if not red and rs.minor_of(version) and files and not reused and set(files) <= set(plan.whole):
+            rs.record_full_run(store, family, env_name, run_id, commit, version, env_fp=img.get("fp"), image=img.get("id"), total=new)
+            info("result store: full run recorded for %s.x" % rs.minor_of(version))
         return final
     finally:
         store.close()
@@ -794,6 +885,12 @@ def main(argv=None):
                    help="full suite only: reuse green results of unchanged code (result_store.py), run the rest, retry red serially")
     p.add_argument("--selector", help="with --only-needed: command that gets changed app files and prints test files or FULL")
     p.add_argument("--tests-dir", default="tests", help="with --only-needed: folder with the test files")
+    p.add_argument("--variant", action="append", metavar="ENV:NAME[,NAME]",
+                   help="with --only-needed: sibling environment whose results count too, except for test files that read NAME")
+    p.add_argument("--worktree", action="store_true",
+                   help="test the work tree with uncommitted changes (throw-away commit from a private index, nothing is changed)")
+    p.add_argument("--meta", help="write the result of the run (rc, durations, image identity) as JSON here")
+    p.add_argument("--images", action="store_true", help="print the identity of the base test images (JSON) and exit")
     p.add_argument("--status", action="store_true")
     p.add_argument("--available", action="store_true")
     p.add_argument("--collect", action="store_true", help="collector for the load (run it as a service)")
@@ -803,6 +900,21 @@ def main(argv=None):
     a.n = max(1, min(a.n, 8))
     if a.collect:
         return collect(a.once)
+    if a.images:
+        reason = unavailable_reason()
+        d = None
+        if not reason:
+            try:
+                p2 = subprocess.run(ssh_command("images"), capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+                d = json.loads((p2.stdout.strip().splitlines() or [""])[-1]) if p2.returncode == 0 else None
+            except (subprocess.SubprocessError, ValueError, OSError):
+                d = None
+        if not isinstance(d, dict) or "images" not in d:
+            print(json.dumps({"available": False, "reason": reason or "runner unreachable or does not know `images`"},
+                             ensure_ascii=False))
+            return UNAVAILABLE
+        print(json.dumps(d, ensure_ascii=False))
+        return 0
     if a.status or a.available:
         reason = unavailable_reason()
         st = None if reason else runner_status()

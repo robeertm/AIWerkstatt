@@ -15,9 +15,19 @@ Subcommands:
                            Nothing about other containers or services of this machine.
     run <base64-json>      stdin = tar with source/ (and optionally extra/); build + test run; output streamed
     result <id>            deliver the result of a run again (after a dropped connection) or "running"
+    images                 one JSON line (read only, 0.32.0): per base profile the identity of the test image WITHOUT code
+                           (checksum of the Dockerfile template + image id of its FROM image), so a client can put it into
+                           its result keys before it runs anything.
+
+Image identity (0.32.0): after every build the receiver sends a control line {"kind": "image", "id": <image id>, "fp": <fingerprint
+of the image ENVIRONMENT>, "fp_type": ..., ...} and also puts it into the end object. Environment = base image (the last FROM)
++ all layers before the first copy of a directory (COPY/ADD dir: - the source code); for a base profile (the source is only
+mounted) the whole image is the environment. A result store takes over green results only from the same environment.
+fp_type: "layers" (boundary found), "base_only" (history and layers do not match: only the base image counts), "base" (base
+profile), "unknown" (no usable base image information, fp is null). Never raises: without an identity the run is unaffected.
 
 Output of "run"/"result": plain lines are the output of the test run, unchanged. Control lines start with
-"\\x1eRTR " + JSON ({"kind": "build"|"info"|"junit"|"busy"|"error"|"end"|"running", ...}).
+"\\x1eRTR " + JSON ({"kind": "build"|"info"|"image"|"junit"|"busy"|"error"|"end"|"running", ...}).
 
 Rules: at most MAX_SLOTS (2) runs at the same time (one flock per slot, checked at once -> "busy"). Containers run with
 --rm --name probe-<repo>-<time> --network none --cap-drop ALL --security-opt no-new-privileges --no-healthcheck
@@ -124,6 +134,8 @@ def load_config():
             if not NAME_RX.match(mname) or not isinstance(m.get("command"), list) or not m["command"] \
                     or not all(isinstance(x, str) for x in m["command"]):
                 raise ValueError("profile %r mode %r needs a command list" % (name, mname))
+            if "targets_required" in m and not isinstance(m["targets_required"], bool):
+                raise ValueError("profile %r mode %r: targets_required must be true or false" % (name, mname))
         for pin in p.get("pins", []):
             if not PIN_RX.match(pin):
                 raise ValueError("profile %r has an invalid pin" % name)
@@ -296,6 +308,8 @@ def check_request(raw, cfg):
             raise ValueError("argument not allowed: %s" % head)
         if x.startswith("/") or ".." in x.split("::")[0].split("/"):
             raise ValueError("paths only relative to the source package: %s" % x[:80])
+    if prof["modes"][a["mode"]].get("targets_required") and not [x for x in args if not x.startswith("-")]:
+        raise ValueError("mode %s needs test targets (for example tests/test_x.py)" % a["mode"])
     env = a.get("env") or {}
     if not isinstance(env, dict):
         raise ValueError("env must be an object")
@@ -457,6 +471,123 @@ def keep_cache(req, image):
         docker(["rmi", old], timeout=300)
 
 
+# ---- image identity (0.32.0)
+def _sha(text, n=24):
+    return hashlib.sha256(text.encode()).hexdigest()[:n]
+
+
+def last_from_text(text):
+    """Reference of the FROM of the last build stage, or None (stage name, ARG in the FROM, no FROM)."""
+    stages, ref = set(), None
+    for line in (text or "").splitlines():
+        t = line.strip().split()
+        if len(t) >= 2 and t[0].upper() == "FROM":
+            rest = [x for x in t[1:] if not x.startswith("--")]
+            if not rest:
+                continue
+            ref = rest[0]
+            if len(rest) >= 3 and rest[1].upper() == "AS":
+                stages.add(rest[2].lower())
+    if not ref or "$" in ref or ref.lower() in stages:
+        return None
+    return ref
+
+
+def last_from(dockerfile):
+    try:
+        with open(dockerfile, encoding="utf-8", errors="replace") as fh:
+            return last_from_text(fh.read())
+    except OSError:
+        return None
+
+
+def _layers(image):
+    """(image id, [layer digests]) or (None, None)."""
+    p = docker(["image", "inspect", "--format", "{{.Id}}|{{json .RootFS.Layers}}", image], timeout=60)
+    if p.returncode != 0 or "|" not in p.stdout:
+        return None, None
+    iid, _, lj = p.stdout.strip().partition("|")
+    try:
+        return iid, json.loads(lj) or []
+    except ValueError:
+        return iid, None
+
+
+def _history(image):
+    """Build history, oldest entry first (CreatedBy), or None."""
+    p = docker(["history", "--no-trunc", "--format", "{{.CreatedBy}}", image], timeout=60)
+    if p.returncode != 0:
+        return None
+    return list(reversed(p.stdout.splitlines()))
+
+
+def _makes_layer(created_by):
+    """Classic builder (DOCKER_BUILDKIT=0): RUN, COPY, ADD and WORKDIR create a file layer, other "#(nop)" steps do not."""
+    if "#(nop)" not in created_by:
+        return True
+    return created_by.split("#(nop)", 1)[1].strip().startswith(("COPY ", "ADD ", "WORKDIR "))
+
+
+def _code_boundary(created_by):
+    rest = created_by.split("#(nop)", 1)[1].strip() if "#(nop)" in created_by else ""
+    return rest.startswith(("COPY dir:", "ADD dir:", "COPY multi:", "ADD multi:"))
+
+
+def image_info(prof, image, source):
+    """Image id + fingerprint of the image environment (base + layers before the source code) -> dict or None. Never raises."""
+    try:
+        iid, layers = _layers(image)
+        if not iid or layers is None:
+            return None
+        info = {"id": iid, "layers": len(layers)}
+        if prof["build"] == "base":
+            info.update(fp_type="base", fp=_sha("\n".join(layers)), env_layers=len(layers))
+            return info
+        ref = last_from(os.path.join(source, "Dockerfile"))
+        info["base"] = ref
+        base_id, base_layers = _layers(ref) if ref else (None, None)
+        if not base_layers or layers[:len(base_layers)] != base_layers:
+            info.update(fp_type="unknown", fp=None)
+            return info
+        info["base_id"] = base_id
+        hist, base_hist = _history(image), _history(ref)
+        boundary = None
+        if hist and base_hist and hist[:len(base_hist)] == base_hist:
+            n = len(base_layers)
+            for cb in hist[len(base_hist):]:
+                if _code_boundary(cb):
+                    boundary = n
+                    break
+                if _makes_layer(cb):
+                    n += 1
+            own = sum(1 for cb in hist[len(base_hist):] if _makes_layer(cb))
+            if len(base_layers) + own != len(layers):
+                boundary = None
+        if boundary is None:
+            # history and layers do not match: only the base image is the environment (dependencies are covered by the code rule)
+            info.update(fp_type="base_only", fp=_sha("base\n" + "\n".join(base_layers)), env_layers=len(base_layers))
+        else:
+            info.update(fp_type="layers", fp=_sha("\n".join(layers[:boundary])), env_layers=boundary)
+        return info
+    except Exception:  # noqa: BLE001 - the identity is a bonus, never endanger the run
+        return None
+
+
+def images(cfg):
+    """Read only: identity of the base test images without code (Dockerfile template + FROM image) per base profile."""
+    out = {}
+    for name, prof in sorted(cfg["profiles"].items()):
+        if prof.get("build") != "base":
+            continue
+        df = cfg["base_images"][prof["base"]]["dockerfile"]
+        ref = last_from_text(df)
+        iid = _layers(ref)[0] if ref else None
+        out[name] = {"base": prof["base"], "dockerfile": _sha(df, 16), "from": ref, "from_id": iid,
+                     "pins": _sha("\n".join(prof.get("pins", [])), 16)}
+    print(json.dumps({"format": "rtr-images/1", "images": out, "time": int(time.time())}, ensure_ascii=False))
+    return 0
+
+
 WRAP = ('mkdir -p /tmp/rtr; "$@"; rc=$?; '
         'if [ -f /tmp/rtr/junit.xml ]; then printf "\\036RTR-JUNIT-BEGIN\\n"; '
         'python -c "import base64,sys; sys.stdout.write(base64.encodebytes(open(\'/tmp/rtr/junit.xml\',\'rb\').read()).decode())"; '
@@ -610,6 +741,10 @@ def run(raw):
         else:
             image, throwaway = build_base(cfg, prof, req, source, work, out)
         entry["build_s"] = int(time.time() - tb)
+        ident = image_info(prof, image, source)
+        if ident:
+            entry["image"] = ident
+            out.control("image", **ident)
         name, args = run_args(cfg, prof, req, image, source, extra)
         out.control("info", text="starting %s (%s)" % (name, " ".join(cpu_args(cfg, req["_slot"]) + limits(cfg)[1:4])))
         tt = time.time()
@@ -722,7 +857,13 @@ def main():
         return run(parts[1])
     if len(parts) == 2 and parts[0] == "result":
         return result(parts[1])
-    Output().control("error", text="unknown command (allowed: status | run <request> | result <id>)")
+    if parts == ["images"]:
+        try:
+            return images(load_config())
+        except (OSError, ValueError, KeyError) as e:
+            Output().control("error", text="images: %s" % str(e)[:200])
+            return 2
+    Output().control("error", text="unknown command (allowed: status | run <request> | result <id> | images)")
     return 2
 
 

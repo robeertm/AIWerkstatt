@@ -15,6 +15,7 @@ Run: python3 -m unittest discover -s scripts/test-runner
 import base64
 import fcntl
 import glob
+import hashlib
 import importlib.util
 import io
 import json
@@ -26,6 +27,7 @@ import tarfile
 import re
 import tempfile
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -102,6 +104,8 @@ def profiles(docker_cmd, cpu_mode="cpus"):
                               "full": {"read_only": False, "command": pytest, "targets": ["tests"]}}},
             "lib": {"build": "base", "base": "py", "pins": ["pytest==8.3.4", "pytest-xdist==3.6.1"], "env_allowed": {},
                     "modes": {"pytest": {"read_only": True, "command": pytest, "targets": [], "workdir": "/source"},
+                              "single": {"read_only": True, "command": pytest, "targets": [], "workdir": "/source",
+                                         "targets_required": True},
                               "extras": {"read_only": True, "command": ["bash", "/extra/run.sh"], "targets": [],
                                          "workdir": "/source", "extra": True, "junit": False}}},
         },
@@ -1048,6 +1052,388 @@ class OnlyNeeded(Base):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("running normally", p.stderr)
         self.assertNotIn("-vv", self.run_args()[0])
+
+
+# ---------------------------------------------------------------- 0.32.0: image identity, --worktree, --meta, --images
+IMAGE_PRE = '''imgs = json.loads(os.environ.get("ATT_IMAGES", "{}"))
+def find(key):
+    for pre, d in imgs.items():
+        if key.startswith(pre):
+            return d
+    return None
+if a and a[0] == "image" and len(a) > 1 and a[1] == "inspect" and any("RootFS" in x for x in a):
+    d = find(a[-1])
+    if d is None:
+        sys.exit(1)
+    print("%s|%s" % (d["id"], json.dumps(d["layers"])))
+    sys.exit(0)
+if a and a[0] == "history":
+    d = find(a[-1])
+    if d is None:
+        sys.exit(1)
+    print("\\n".join(d["history"]))
+    sys.exit(0)
+'''
+IMAGE_DOCKER_STUB = DOCKER_STUB.replace('c = a[0] if a else ""', 'c = a[0] if a else ""\n' + IMAGE_PRE, 1)
+IMAGE_NEEDED_STUB = None          # built below, after NEEDED_DOCKER_STUB exists
+
+BASE_IMG = {"id": "sha256:base1", "layers": ["L1", "L2"],
+            "history": ["/bin/sh -c apt-get install x", "/bin/sh -c #(nop) ADD file:abc in / "]}
+
+
+def app_img(run_layer="L3", code_layer="L4"):
+    """Image built from base:1 with one RUN layer (environment) and one COPY dir: layer (the source code)."""
+    return {"id": "sha256:img-%s-%s" % (run_layer, code_layer), "layers": ["L1", "L2", run_layer, code_layer],
+            "history": ["/bin/sh -c #(nop) COPY dir:%s in /app " % code_layer, "/bin/sh -c pip install x"] + BASE_IMG["history"]}
+
+
+def fp_of(*layers):
+    return hashlib.sha256("\n".join(layers).encode()).hexdigest()[:24]
+
+
+def images_env(app=None, **extra):
+    d = {"rtr-app:": app or app_img(), "base:1": BASE_IMG}
+    d.update(extra)
+    return {"ATT_IMAGES": json.dumps(d)}
+
+
+def fake_docker(images, histories=None):
+    """Stand-in for REC.docker: image inspect (id|layers) and history from dictionaries."""
+    def run(args, timeout=None, **kw):
+        ref = args[-1]
+        if args[:2] == ["image", "inspect"] and ref in images:
+            iid, layers = images[ref]
+            return types.SimpleNamespace(returncode=0, stdout="%s|%s\n" % (iid, json.dumps(layers)), stderr="")
+        if args[:1] == ["history"] and ref in (histories or {}):
+            return types.SimpleNamespace(returncode=0, stdout="\n".join(histories[ref]) + "\n", stderr="")
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="no such image")
+    return run
+
+
+class ImageIdentityUnit(unittest.TestCase):
+    """image_info(): environment = base image + layers before the first copy of a directory."""
+
+    def setUp(self):
+        self.src = tempfile.mkdtemp(prefix="rtr-src-")
+        self.addCleanup(shutil.rmtree, self.src, ignore_errors=True)
+        with open(os.path.join(self.src, "Dockerfile"), "w") as fh:
+            fh.write("FROM base:1\nRUN pip install x\nCOPY . /app\n")
+
+    def info(self, image, base=BASE_IMG, prof=None):
+        images = {"rtr-app:x": (image["id"], image["layers"]), "base:1": (base["id"], base["layers"])}
+        hist = {"rtr-app:x": image["history"], "base:1": base["history"]}
+        with mock.patch.object(REC, "docker", fake_docker(images, hist)):
+            return REC.image_info(prof or {"build": "repo"}, "rtr-app:x", self.src)
+
+    def test_layers_up_to_the_code_copy(self):
+        i = self.info(app_img())
+        self.assertEqual((i["fp_type"], i["env_layers"], i["base"]), ("layers", 3, "base:1"))
+        self.assertEqual(i["fp"], fp_of("L1", "L2", "L3"))
+        self.assertEqual(i["id"], "sha256:img-L3-L4")
+        self.assertEqual(i["base_id"], "sha256:base1")
+        self.assertNotIn("kind", i)                                   # would collide with the control line type
+
+    def test_code_change_keeps_the_fingerprint_dependency_change_does_not(self):
+        self.assertEqual(self.info(app_img(code_layer="L4"))["fp"], self.info(app_img(code_layer="NEW"))["fp"])
+        self.assertNotEqual(self.info(app_img(run_layer="L3"))["fp"], self.info(app_img(run_layer="NEW"))["fp"])
+
+    def test_base_image_change_changes_the_fingerprint(self):
+        other = dict(BASE_IMG, layers=["L1", "B2"])
+        img = app_img()
+        img = dict(img, layers=["L1", "B2", "L3", "L4"])
+        self.assertNotEqual(self.info(img, other)["fp"], self.info(app_img())["fp"])
+
+    def test_history_does_not_match_the_layers_base_only(self):
+        img = app_img()
+        img = dict(img, layers=img["layers"] + ["EXTRA"])             # a layer the history cannot explain
+        i = self.info(img)
+        self.assertEqual(i["fp_type"], "base_only")
+        self.assertEqual(i["fp"], hashlib.sha256("base\nL1\nL2".encode()).hexdigest()[:24])
+        self.assertEqual(i["env_layers"], 2)
+
+    def test_nop_steps_do_not_count_as_layers(self):
+        img = app_img()
+        img = dict(img, history=img["history"][:1] + ["/bin/sh -c #(nop)  ENV A=1", "/bin/sh -c #(nop) WORKDIR /app"]
+                   + img["history"][1:])
+        img["layers"] = ["L1", "L2", "L3", "LW", "L4"]                # WORKDIR makes a layer, ENV does not
+        i = self.info(img)
+        self.assertEqual(i["fp_type"], "layers")
+        self.assertEqual(i["fp"], fp_of("L1", "L2", "L3", "LW"))
+        self.assertEqual(i["env_layers"], 4)
+
+    def test_image_does_not_start_with_the_base_layers_unknown(self):
+        img = dict(app_img(), layers=["X1", "X2", "L3", "L4"])
+        i = self.info(img)
+        self.assertEqual(i["fp_type"], "unknown")
+        self.assertIsNone(i["fp"])
+
+    def test_base_profile_whole_image_is_the_environment(self):
+        i = self.info(app_img(), prof={"build": "base"})
+        self.assertEqual((i["fp_type"], i["env_layers"]), ("base", 4))
+        self.assertEqual(i["fp"], fp_of("L1", "L2", "L3", "L4"))
+
+    def test_never_raises(self):
+        def boom(*a, **k):
+            raise OSError("no docker")
+        with mock.patch.object(REC, "docker", boom):
+            self.assertIsNone(REC.image_info({"build": "repo"}, "rtr-app:x", self.src))
+        with mock.patch.object(REC, "docker", fake_docker({})):
+            self.assertIsNone(REC.image_info({"build": "repo"}, "rtr-app:x", self.src))
+        with mock.patch.object(REC, "docker", fake_docker({"rtr-app:x": ("sha256:i", ["L1"])})):
+            self.assertIsNone(REC.image_info({"build": "repo"}, "rtr-app:x", os.path.join(self.src, "nowhere"))["fp"])
+
+    def test_last_from(self):
+        self.assertEqual(REC.last_from_text("FROM a:1\nFROM --platform=linux/amd64 b:2 AS final\n"), "b:2")
+        self.assertEqual(REC.last_from_text("from a:1 as build\nFROM build\n"), None)         # stage name
+        self.assertEqual(REC.last_from_text("ARG V=1\nFROM a:${V}\n"), None)                  # variable in the FROM
+        self.assertEqual(REC.last_from_text("# FROM nope\nRUN x\n"), None)
+        self.assertEqual(REC.last_from_text("FROM a:1 AS build\nFROM scratch\n"), "scratch")
+
+
+class ImageIdentityEndToEnd(Base):
+    def setUp(self):
+        super().setUp()
+        with open(self.docker, "w") as fh:
+            fh.write(IMAGE_DOCKER_STUB)
+        with open(os.path.join(self.repo, "Dockerfile"), "w") as fh:
+            fh.write("FROM base:1\nRUN pip install x\nCOPY . /app\n")
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit",
+                        "-q", "-m", "dockerfile"], check=True, capture_output=True)
+
+    def test_control_line_meta_and_protocol(self):
+        meta = os.path.join(self.tmp, "meta.json")
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--quiet-build", "--meta", meta, **images_env())
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertNotIn("\x1e", p.stdout)
+        self.assertIn("environment %s (layers)" % fp_of("L1", "L2", "L3")[:12], p.stderr)
+        with open(meta) as fh:
+            m = json.load(fh)
+        self.assertEqual(m["rc"], 0)
+        self.assertEqual(m["image"]["fp"], fp_of("L1", "L2", "L3"))
+        self.assertEqual(m["image"]["id"], "sha256:img-L3-L4")
+        self.assertNotIn("runner_before", m)
+        self.assertEqual(self.meta()["image"]["fp"], m["image"]["fp"])
+        with open(glob.glob(os.path.join(self.logs, "*.log"))[0]) as fh:
+            self.assertIn("[image] ", fh.read())
+        with open(glob.glob(os.path.join(self.machine, "results", "*", "result.json"))[0]) as fh:
+            e = json.load(fh)
+        self.assertEqual(e["image"]["fp_type"], "layers")
+        self.assertEqual(oct(os.stat(meta).st_mode & 0o777), oct(0o640))
+
+    def test_without_identity_nothing_changes(self):
+        meta = os.path.join(self.tmp, "meta.json")
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--quiet-build", "--meta", meta)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        with open(meta) as fh:
+            self.assertIsNone(json.load(fh)["image"])
+
+    def test_base_profile_reports_the_whole_image(self):
+        d = images_env(**{"rtr-base/lib:": app_img()})
+        p = self.client(self.repo, "--profile", "lib", "--mode", "pytest", "--quiet-build", "--meta", os.path.join(self.tmp, "m.json"), **d)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        with open(os.path.join(self.tmp, "m.json")) as fh:
+            self.assertEqual(json.load(fh)["image"]["fp_type"], "base")
+
+    def test_meta_is_written_for_a_red_run_too(self):
+        meta = os.path.join(self.tmp, "meta.json")
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--quiet-build", "--meta", meta, ATT_MODE="red",
+                        **images_env())
+        self.assertEqual(p.returncode, 1, p.stderr)
+        with open(meta) as fh:
+            self.assertEqual(json.load(fh)["rc"], 1)
+
+    def test_images_command_only_lists_base_profiles(self):
+        e = self.receiver("images", **images_env(scratch={"id": "sha256:s", "layers": ["S"], "history": []}))
+        self.assertEqual(e.returncode, 0, e.stderr)
+        d = json.loads(e.stdout.strip().splitlines()[-1])
+        self.assertEqual(d["format"], "rtr-images/1")
+        self.assertEqual(list(d["images"]), ["lib"])
+        self.assertEqual(d["images"]["lib"]["from"], "scratch")
+        self.assertEqual(d["images"]["lib"]["from_id"], "sha256:s")
+        self.assertRegex(d["images"]["lib"]["dockerfile"], r"^[0-9a-f]{16}$")
+        self.assertEqual(self.docker_calls()[0][:2], ["image", "inspect"])         # read only: no build, no run
+        self.assertFalse([a for a in self.docker_calls() if a[0] in ("build", "run", "rmi", "tag")])
+
+    def test_images_command_without_the_base_image_has_no_id(self):
+        d = json.loads(self.receiver("images").stdout.strip().splitlines()[-1])
+        self.assertIsNone(d["images"]["lib"]["from_id"])
+
+    def test_client_images(self):
+        p = self.client("--images", **images_env(scratch={"id": "sha256:s", "layers": ["S"], "history": []}))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(p.stdout)["images"]["lib"]["from_id"], "sha256:s")
+
+    def test_client_images_unreachable_gives_100(self):
+        p = self.client("--images", **{P + "OFF": "1"})
+        self.assertEqual(p.returncode, 100)
+        self.assertFalse(json.loads(p.stdout)["available"])
+
+
+class TargetsRequired(unittest.TestCase):
+    def test_mode_with_required_targets(self):
+        mode = "single"
+        self.assertEqual(CFG["profiles"]["lib"]["modes"][mode]["targets_required"], True)
+        ok = REC.check_request(enc(good(profile="lib", mode=mode, args=["tests/test_x.py::t"])), CFG)
+        self.assertEqual(ok["args"], ["tests/test_x.py::t"])
+        ok = REC.check_request(enc(good(profile="lib", mode=mode, args=["-k", "name", "tests/test_x.py"])), CFG)
+        self.assertEqual(ok["mode"], mode)
+        for args in ([], ["-x"], ["--tb=short", "-q"]):
+            with self.subTest(args):
+                with self.assertRaises(ValueError) as cm:
+                    REC.check_request(enc(good(profile="lib", mode=mode, args=args)), CFG)
+                self.assertIn("needs test targets", str(cm.exception))
+        # other modes are not affected
+        REC.check_request(enc(good(profile="lib", mode="pytest")), CFG)
+
+    def test_config_must_have_a_boolean(self):
+        d = tempfile.mkdtemp(prefix="rtr-tr-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        raw = profiles(["docker"])
+        raw["profiles"]["lib"]["modes"]["single"]["targets_required"] = "yes"
+        path = os.path.join(d, "profiles.json")
+        with open(path, "w") as fh:
+            json.dump(raw, fh)
+        os.chmod(path, 0o644)
+        with mock.patch.object(REC, "PROFILES_FILE", path):
+            with self.assertRaises(ValueError):
+                REC.load_config()
+
+
+class Worktree(Base):
+    def git(self, *a):
+        return subprocess.run(["git", "-C", self.repo] + list(a), check=True, capture_output=True, text=True).stdout
+
+    def snapshot(self):
+        return (self.git("status", "--porcelain"), self.git("for-each-ref"), self.git("stash", "list"),
+                self.git("diff", "--cached", "--name-only"), sorted(os.listdir(os.path.join(self.repo, ".git"))))
+
+    def dirty(self):
+        with open(os.path.join(self.repo, ".gitignore"), "w") as fh:
+            fh.write("ignored.txt\n")
+        self.git("add", ".gitignore")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "ignore")
+        with open(os.path.join(self.repo, "README"), "w") as fh:
+            fh.write("changed\n")                                  # tracked, not staged
+        with open(os.path.join(self.repo, "new.txt"), "w") as fh:
+            fh.write("new\n")                                      # untracked
+        with open(os.path.join(self.repo, "ignored.txt"), "w") as fh:
+            fh.write("secret\n")                                   # ignored: stays out
+        with open(os.path.join(self.repo, "VERSION"), "w") as fh:
+            fh.write("1.2.4\n")
+        self.git("add", "VERSION")                                 # staged change, to see that the real index stays as it is
+
+    def test_clean_tree_is_head(self):
+        self.assertEqual(CLI.worktree_commit(self.repo), self.git("rev-parse", "HEAD").strip())
+
+    def test_dirty_tree_throwaway_commit_without_touching_anything(self):
+        self.dirty()
+        before = self.snapshot()
+        head = self.git("rev-parse", "HEAD").strip()
+        c = CLI.worktree_commit(self.repo)
+        self.assertNotEqual(c, head)
+        self.assertEqual(self.git("rev-parse", c + "^").strip(), head)                # parent is HEAD
+        self.assertEqual(self.git("show", c + ":README"), "changed\n")
+        self.assertEqual(self.git("show", c + ":new.txt"), "new\n")
+        self.assertEqual(self.git("show", c + ":VERSION"), "1.2.4\n")
+        self.assertEqual(self.git("ls-tree", "--name-only", c).split().count("ignored.txt"), 0)
+        self.assertEqual(self.snapshot(), before)                                      # index, refs, stash, .git untouched
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)
+
+    def test_end_to_end_runs_the_throwaway_commit(self):
+        self.dirty()
+        meta = os.path.join(self.tmp, "meta.json")
+        before = self.snapshot()
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--quiet-build", "--worktree", "--meta", meta)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        with open(meta) as fh:
+            m = json.load(fh)
+        self.assertNotEqual(m["commit"], self.git("rev-parse", "HEAD").strip())
+        self.assertEqual(self.git("show", m["commit"] + ":README"), "changed\n")
+        self.assertEqual(self.snapshot(), before)
+
+    def test_without_the_flag_only_the_commit_counts(self):
+        self.dirty()
+        meta = os.path.join(self.tmp, "meta.json")
+        p = self.client(self.repo, "--profile", "app", "--mode", "image", "--quiet-build", "--meta", meta)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        with open(meta) as fh:
+            self.assertEqual(json.load(fh)["commit"], self.git("rev-parse", "HEAD").strip())
+
+    def test_not_a_repository_stops_with_a_message(self):
+        with self.assertRaises(SystemExit):
+            CLI.worktree_commit(self.tmp)
+
+
+IMAGE_NEEDED_STUB = NEEDED_DOCKER_STUB.replace('c = a[0] if a else ""', 'c = a[0] if a else ""\n' + IMAGE_PRE, 1)
+
+
+class OnlyNeededImage(OnlyNeeded):
+    """--only-needed with image identity: foreign environment reruns, full-run rule, full run recorded."""
+
+    def setUp(self):
+        super().setUp()
+        with open(self.docker, "w") as fh:
+            fh.write(IMAGE_NEEDED_STUB)
+        with open(os.path.join(self.repo, "Dockerfile"), "w") as fh:
+            fh.write("FROM base:1\nRUN pip install x\nCOPY . /app\n")
+        self.commit("dockerfile")
+
+    def store(self):
+        sys.path.insert(0, HERE)
+        import result_store as rs
+        return rs, rs.Store("my-repo", self.store_dir)
+
+    def go(self, img, *extra):
+        return self.client(self.repo, "--profile", "app", "--mode", "image", "--only-needed", "--quiet-build", *extra,
+                           **images_env(img))
+
+    def test_results_carry_the_environment_and_the_first_run_is_a_full_run(self):
+        p = self.go(app_img())
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("full-run rule: no full app/image run for 1.2.x yet", p.stderr)
+        self.assertIn("full run recorded for 1.2.x", p.stderr)
+        rs, st = self.store()
+        try:
+            rows = st.state_of("app/image")
+            self.assertEqual({r["env_fp"] for r in rows.values()}, {fp_of("L1", "L2", "L3")})
+            self.assertEqual({r["image"] for r in rows.values()}, {"sha256:img-L3-L4"})
+            full = st.full_runs("app/image")
+            self.assertEqual((len(full), full[0]["minor"], full[0]["env_fp"]), (1, "1.2", fp_of("L1", "L2", "L3")))
+            self.assertEqual(st.env_last("app/image")["env_fp"], fp_of("L1", "L2", "L3"))
+        finally:
+            st.close()
+        before = len(self.run_args())
+        p = self.go(app_img())                                               # same code, same environment: nothing runs
+        self.assertIn("2 passed (2 reused, 0 new)", p.stdout)
+        self.assertEqual(len(self.run_args()), before)
+
+    def test_environment_change_reruns_reused_results_and_forces_a_full_run_next_time(self):
+        self.assertEqual(self.go(app_img()).returncode, 0)
+        with open(os.path.join(self.repo, "tests", "test_b.py"), "w") as fh:
+            fh.write("def test_two(): pass\n# edited\n")
+        self.commit("edit test_b")
+        before = len(self.run_args())
+        p = self.go(app_img(run_layer="NEWDEP"))                              # the dependency layer changed
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("1 reused result(s) came from another image environment", p.stderr)
+        self.assertEqual(len(self.run_args()) - before, 2)                    # test_b + the foreign result again
+        self.assertIn("2 passed (0 reused, 2 new)", p.stdout)
+        # next request: the full run for 1.2.x exists only for the old environment -> everything runs once
+        before = len(self.run_args())
+        p = self.go(app_img(run_layer="NEWDEP"))
+        self.assertIn("image environment changed", p.stderr)
+        self.assertEqual(len(self.run_args()) - before, 1)
+        self.assertIn("full run recorded", p.stderr)
+        before = len(self.run_args())
+        p = self.go(app_img(run_layer="NEWDEP"))
+        self.assertIn("2 passed (2 reused, 0 new)", p.stdout)
+        self.assertEqual(len(self.run_args()), before)
+
+    def test_variant_option_is_accepted(self):
+        p = self.go(app_img(), "--variant", "app/image+APP_FLAG=1:APP_FLAG")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("2 passed", p.stdout)
 
 
 class Install(unittest.TestCase):

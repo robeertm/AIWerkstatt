@@ -13,6 +13,20 @@ result only if nothing the test depends on changed between that commit and the c
   * results older than MAX_AGE_S (7 days) run again.
 Red, aborted and never-run tests ALWAYS run. The environment (for example "image+FLAG=0") is never mixed.
 
+Image environment (1.1.0, AIWERKSTATT 0.32.0): every result can carry the image id and a fingerprint of the image ENVIRONMENT
+(`env_fp`: base image + all layers before the source code is copied in, measured by the test machine). A green result with a
+known, DIFFERENT fingerprint never counts (base image updated, dependency layers rebuilt); an unknown fingerprint behaves as before.
+The code part of the image hangs on the commit and is decided by the dependency rule above. `foreign_env()` answers after the run,
+when the fingerprint of the run is known, which reused results came from another environment (they must run again).
+
+Variants (1.1.0): `plan(..., variants=[(environment, excluded_files)])` also counts results of a sibling environment that differs
+only by an environment variable. Per test the NEWEST result wins (red stays red), except for the excluded test files (those
+that read the variable themselves, see `variant_exclusions()`); `None` as exclusion list means "take nothing over".
+
+Full-run rule (1.1.0): at least one FULL green run per minor version (X.Y) and per image environment must exist
+(`full_run_reason()`); if it is missing the plan runs everything (`plan(..., everything=True)`, nothing reused).
+Transition: full runs without a fingerprint count as long as no other environment is known.
+
 Which test ids a file has is learned from the last run that executed the WHOLE file in that environment (junit report).
 Partial collections (deselected tests) therefore do not count.
 
@@ -25,11 +39,14 @@ Flaky ("wobbler"): red in the run, green in the serial retry -> the result is st
 `flaky` table. Never silent.
 
     result_store.py ingest --project P --env E --commit C --run R --junit FILE [--repo R] [--whole | --targets T ...]
-                           [--kind parallel|serial] [--attempt N] [--time ISO]
+                           [--kind parallel|serial] [--attempt N] [--time ISO] [--image ID] [--env-fp FP]
     result_store.py plan   --project P --env E --repo R [--selector "<command>"] [--tests-dir tests] [--json]
+                           [--variant ENV:NAME[,NAME]] [--env-fp FP] [--everything]
     result_store.py status --project P [--env E] [--red]
     result_store.py flaky  --project P [--hours 24] [--json]
     result_store.py report [--hours 24]       # all projects: runs, reused/new, flaky, stably red (nightly summary)
+    result_store.py full-runs --project P [--family F]
+    result_store.py backfill-full-runs --project P --repo R [--family F]   # take full green runs from the run table
 
 Standard library only."""
 import argparse
@@ -46,7 +63,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 MAX_AGE_S = int(os.environ.get("AIWERKSTATT_RESULT_STORE_MAX_AGE_S", str(7 * 24 * 3600)))
 GREEN = ("passed", "skipped")
 RED = ("failed", "error")
@@ -63,16 +80,34 @@ KIND_OUTCOME = {"PASSED": "passed", "FAILED": "failed", "ERROR": "error", "SKIPP
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS state (env TEXT NOT NULL, test_id TEXT NOT NULL, file TEXT, outcome TEXT, commit_ TEXT, run TEXT,
-  kind TEXT, attempt INTEGER, duration_s REAL, ts REAL, last TEXT, message TEXT, PRIMARY KEY (env, test_id));
+  kind TEXT, attempt INTEGER, duration_s REAL, ts REAL, last TEXT, message TEXT, image TEXT, env_fp TEXT, PRIMARY KEY (env, test_id));
 CREATE TABLE IF NOT EXISTS history (nr INTEGER PRIMARY KEY, env TEXT, test_id TEXT, file TEXT, outcome TEXT, commit_ TEXT,
-  run TEXT, kind TEXT, attempt INTEGER, duration_s REAL, ts REAL, last TEXT, message TEXT);
+  run TEXT, kind TEXT, attempt INTEGER, duration_s REAL, ts REAL, last TEXT, message TEXT, image TEXT, env_fp TEXT);
 CREATE INDEX IF NOT EXISTS history_run ON history (run);
 CREATE TABLE IF NOT EXISTS files (env TEXT NOT NULL, file TEXT NOT NULL, commit_ TEXT, ids TEXT, ts REAL, run TEXT,
   PRIMARY KEY (env, file));
 CREATE TABLE IF NOT EXISTS flaky (nr INTEGER PRIMARY KEY, env TEXT, test_id TEXT, commit_ TEXT, run TEXT, ts REAL,
   kind TEXT, attempt INTEGER, last TEXT);
 CREATE TABLE IF NOT EXISTS runs (run TEXT PRIMARY KEY, env TEXT, commit_ TEXT, start REAL, finish REAL, status TEXT, info TEXT);
+CREATE TABLE IF NOT EXISTS full_runs (nr INTEGER PRIMARY KEY, family TEXT, env TEXT, run TEXT, commit_ TEXT, version TEXT, minor TEXT,
+  env_fp TEXT, image TEXT, ts REAL, total INTEGER, source TEXT);
+CREATE TABLE IF NOT EXISTS env_fps (family TEXT NOT NULL, env_fp TEXT NOT NULL, image TEXT, first_ts REAL, last_ts REAL, run TEXT,
+  PRIMARY KEY (family, env_fp));
 """
+# 1.1.0: columns older stores do not have yet (ALTER TABLE ADD COLUMN; old writers simply leave them empty)
+NEW_COLUMNS = {"state": ("image", "env_fp"), "history": ("image", "env_fp")}
+VERSION_RX = re.compile(r"^([0-9]+)\.([0-9]+)\.[0-9]+")
+ENV_NAME_RX = re.compile(r"^[A-Z][A-Z0-9_]{1,60}$")
+
+
+def minor_of(version):
+    m = VERSION_RX.match(version or "")
+    return "%s.%s" % (m.group(1), m.group(2)) if m else None
+
+
+def family_of(env):
+    """"profile/mode+FLAG=1" -> "profile/mode" (the part before the first +)."""
+    return (env or "").split("+", 1)[0]
 
 
 def base_dir():
@@ -108,6 +143,14 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
+        for table, columns in NEW_COLUMNS.items():
+            have = {r[1] for r in self.db.execute("PRAGMA table_info(%s)" % table)}
+            for col in columns:
+                if col not in have:
+                    try:
+                        self.db.execute("ALTER TABLE %s ADD COLUMN %s TEXT" % (table, col))
+                    except sqlite3.OperationalError:          # a parallel opener was faster
+                        pass
         if fresh:
             try:
                 os.chmod(self.path, 0o644)
@@ -137,7 +180,7 @@ class Store:
         self.db.execute("UPDATE runs SET finish=?, status=?, info=? WHERE run=?", (_now(), status, json.dumps(d, ensure_ascii=False), run))
 
     def record(self, env, test_id, outcome, commit, run, file=None, kind="parallel", attempt=0, duration_s=None,
-               ts=None, last=None, message=None):
+               ts=None, last=None, message=None, image=None, env_fp=None):
         """Commit one result. `state` keeps the newest per (environment, test); an older timestamp never overwrites."""
         if outcome not in RANK:
             raise ValueError("unknown outcome: %r" % outcome)
@@ -147,14 +190,15 @@ class Store:
         last_json = json.dumps(last, ensure_ascii=False) if isinstance(last, dict) else last
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
-            self.db.execute("INSERT INTO history (env, test_id, file, outcome, commit_, run, kind, attempt, duration_s, ts, last, message)"
-                            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                            (env, test_id, file, outcome, commit, run, kind, attempt, duration_s, ts, last_json, message))
+            self.db.execute("INSERT INTO history (env, test_id, file, outcome, commit_, run, kind, attempt, duration_s, ts, last, message,"
+                            " image, env_fp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (env, test_id, file, outcome, commit, run, kind, attempt, duration_s, ts, last_json, message, image, env_fp))
             old = self.db.execute("SELECT ts, outcome, run FROM state WHERE env=? AND test_id=?", (env, test_id)).fetchone()
             if old is None or (old["ts"] or 0) <= ts:
                 self.db.execute("INSERT OR REPLACE INTO state (env, test_id, file, outcome, commit_, run, kind, attempt, duration_s, ts,"
-                                " last, message) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                                (env, test_id, file, outcome, commit, run, kind, attempt, duration_s, ts, last_json, message))
+                                " last, message, image, env_fp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (env, test_id, file, outcome, commit, run, kind, attempt, duration_s, ts, last_json, message, image,
+                                 env_fp))
             if kind == "serial" and outcome in GREEN and old is not None and old["outcome"] in RED and old["run"] == run:
                 self.db.execute("INSERT INTO flaky (env, test_id, commit_, run, ts, kind, attempt, last) VALUES (?,?,?,?,?,?,?,?)",
                                 (env, test_id, commit, run, ts, "serial_green", attempt, last_json))
@@ -164,7 +208,79 @@ class Store:
         self.db.execute("INSERT OR REPLACE INTO files (env, file, commit_, ids, ts, run) VALUES (?,?,?,?,?,?)",
                         (env, file, commit, json.dumps(sorted(set(ids)), ensure_ascii=False), ts or _now(), run))
 
-    def ingest_junit(self, xml, env, commit, run, test_files, whole_files=(), kind="parallel", attempt=0, ts=None, last=None):
+    def attach_image(self, env, run, image, env_fp):
+        """The image id and the environment fingerprint are only known after the run (the test machine reports them with the end):
+        write them to all results of this run in this environment that carry none yet. -> number of history rows changed."""
+        if not (image or env_fp):
+            return 0
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            n = self.db.execute("UPDATE history SET image=?, env_fp=? WHERE run=? AND env=? AND image IS NULL AND env_fp IS NULL",
+                                (image, env_fp, run, env)).rowcount
+            self.db.execute("UPDATE state SET image=?, env_fp=? WHERE run=? AND env=? AND image IS NULL AND env_fp IS NULL",
+                            (image, env_fp, run, env))
+        return n
+
+    # ------------------------------------------------------------------ image environment + full runs (1.1.0)
+    def env_last(self, family, other_than=None):
+        """The image environment of this family seen last (not `other_than`) -> row or None."""
+        q = "SELECT * FROM env_fps WHERE family=?" + (" AND env_fp<>?" if other_than else "") + " ORDER BY last_ts DESC LIMIT 1"
+        r = self.db.execute(q, (family, other_than) if other_than else (family,)).fetchone()
+        return dict(r) if r else None
+
+    def env_note(self, family, env_fp, image=None, run=None, ts=None):
+        if not env_fp:
+            return
+        ts = ts or _now()
+        old = self.db.execute("SELECT first_ts FROM env_fps WHERE family=? AND env_fp=?", (family, env_fp)).fetchone()
+        self.db.execute("INSERT OR REPLACE INTO env_fps (family, env_fp, image, first_ts, last_ts, run) VALUES (?,?,?,?,?,?)",
+                        (family, env_fp, image, old["first_ts"] if old else ts, ts, run))
+
+    def full_run_add(self, family, env, run, commit, version, env_fp=None, image=None, total=0, source="gate", ts=None):
+        self.db.execute("INSERT INTO full_runs (family, env, run, commit_, version, minor, env_fp, image, ts, total, source)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (family, env, run, commit, version, minor_of(version), env_fp, image, ts or _now(), int(total or 0), source))
+
+    def full_runs(self, family=None, minor=None):
+        q, a = "SELECT * FROM full_runs WHERE 1=1", []
+        if family:
+            q += " AND family=?"
+            a.append(family)
+        if minor:
+            q += " AND minor=?"
+            a.append(minor)
+        return [dict(r) for r in self.db.execute(q + " ORDER BY ts", a)]
+
+    def state_with_variants(self, env, variants=()):
+        """Own state plus the results of the variants: per test the NEWEST result wins (red stays red), variant results only for
+        test files outside their exclusions. variants = [(environment, excluded files | None)]; None takes nothing over.
+        Rows taken over carry "_variant"."""
+        state = self.state_of(env)
+        for env2, excluded in variants or ():
+            if excluded is None:
+                continue
+            for tid, s in self.state_of(env2).items():
+                if (s.get("file") or tid.split("::")[0]) in excluded:
+                    continue
+                old = state.get(tid)
+                if old is None or (s["ts"] or 0) > (old["ts"] or 0):
+                    state[tid] = dict(s, _variant=env2)
+        return state
+
+    def files_with_variants(self, env, variants=()):
+        files = self.files_of(env)
+        for env2, excluded in variants or ():
+            if excluded is None:
+                continue
+            for f, v in self.files_of(env2).items():
+                if f in excluded:
+                    continue
+                if f not in files or (v.get("ts") or 0) > (files[f].get("ts") or 0):
+                    files[f] = dict(v, _variant=env2)
+        return files
+
+    def ingest_junit(self, xml, env, commit, run, test_files, whole_files=(), kind="parallel", attempt=0, ts=None, last=None,
+                     image=None, env_fp=None):
         """Take over a junit report. whole_files = files this run executed completely (the whole tests folder or the file).
         -> {passed, failed, error, skipped, total, red: [ids]}"""
         cases = junit_read(xml, test_files)
@@ -174,7 +290,7 @@ class Store:
         per_file = {}
         for tid, file, outcome, duration, message in cases:
             self.record(env, tid, outcome, commit, run, file=file, kind=kind, attempt=attempt, duration_s=duration, ts=ts,
-                        last=last, message=message)
+                        last=last, message=message, image=image, env_fp=env_fp)
             count[outcome] += 1
             if outcome in RED:
                 red.append(tid)
@@ -300,6 +416,91 @@ def _imports(path):
     return names
 
 
+def variant_exclusions(repo, commit, names, tests_dir="tests", patterns=("test_*.py", "*_test.py")):
+    """Test files whose result can depend on the environment variables `names` (the name appears in their source) -> set.
+    If a name appears in any other Python file (app code, conftest.py, test helper) every test may be affected -> None
+    (= no results taken over between the variants). A git error also gives None (when in doubt take nothing over)."""
+    out = set()
+    tests_dir = tests_dir.rstrip("/")
+    for name in names:
+        if not ENV_NAME_RX.match(name or ""):
+            return None
+        p = subprocess.run(["git", "-C", repo, "grep", "-l", "-F", "-e", name, commit, "--", "*.py"], capture_output=True, text=True)
+        if p.returncode not in (0, 1):
+            return None
+        for line in p.stdout.splitlines():
+            path = line.split(":", 1)[1] if line.startswith(commit + ":") else line
+            if path.startswith(tests_dir + "/") and any(fnmatch.fnmatch(os.path.basename(path), m) for m in patterns) \
+                    and os.path.basename(path) != "conftest.py":
+                out.add(path)
+            else:
+                return None
+    return out
+
+
+def full_run_reason(store, family, version, env_fp=None):
+    """Safety rule before a release: a FULL green run of this family must exist for the same minor version (X.Y) and, when the
+    image environment is known, for exactly that environment. -> None (fulfilled) or the reason (then everything runs).
+    Transition: full runs without a fingerprint count as long as no other environment is known."""
+    minor = minor_of(version)
+    if not minor:
+        return "version %r unknown" % (version,)
+    runs = store.full_runs(family, minor)
+    if not runs:
+        return "no full %s run for %s.x yet" % (family, minor)
+    if not env_fp:
+        return None
+    if any(r["env_fp"] == env_fp for r in runs):
+        return None
+    with_fp = [r for r in runs if r["env_fp"]]
+    if with_fp:
+        return "image environment changed (full run for %s.x on %s, now %s)" % (minor, with_fp[-1]["env_fp"][:12], env_fp[:12])
+    other = store.env_last(family, other_than=env_fp)
+    if other:
+        return "image environment changed (last %s, now %s)" % (other["env_fp"][:12], env_fp[:12])
+    return None
+
+
+def record_full_run(store, family, env, run, commit, version, env_fp=None, image=None, total=0, source="gate", ts=None):
+    """Remember a FULL green run (nothing reused) and the environment it ran in."""
+    store.full_run_add(family, env, run, commit, version, env_fp=env_fp, image=image, total=total, source=source, ts=ts)
+    store.env_note(family, env_fp, image=image, run=run, ts=ts)
+
+
+def backfill_full_runs(store, repo, family, min_tests=200):
+    """Take over full green runs from the run table that were not recorded as full runs before 1.1.0: status green, nothing
+    reused, at least `min_tests` new tests, nothing red, in an environment of this family. The version comes from the VERSION
+    file of the commit. -> [(run, version)]. Idempotent (once per run)."""
+    seen = {r["run"] for r in store.full_runs(family)}
+    added = []
+    for r in store.db.execute("SELECT * FROM runs WHERE status='green' ORDER BY start"):
+        r = dict(r)
+        if family_of(r["env"]) != family or r["run"] in seen:
+            continue
+        try:
+            info = json.loads(r["info"] or "{}")
+        except ValueError:
+            continue
+        if int(info.get("reused") or 0) != 0 or int(info.get("new") or 0) < min_tests or int(info.get("red") or 0):
+            continue
+        rc, out = _git(repo, "show", "%s:VERSION" % r["commit_"])
+        version = out.strip() if rc == 0 else ""
+        if not minor_of(version):
+            continue
+        store.full_run_add(family, r["env"], r["run"], r["commit_"], version, env_fp=info.get("env_fp"), image=info.get("image"),
+                           total=info.get("new"), source="backfill", ts=r["finish"] or r["start"])
+        added.append((r["run"], version))
+    return added
+
+
+def foreign_env(green, env_fp):
+    """After the run: which reused results came from ANOTHER image environment than the one just measured? -> sorted test ids
+    (they must run again). Results without a fingerprint (before 1.1.0) do not count."""
+    if not env_fp:
+        return []
+    return sorted(t for t, s in (green or {}).items() if s.get("env_fp") and s["env_fp"] != env_fp)
+
+
 class Dependencies:
     """Which test files are affected between an old commit and the current state (work tree `repo` checked out at `commit`)?
     affected(old) -> set(test files) or None (= everything). Cached per old commit.
@@ -417,6 +618,7 @@ class Plan:
         self.red_before = []      # tests that were red before and run now
         self.sources = {}         # run -> number of reused results
         self.deselect = []        # already green on THIS commit inside whole files (resume) -> --deselect
+        self.variants = {}        # variant environment -> number of results taken over from it (1.1.0)
 
     @property
     def empty(self):
@@ -455,19 +657,26 @@ class Plan:
         return args if len(targets) + len(args) <= max_targets else []
 
     def as_dict(self):
-        return {"env": self.env, "commit": self.commit, "reused": len(self.green), "whole": self.whole,
+        return {"env": self.env, "commit": self.commit, "reused": len(self.green), "variants": self.variants, "whole": self.whole,
                 "single": self.single, "red_before": self.red_before, "sources": self.sources, "deselect": len(self.deselect),
                 "reasons": dict(list(self.reasons.items())[:200])}
 
 
-def plan(store, env, commit, current_test_files, deps=None, max_age_s=None, now=None, only=None):
+def plan(store, env, commit, current_test_files, deps=None, max_age_s=None, now=None, only=None, variants=(), env_fp=None,
+         everything=False):
     """What has to run in `env` on `commit`? current_test_files = all test files of the state; only = restricted selection
-    (files/folders), otherwise all. deps = Dependencies (None -> only the same commit counts)."""
+    (files/folders), otherwise all. deps = Dependencies (None -> only the same commit counts). variants = sibling environments
+    [(environment, excluded test files | None)]; env_fp = fingerprint of the image environment of this run (None = not known
+    yet: the caller decides after the run with `foreign_env`); everything=True -> reuse nothing, every test file runs completely
+    (full-run rule)."""
     max_age_s = MAX_AGE_S if max_age_s is None else max_age_s
     now = now or _now()
     result = Plan(env, commit)
-    state = store.state_of(env)
-    files = store.files_of(env)
+    state = {} if everything else store.state_with_variants(env, variants)
+    files = {} if everything else store.files_with_variants(env, variants)
+
+    def foreign(s):
+        return bool(env_fp and s.get("env_fp") and s["env_fp"] != env_fp)
 
     def affected(old, file):
         if old == commit:
@@ -489,7 +698,7 @@ def plan(store, env, commit, current_test_files, deps=None, max_age_s=None, now=
         result.whole.append(file)
         result.reasons[file] = reason
         for s in per_file.get(file, ()):
-            if s["commit_"] == commit and s["outcome"] in GREEN and now - (s["ts"] or 0) <= max_age_s:
+            if s["commit_"] == commit and s["outcome"] in GREEN and now - (s["ts"] or 0) <= max_age_s and not foreign(s):
                 result.green[s["test_id"]] = s
                 result.deselect.append(s["test_id"])
                 result.sources[s["run"]] = result.sources.get(s["run"], 0) + 1
@@ -515,11 +724,15 @@ def plan(store, env, commit, current_test_files, deps=None, max_age_s=None, now=
                 result.red_before.append(tid)
             elif now - (s["ts"] or 0) > max_age_s:
                 open_.append((tid, "result older than %d days" % (max_age_s // 86400)))
+            elif foreign(s):
+                open_.append((tid, "other image environment (%s, now %s)" % (s["env_fp"][:12], env_fp[:12])))
             elif affected(s["commit_"], file):
                 open_.append((tid, "affected since %s" % (s["commit_"] or "?")[:12]))
             else:
                 result.green[tid] = s
                 result.sources[s["run"]] = result.sources.get(s["run"], 0) + 1
+                if s.get("_variant"):
+                    result.variants[s["_variant"]] = result.variants.get(s["_variant"], 0) + 1
         if open_ and len(open_) == len(d["ids"]):
             result.whole.append(file)
             result.reasons[file] = open_[0][1] + " (all %d tests)" % len(open_)
@@ -568,7 +781,8 @@ def _cli_ingest(a):
     files = list_test_files(a.repo, a.commit) if a.repo else []
     whole = files if a.whole else [z for z in (a.targets or []) if z in files]
     ts = datetime.datetime.fromisoformat(a.time).timestamp() if a.time else None
-    z = store.ingest_junit(a.junit, a.env, a.commit, a.run, files, whole_files=whole, kind=a.kind, attempt=a.attempt, ts=ts)
+    z = store.ingest_junit(a.junit, a.env, a.commit, a.run, files, whole_files=whole, kind=a.kind, attempt=a.attempt, ts=ts,
+                         image=a.image, env_fp=a.env_fp)
     print("%s: %d tests (%d green, %d skipped, %d red) from %s -> %s/%s" % (
         a.run, z["total"], z["passed"], z["skipped"], z["failed"] + z["error"], os.path.basename(a.junit), a.project, a.env))
     for t in z["red"][:50]:
@@ -580,7 +794,11 @@ def _cli_plan(a):
     store = Store(a.project)
     commit = _git(a.repo, "rev-parse", "HEAD")[1].strip()
     deps = Dependencies(a.repo, commit, tests_dir=a.tests_dir, selector=a.selector)
-    result = plan(store, a.env, commit, deps.tests, deps)
+    variants = []
+    for spec in a.variant or []:
+        env2, _, names = spec.partition(":")
+        variants.append((env2, variant_exclusions(a.repo, commit, [n for n in names.split(",") if n], a.tests_dir)))
+    result = plan(store, a.env, commit, deps.tests, deps, variants=variants, env_fp=a.env_fp, everything=a.everything)
     if a.json:
         print(json.dumps(dict(result.as_dict(), targets=result.targets(), deps=deps.reasons), ensure_ascii=False, indent=1))
     else:
@@ -590,6 +808,24 @@ def _cli_plan(a):
             print("  %s - %s" % (k, v))
         for old, g in deps.reasons.items():
             print("  dependencies since %s: %s" % (old[:12], g))
+    return 0
+
+
+def _cli_full_runs(a):
+    store = Store(a.project)
+    for r in store.full_runs(a.family):
+        print("%s %-20s %-8s %-30s run %s commit %s env_fp %s (%s tests, %s)" % (
+            _iso(r["ts"]), r["family"], r["version"], r["env"], r["run"], (r["commit_"] or "")[:12], (r["env_fp"] or "-")[:16],
+            r["total"], r["source"]))
+    return 0
+
+
+def _cli_backfill(a):
+    store = Store(a.project)
+    added = backfill_full_runs(store, a.repo, a.family)
+    for run, version in added:
+        print("backfilled: %s (%s)" % (run, version))
+    print("%d full runs backfilled" % len(added))
     return 0
 
 
@@ -632,6 +868,8 @@ def main(argv=None):
     e.add_argument("--kind", default="parallel", choices=("parallel", "serial"))
     e.add_argument("--attempt", type=int, default=0)
     e.add_argument("--time", help="time of the measurement (ISO), default now")
+    e.add_argument("--image", help="image id the run used")
+    e.add_argument("--env-fp", help="fingerprint of the image environment")
     pl = sub.add_parser("plan")
     pl.add_argument("--project", required=True)
     pl.add_argument("--env", required=True)
@@ -639,6 +877,10 @@ def main(argv=None):
     pl.add_argument("--selector", help="command that gets changed app files and prints test files or FULL")
     pl.add_argument("--tests-dir", default="tests")
     pl.add_argument("--json", action="store_true")
+    pl.add_argument("--variant", action="append", metavar="ENV:NAME[,NAME]",
+                    help="sibling environment whose results count too, except for test files that read the variable NAME")
+    pl.add_argument("--env-fp", help="fingerprint of the image environment of this run")
+    pl.add_argument("--everything", action="store_true", help="reuse nothing (full-run rule)")
     st = sub.add_parser("status")
     st.add_argument("--project", required=True)
     st.add_argument("--env")
@@ -649,6 +891,13 @@ def main(argv=None):
     w.add_argument("--json", action="store_true")
     b = sub.add_parser("report")
     b.add_argument("--hours", type=int, default=24)
+    fr = sub.add_parser("full-runs")
+    fr.add_argument("--project", required=True)
+    fr.add_argument("--family")
+    bf = sub.add_parser("backfill-full-runs")
+    bf.add_argument("--project", required=True)
+    bf.add_argument("--repo", required=True)
+    bf.add_argument("--family", required=True)
     a = p.parse_args(argv)
     if a.command == "ingest":
         if not COMMIT_RX.match(a.commit):
@@ -660,6 +909,10 @@ def main(argv=None):
         return _cli_status(a)
     if a.command == "flaky":
         return _cli_flaky(a)
+    if a.command == "full-runs":
+        return _cli_full_runs(a)
+    if a.command == "backfill-full-runs":
+        return _cli_backfill(a)
     if a.command == "report":
         print(json.dumps(report(a.hours), ensure_ascii=False, indent=1))
         return 0

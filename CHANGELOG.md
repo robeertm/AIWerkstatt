@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.32.0 — 2026-11-20
+### Added — test runner: image environment, full-run rule, variants, work tree runs (`scripts/test-runner/`)
+- **Image environment in the result store** (`result_store.py` 1.1.0): every result carries the image id and a fingerprint of the
+  image environment (base image + dependency layers before the source code). A green result from a known, different
+  environment is never reused; `foreign_env()` finds such results after the run, when the fingerprint is known. Older stores are
+  migrated in place; results without a fingerprint behave as before.
+- **Full-run rule**: at least one full green run per minor version and per image environment (`full_run_reason`,
+  `record_full_run`, `plan(..., everything=True)`, CLI `full-runs` and `backfill-full-runs`). Why: reusing green results is only
+  safe if a complete run has proven the suite in the environment that is about to be released.
+- **Variants**: results of a sibling environment that differs only by an environment variable count too; per test the newest
+  result wins (red stays red), except for test files that read the variable (`variant_exclusions` via `git grep`; a name
+  used in application code or helpers means nothing is taken over).
+- **Receiver**: after every build it reports the image identity (control line `image`, field `fp_type`, also in the end
+  record), never failing a run if it cannot be determined. New read-only subcommand `images` (identity of the base test images
+  without code) and the optional mode key `targets_required` for modes that must be given explicit test targets.
+- **Client** (`remote_test.py`): `--worktree` (work tree with uncommitted changes through a throw-away commit from a private
+  index; real index, branches and stash stay untouched), `--meta FILE` (result of the run as JSON including the image
+  identity), `--images`, and `--only-needed` now stores the identity with every result, reruns results of another image
+  environment, applies the full-run rule and accepts `--variant`.
+- Tests for all of it (real git in throw-away repositories, stand-ins for docker and ssh), `docs/test-runner.md` sections
+  "Image environment and full-run rule", "Variants" and "Work tree, meta file and image identity".
+
 ## 0.31.0 — 2026-11-20
 ### Added — branch check: is the work of a "waiting for the release" task really on main? (`scripts/branch-check/`)
 - **`branch_check.py`** (standard library only, read-only): given a clone and the branches/commits a task named in its final
