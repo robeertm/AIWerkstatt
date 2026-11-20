@@ -1449,5 +1449,42 @@ class Install(unittest.TestCase):
         self.assertIn("RTR_TARGET", p.stderr)
 
 
+
+class CachePerState(unittest.TestCase):
+    """0.33.0: one cache image per state of Dockerfile + requirements; the 3 most recently used stay."""
+
+    def test_stamp_and_keep(self):
+        t = tempfile.mkdtemp(prefix="rtr-cache-")
+        self.addCleanup(shutil.rmtree, t, ignore_errors=True)
+        q = os.path.join(t, "q")
+        os.makedirs(q)
+        for n, text in (("Dockerfile", "FROM x\n"), ("requirements.txt", "a==1\n"), ("app.py", "print(1)\n")):
+            with open(os.path.join(q, n), "w") as fh:
+                fh.write(text)
+        s1 = REC.cache_stamp(q)
+        with open(os.path.join(q, "app.py"), "w") as fh:
+            fh.write("print(2)\n")
+        self.assertEqual(REC.cache_stamp(q), s1)                      # code does not change the stamp
+        with open(os.path.join(q, "requirements.txt"), "w") as fh:
+            fh.write("a==2\n")
+        self.assertNotEqual(REC.cache_stamp(q), s1)
+        tags, calls = set(), []
+
+        def docker(args, timeout=None, **kw):
+            calls.append(args)
+            if args[0] == "tag":
+                tags.add(args[2].split(":", 1)[1])
+            elif args[0] == "rmi" and args[1].startswith("rtr-cache/"):
+                tags.discard(args[1].split(":", 1)[1])
+            out = "\n".join(sorted(tags)) + "\n" if args[0] == "images" else ""
+            return subprocess.CompletedProcess(args, 0, out, "")
+        with mock.patch.object(REC, "docker", docker), mock.patch.object(REC, "CACHE_USE", os.path.join(t, "use.json")):
+            tags.add("last")                                          # left over from before 0.33.0
+            for i, st in enumerate(["aaa", "bbb", "aaa", "ccc", "ddd"]):
+                with mock.patch.object(REC.time, "time", return_value=1000.0 + i):
+                    REC.keep_cache({"profile": "demo"}, "rtr-demo:run%d" % i, st)
+            self.assertEqual(tags, {"aaa", "ccc", "ddd"})
+            self.assertIn(["rmi", "rtr-demo:run4"], calls)
+
 if __name__ == "__main__":
     unittest.main()

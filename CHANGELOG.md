@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.33.0 — 2026-11-20
+### Fixed — remote test runner keeps one cache image per dependency state (`scripts/test-runner/remote_test_receiver.py`)
+- Before, the receiver kept a single `rtr-cache/<profile>:last` image. A run of another branch with different requirements
+  replaced it, and the next build of the first branch rebuilt every dependency layer (system packages, browsers) — slow, and with
+  the image environment from 0.32.0 it also counted as a new environment, which forces a full run.
+- Now each state of `Dockerfile`, `requirements*.txt` and `.dockerignore` gets its own tag `rtr-cache/<profile>:<stamp>`; the 3 most
+  recently used stay (`cache-use.json`, `RTR_CACHE_KEEP`), the old `last` tag is dropped on the first clean-up. Test `CachePerState`.
+
 ## 0.32.0 — 2026-11-20
 ### Added — test runner: image environment, full-run rule, variants, work tree runs (`scripts/test-runner/`)
 - **Image environment in the result store** (`result_store.py` 1.1.0): every result carries the image id and a fingerprint of the

@@ -460,15 +460,55 @@ def build_repo(cfg, req, source, out):
     return image, image
 
 
-def keep_cache(req, image):
-    """Keep the last built image as rtr-cache/<profile>:last (layers stay cached), drop the previous one and the run tag."""
-    cache = "rtr-cache/%s:last" % req["profile"]
-    old = docker(["image", "inspect", "--format", "{{.Id}}", cache], timeout=60).stdout.strip()
-    docker(["tag", image, cache], timeout=60)
+CACHE_KEEP = int(os.environ.get("RTR_CACHE_KEEP") or 3)
+CACHE_USE = os.path.join(BASE, "cache-use.json")
+
+
+def cache_stamp(source):
+    """State of the dependency layers: Dockerfile + requirements*.txt + .dockerignore of the package -> 12 hex, or None."""
+    h = hashlib.sha256()
+    try:
+        names = sorted(os.listdir(source))
+    except OSError:
+        return None
+    for n in names:
+        if n in ("Dockerfile", ".dockerignore") or re.fullmatch(r"requirements[\w.-]*\.txt", n):
+            p = os.path.join(source, n)
+            if os.path.isfile(p) and not os.path.islink(p):
+                with open(p, "rb") as fh:
+                    h.update(n.encode() + b"\0" + fh.read() + b"\0")
+    return h.hexdigest()[:12]
+
+
+def keep_cache(req, image, stamp=None):
+    """Keep one cache image per state of Dockerfile + requirements (rtr-cache/<profile>:<stamp>; its layers stay in the build
+    cache) and the CACHE_KEEP most recently USED ones; drop older ones and the run tag. 0.33.0: before, a single "last" slot made
+    branches with different requirements rebuild every dependency layer on each switch (and change the image environment)."""
+    repo = "rtr-cache/%s" % req["profile"]
+    tag = stamp or "last"
+    docker(["tag", image, "%s:%s" % (repo, tag)], timeout=60)
     docker(["rmi", image], timeout=300)
-    new = docker(["image", "inspect", "--format", "{{.Id}}", cache], timeout=60).stdout.strip()
-    if old and old != new:
-        docker(["rmi", old], timeout=300)
+    try:
+        with open(CACHE_USE) as fh:
+            use = json.load(fh)
+        if not isinstance(use, dict):
+            use = {}
+    except (OSError, ValueError):
+        use = {}
+    use["%s:%s" % (repo, tag)] = time.time()
+    p = docker(["images", "--format", "{{.Tag}}", repo], timeout=60)
+    tags = ["%s:%s" % (repo, t.strip()) for t in p.stdout.splitlines() if t.strip() and t.strip() != "<none>"]
+    for t in sorted(tags, key=lambda t: use.get(t, 0), reverse=True)[CACHE_KEEP:]:
+        docker(["rmi", t], timeout=300)
+        use.pop(t, None)
+    use = {k: v for k, v in use.items() if not k.startswith(repo + ":") or k in tags}
+    try:
+        tmp = CACHE_USE + ".new"
+        with open(tmp, "w") as fh:
+            json.dump(use, fh)
+        os.replace(tmp, CACHE_USE)
+    except OSError:
+        pass
 
 
 # ---- image identity (0.32.0)
@@ -727,6 +767,7 @@ def run(raw):
         unpack(pkg, tree)
         os.remove(pkg)
         source = os.path.join(tree, "source")
+        req["_cache_stamp"] = cache_stamp(source)
         extra = os.path.join(tree, "extra") if mode.get("extra") else None
         if not os.path.isdir(source) or (extra and not os.path.isdir(extra)):
             raise ValueError("package without source/%s" % (" or extra/" if extra else ""))
@@ -802,7 +843,7 @@ def run(raw):
         sampler.halt.set()
         if throwaway:
             try:
-                keep_cache(req, throwaway)
+                keep_cache(req, throwaway, req.get("_cache_stamp"))
             except Exception:
                 docker(["rmi", "-f", throwaway], timeout=300)
         shutil.rmtree(work, ignore_errors=True)
