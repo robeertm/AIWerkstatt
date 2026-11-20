@@ -31,6 +31,7 @@ import time
 
 import config
 import eta
+import pool_slots
 import context_pack
 import db
 import engine
@@ -375,10 +376,11 @@ class Orchestrator:
 
     # ---- queue poll -------------------------------------------------------
     def _pool_full(self) -> bool:
-        if MAX_PARALLEL_RUNS <= 0:
+        cap = pool_slots.limit(MAX_PARALLEL_RUNS)   # None = unlimited, else the active slots (0 = nothing starts)
+        if cap is None:
             return False
         live = sum(1 for slug in list(self._running) if self._alive(slug))
-        return live >= MAX_PARALLEL_RUNS
+        return live >= cap
 
     def pool_snapshot(self) -> dict:
         """Live view of the worker pool for the admin overview. Counts exactly like the pool
@@ -440,6 +442,8 @@ class Orchestrator:
             waiting += 1
             waiting_orders.append(d)
         snap = {"max": max(MAX_PARALLEL_RUNS, 0), "busy": len(runs), "waiting": waiting, "runs": runs}
+        snap.update(pool_slots.view(MAX_PARALLEL_RUNS))
+        snap["waiting_reason"] = pool_slots.waiting_reason(MAX_PARALLEL_RUNS, waiting)
         try:
             self._add_eta(snap, live_threads, waiting_orders)
         except Exception:   # the remaining-time display is an extra, never a reason for a broken overview
@@ -471,13 +475,23 @@ class Orchestrator:
             r["run"] = _run_brief(est) if est else None
             r["eta_line"] = eta.line(dict(est, text=text)) if est else text
             free_in.append(t["eta_s"] if t["eta_s"] is not None else max(600, (experience or 45 * 60) - runtime))
-        slots = snap["max"] if snap["max"] > 0 else len(snap["runs"]) + len(waiting_orders)
-        free_in += [0] * max(0, slots - len(free_in))
+        active = snap.get("active")
+        if active is None:
+            free_in += [0] * max(0, len(waiting_orders))
+        elif active > 0:
+            # Runs above the active count only close the gap, they do not reopen a slot: the first
+            # (live - active) finishers are dropped, then free slots are padded up to the active count.
+            free_in = sorted(free_in)[max(0, len(free_in) - active):]
+            free_in += [0] * max(0, active - len(free_in))
         durations = [experience] * len(waiting_orders)
-        starts = eta.start_times(free_in, durations, fallback_s=45 * 60)
+        if active == 0:
+            starts = [None] * len(waiting_orders)
+        else:
+            starts = eta.start_times(free_in, durations, fallback_s=45 * 60)
         waiting_list = []
         for d, t in zip(waiting_orders, starts):
-            text = ("starts shortly" if t is not None and t < 60 else
+            text = ("starts once a slot is switched on" if active == 0 else
+                    "starts shortly" if t is not None and t < 60 else
                     eta.eta_text(t, prefix="starts in", unknown="start unknown"))
             waiting_list.append({"project": d.get("slug"), "start_in_s": _round60(t), "start_text": text})
         snap["waiting_list"] = waiting_list

@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.34.0 — 2026-11-20
+### Added — switch the worker pool down: "only N of M slots active"
+- New runtime setting **active worker slots** (0 to `AIWERKSTATT_MAX_PARALLEL_RUNS`). The pool only starts a run while the
+  number of live runs is below the active count; this is checked in the one place that already guarded the pool size.
+  **0 = nothing starts, every order waits in the queue.** Runs that are already working are never aborted: they finish, the
+  slot then stays empty. If the setting is missing the pool behaves exactly as before (all slots active); an unlimited pool
+  (`AIWERKSTATT_MAX_PARALLEL_RUNS=0`) is not affected.
+- Stored in `<data>/pool-slots.json` (atomic write, survives restarts); each change appends one line (who, when, before,
+  after) to `<data>/pool-slots.jsonl` (`backend/pool_slots.py`).
+- API (admins only, the single write path): `GET /api/pool/slots`, `POST /api/pool/slots` with `{"active": N}`; invalid
+  values give 400.
+- `GET /api/pool` gains the additive fields `active`, `configurable` and `waiting_reason` ("waiting because only N of M slots
+  are active"). The start estimate of waiting orders counts only active slots; with 0 active slots there is no estimate and
+  the text reads "starts once a slot is switched on".
+- UI: the "Agents at work" card shows "N of M slots active" with quick-pick buttons 0..M (44 px touch targets, wraps on
+  phones), switched-off slots are dimmed, and the queue shows the waiting reason.
+- Not ported: "stop the running run right now and continue it later at the front of the queue". It would need a clean pause
+  of a live container plus a resume of the same session in a fresh slot, which the pool cannot guarantee for every provider;
+  so slots are only switched off after the current run.
+- Tests: `backend/tests/test_pool_slots.py` (missing = max, 0 starts nothing, lowering aborts nothing, restart keeps the value,
+  admin only, estimate with active slots).
+
 ## 0.33.0 — 2026-11-20
 ### Fixed — remote test runner keeps one cache image per dependency state (`scripts/test-runner/remote_test_receiver.py`)
 - Before, the receiver kept a single `rtr-cache/<profile>:last` image. A run of another branch with different requirements

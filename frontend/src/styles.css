@@ -204,6 +204,13 @@ pre.code { white-space: pre-wrap; word-break: break-word; font-family: ui-monosp
 .testrunner-line { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; font-size: .82rem; }
 .testrunner-line b { color: var(--text); }
 .pooltile.free { background: transparent; border-style: dashed; color: var(--muted); justify-content: center; min-height: 3.6rem; }
+.pooltile.free.off { opacity: .55; border-style: dotted; }
+.slotbar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .9rem; margin: .7rem 0 .8rem; }
+.slotbar-label { font-weight: 700; font-size: .9rem; }
+.slotbar-pick { display: flex; gap: .4rem; flex-wrap: wrap; }
+.slotbtn { min-width: 44px; min-height: 44px; padding: 0 .6rem; border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); color: inherit; font: inherit; font-weight: 800; cursor: pointer; }
+.slotbtn.on { border-color: var(--accent); background: var(--accent); color: #fff; }
+.slotbar-err { color: var(--warn); font-size: .8rem; }
 .pooltile.busy { border-color: #fbbf2466; }
 .pooltile.apierr { border-color: var(--warn); }
 .pooltile .pt-name { font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

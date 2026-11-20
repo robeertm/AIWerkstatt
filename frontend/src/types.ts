@@ -43,7 +43,7 @@ export type PoolRun = {
 }
 export type WaitingStart = { project: string | null; start_in_s?: number | null; start_text?: string }
 export type TestRunnerLoad = { fresh: boolean; stand: number | null; load: number[] | null; cores: number | null; cpu_percent: number | null; test_runs: number | null; max_runs: number | null; queue_waiting?: number }
-export type PoolSnapshot = { max: number; busy: number; waiting: number; runs: PoolRun[]; test_runner?: TestRunnerLoad; waiting_list?: WaitingStart[]; eta_runs?: EtaRun[] }
+export type PoolSnapshot = { max: number; busy: number; waiting: number; runs: PoolRun[]; test_runner?: TestRunnerLoad; waiting_list?: WaitingStart[]; eta_runs?: EtaRun[]; active?: number | null; configurable?: boolean; waiting_reason?: string | null }
 export type LimitStatus = { active: boolean; until?: number; resumes_at?: string; reset_known?: boolean }
 export type UpdateInfo = { current: string; latest: string | null; update_available: boolean; url: string }
 export type GithubStatus = { connected: boolean; login: string | null }

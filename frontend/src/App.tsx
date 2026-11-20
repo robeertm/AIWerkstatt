@@ -729,7 +729,13 @@ function PoolStrip({ names }: { names: Record<string, string> }) {
     document.addEventListener('visibilitychange', f)
     return () => { alive = false; clearInterval(t); document.removeEventListener('visibilitychange', f) }
   }, [])
+  const [slotErr, setSlotErr] = useState<string | null>(null)
+  const pickSlots = (n: number) => {
+    setSlotErr(null)
+    api.setPoolSlots(n).then(() => api.getPool().then(setPool)).catch((e) => setSlotErr(String(e?.message || e)))
+  }
   if (!pool) return null
+  const active = pool.active == null ? pool.max : pool.active
   const slots = pool.max > 0 ? pool.max : Math.max(pool.busy, 5)
   const tiles = Array.from({ length: Math.max(slots, pool.busy) }, (_, i) => pool.runs[i] || null)
   return (
@@ -740,6 +746,18 @@ function PoolStrip({ names }: { names: Record<string, string> }) {
           {pool.max > 0 ? `${pool.busy}/${pool.max}` : pool.busy} busy</span>
         {pool.waiting > 0 && <span className="chip" style={{ cursor: 'default', color: 'var(--muted)' }}>{pool.waiting} waiting</span>}
       </div>
+      {pool.configurable && pool.max > 0 && (
+        <div className="slotbar" data-testid="slotbar">
+          <span className="slotbar-label">{active} of {pool.max} slots active</span>
+          <div className="slotbar-pick" role="group" aria-label="Active slots">
+            {Array.from({ length: pool.max + 1 }, (_, n) => (
+              <button key={n} type="button" className={`slotbtn${n === active ? ' on' : ''}`}
+                      aria-pressed={n === active} onClick={() => n !== active && pickSlots(n)}>{n}</button>
+            ))}
+          </div>
+          {slotErr && <span className="slotbar-err">{slotErr}</span>}
+        </div>
+      )}
       <div className="pooltiles">
         {tiles.map((r, i) => r ? (
           <div key={r.project} className={`pooltile busy${r.api_error ? ' apierr' : ''}`}
@@ -754,9 +772,10 @@ function PoolStrip({ names }: { names: Record<string, string> }) {
             <EtaBlock r={r} />
           </div>
         ) : (
-          <div key={'free' + i} className="pooltile free"><div className="pt-name">free</div></div>
+          <div key={'free' + i} className={`pooltile free${i >= active ? ' off' : ''}`}><div className="pt-name">{i >= active ? 'switched off' : 'free'}</div></div>
         ))}
       </div>
+      {pool.waiting_reason && <div className="muted" style={{ fontSize: '.75rem', marginTop: '.5rem' }} data-testid="waiting-reason">⏸ {pool.waiting_reason}</div>}
       {(pool.waiting_list || []).some((w) => w.start_text) && (
         <div className="muted" style={{ fontSize: '.75rem', marginTop: '.5rem' }} data-testid="waiting-starts">
           {(pool.waiting_list || []).filter((w) => w.start_text).map((w, i) => (

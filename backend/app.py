@@ -27,6 +27,7 @@ import publish
 import review
 import service_token
 import planlimit
+import pool_slots
 import orchestrator as orch
 
 DIST = os.environ.get("AIWERKSTATT_DIST",
@@ -845,6 +846,26 @@ def pool():
     if tr is not None:
         snap = dict(snap, test_runner=tr)
     return jsonify(snap)
+
+
+@app.get("/api/pool/slots")
+@admin_required
+def pool_slots_get():
+    """Active worker slots (admins): ``active`` of ``max``; ``configurable`` is false for an unlimited pool."""
+    return jsonify(dict(pool_slots.view(orch.MAX_PARALLEL_RUNS), max=max(orch.MAX_PARALLEL_RUNS, 0)))
+
+
+@app.post("/api/pool/slots")
+@admin_required
+def pool_slots_set():
+    """The one write path for the active slot count. Body: {"active": 0..max}. Admins only.
+    Runs that are already working are never aborted; the change only decides what may START."""
+    d = request.get_json(silent=True) or {}
+    try:
+        change = pool_slots.set_active(d.get("active"), orch.MAX_PARALLEL_RUNS, current_user()["name"])
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, change=change, **dict(pool_slots.view(orch.MAX_PARALLEL_RUNS), max=max(orch.MAX_PARALLEL_RUNS, 0)))
 
 
 @app.get("/api/model-usage")

@@ -179,7 +179,7 @@ class PoolEndpoint(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         d = r.get_json()
         self.assertTrue({"max", "busy", "waiting", "runs"} <= set(d))          # existing fields stay
-        self.assertTrue(set(d) <= {"max", "busy", "waiting", "runs", "waiting_list", "eta_runs", "test_runner"})
+        self.assertTrue(set(d) <= {"max", "busy", "waiting", "runs", "waiting_list", "eta_runs", "test_runner", "active", "configurable", "waiting_reason"})
         self.assertIsInstance(d["runs"], list)
 
     def test_member_is_refused(self):
