@@ -219,7 +219,9 @@ set of endpoints. Each token has a **profile**:
   fixed prefix (`AIWERKSTATT_CHAIN_TITLE_PREFIX`), with `auto` or a standard model and no
   attachments, and read and follow up on its own tasks. Either variable unset means every
   create is refused. Review gate on by default, own rate limit (`AIWERKSTATT_CHAIN_RATE`,
-  6 per hour by default), nothing else.
+  6 per hour by default), nothing else. Multi-project plans (`scripts/chain/projectplan.py`) add the
+  projects in `AIWERKSTATT_CHAIN_PLAN_PROJECTS` with their own title prefix
+  (`AIWERKSTATT_CHAIN_PLAN_PREFIX`); `AIWERKSTATT_CHAIN_PLAN_EXCLUDED` projects stay unreachable.
 
 No token can release, publish, create or delete projects, change settings, manage users or
 tokens, or decide a review. Every task shows which token created it (**via &lt;name&gt;**),

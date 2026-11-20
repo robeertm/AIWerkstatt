@@ -1,0 +1,44 @@
+{
+  "format": "projectplan/2",
+  "name": "example-plan",
+  "title": "Example plan across three projects",
+  "date": "2026-11-21",
+  "limits": {"total": 3, "per_project": 1, "per_day": 20, "priority": "free"},
+  "order": ["webshop/A1", "webshop/A2", "docs-site/B1", "api-core/C1", "webshop/A3", "api-core/C2", "docs-site/B2"],
+  "projects": [
+    {
+      "id": "webshop", "name": "Web shop",
+      "release": {"kind": "train", "slug": "webshop", "repo": "owner/webshop", "how": "one release train per repository"},
+      "history": [{"date": "2026-11-10", "title": "Checkout rewrite", "result": "published", "version": "1.4.0"}],
+      "tasks": [
+        {"id": "A1", "track": "ui", "title": "Cart page", "model": "claude-sonnet-5-5", "effort": "medium", "hours": 2, "priority": 1,
+         "prompt": "Build the cart page with quantity controls."},
+        {"id": "A2", "track": "ui", "title": "Cart totals", "model": "claude-sonnet-5-5", "effort": "medium", "hours": 1, "priority": 2,
+         "depends_on": ["A1"], "prompt": "Show totals and taxes on the cart page."},
+        {"id": "A3", "track": "api", "title": "Use the new pricing endpoint", "model": "claude-sonnet-5-5", "hours": 1.5, "priority": 2,
+         "depends_on": ["api-core/C1"], "prompt": "Switch the cart to the pricing endpoint of the core API."}
+      ]
+    },
+    {
+      "id": "docs-site", "name": "Documentation site",
+      "release": {"kind": "none"},
+      "tasks": [
+        {"id": "B1", "track": "docs", "title": "Audit the guide", "model": "claude-haiku-5-5", "effort": "low", "hours": 0.5, "priority": 4,
+         "prompt": "List outdated pages and write the list into docs/audit.md."},
+        {"id": "B2", "track": "docs", "title": "Optional restyle", "model": "claude-sonnet-5-5", "hours": 1, "priority": 4,
+         "optional": true, "depends_on": ["B1"], "prompt": "Restyle the headings of the guide."}
+      ]
+    },
+    {
+      "id": "api-core", "name": "Core API",
+      "release": {"kind": "train", "slug": "api-core", "repo": "owner/api-core"},
+      "limits": {"per_day": 3},
+      "tasks": [
+        {"id": "C1", "track": "api", "title": "Pricing endpoint", "model": "claude-opus-5-5", "effort": "high", "hours": 2.5, "priority": 1,
+         "prompt": "Add the pricing endpoint with tests."},
+        {"id": "C2", "track": "api", "title": "Pricing hotfix path", "model": "claude-sonnet-5-5", "hours": 0.5, "priority": 3,
+         "depends_on": ["C1"], "release": "own", "release_fix": true, "prompt": "Fix rounding in the pricing endpoint and publish the fix."}
+      ]
+    }
+  ]
+}

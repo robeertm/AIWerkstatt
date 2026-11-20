@@ -225,6 +225,10 @@ tighter limits on creating:
 - **One collecting project and a fixed title prefix.** `AIWERKSTATT_CHAIN_PROJECT` and
   `AIWERKSTATT_CHAIN_TITLE_PREFIX`. If either is unset, empty, or the request does not match,
   the API answers **403**.
+- **Plan projects (multi-project plans).** In addition to the collecting project the token may file into the projects listed in
+  `AIWERKSTATT_CHAIN_PLAN_PROJECTS`, but only with the title prefix `AIWERKSTATT_CHAIN_PLAN_PREFIX`; the collecting project keeps its
+  own prefix. Projects in `AIWERKSTATT_CHAIN_PLAN_EXCLUDED` are never reachable, not even when listed elsewhere. An unset or empty
+  list or prefix means nowhere. Models, efforts, attachments, own-tasks-only reading and the rate limit apply unchanged.
 - **Standard models only.** `model` must be empty, `auto`, or a model of the project's
   provider that the Auto ladder may pick. Special-purpose and legacy models, unknown
   models and unknown effort steps are refused with **403**. There is no per-task working

@@ -185,10 +185,41 @@ def _chain_unreviewed():
     return _chain() and os.environ.get("AIWERKSTATT_CHAIN_REVIEW", "on").strip().lower() == "off"
 
 
-def _chain_request_ok(p, d, title):
-    """Every limit of a chain task in one place. False = answer 403."""
-    prefix = _chain_prefix()
-    if not _chain_project() or not prefix or not title.startswith(prefix):
+def _chain_plan_projects():
+    """Projects a multi-project plan may file into (AIWERKSTATT_CHAIN_PLAN_PROJECTS, comma separated)."""
+    return {x.strip() for x in os.environ.get("AIWERKSTATT_CHAIN_PLAN_PROJECTS", "").split(",") if x.strip()}
+
+
+def _chain_plan_excluded():
+    """Projects no chain token may ever touch (AIWERKSTATT_CHAIN_PLAN_EXCLUDED); beats every other rule."""
+    return {x.strip().lower() for x in os.environ.get("AIWERKSTATT_CHAIN_PLAN_EXCLUDED", "").split(",") if x.strip()}
+
+
+def _chain_plan_prefix():
+    return os.environ.get("AIWERKSTATT_CHAIN_PLAN_PREFIX", "")
+
+
+def _chain_scope_prefix(pid):
+    """Title prefix required for a chain task in project ``pid``; None = this project is not reachable.
+    The collecting project takes the chain prefix, a listed plan project the plan prefix, an excluded
+    project nothing. Unset project list or prefix = nowhere."""
+    if pid.lower() in _chain_plan_excluded():
+        return None
+    if pid in _chain_plan_projects():
+        return _chain_plan_prefix() or None
+    if _chain_project() and pid == _chain_project():
+        return _chain_prefix() or None
+    return None
+
+
+def _chain_request_ok(p, d, title, prefix=None):
+    """Every limit of a chain task in one place. False = answer 403. ``prefix`` is the scope prefix of the target
+    project (see _chain_scope_prefix); without it the collecting-project rule applies."""
+    if prefix is None:
+        prefix = _chain_prefix()
+        if not _chain_project():
+            return False
+    if not prefix or not title.startswith(prefix):
         return False
     if d.get("files") or d.get("attachments") or d.get("attachment"):
         return False   # no attachments of any kind
@@ -558,12 +589,13 @@ def thread_create(pid):
         abort(403)
     if _reporter() and pid != _reporter_project():
         abort(403)   # a reporter files into the one intake project; unset = nowhere
-    if _chain() and pid != _chain_project():
-        abort(403)   # same for the chain: one collecting project; unset = nowhere
+    chain_prefix = _chain_scope_prefix(pid) if _chain() else None
+    if _chain() and chain_prefix is None:
+        abort(403)   # the chain: its collecting project or a listed plan project; unset or excluded = nowhere
     d = request.get_json(force=True) or {}
     title = (d.get("title") or "").strip()
     body = (d.get("request") or d.get("body") or "").strip()
-    if _chain() and not _chain_request_ok(p, d, title):
+    if _chain() and not _chain_request_ok(p, d, title, chain_prefix):
         abort(403)
     if not title or not body:
         return jsonify(error="Title and request are required."), 400

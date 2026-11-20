@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.35.0 — 2026-11-21
+### Added — multi-project plans (`scripts/chain/projectplan.py`)
+- New tool next to the task chain: plans of format `projectplan/2` span several projects. Every project has its own tasks and
+  tracks, tasks can depend on tasks of other projects (`<project>/<ID>`), every task has a release target (`none | train | own`)
+  and every project can carry a `history` for a timeline. Same API and same `chain` token as `chain.py`; the plain chain is unchanged.
+- **Approval is mandatory**: a draft never runs by itself (`approve <name>` validates, freezes the plan with SHA-256, author and time).
+- **Brakes** (a plan can only lower them): 4 open tasks in total (default 3), 2 per project (default 1), 1 per track, 60 per day
+  (default 30). **Priority**: a task is filed only if nothing foreign waits in the queue and a slot is free (queue state from a file,
+  unknown = nothing is filed); `"priority": "queue"` switches that off.
+- **Release rules**: no new task for a repository while its release backlog is `stale`/`critical` or its train is red (except
+  `release_fix`); one release way per repository.
+- **Completion detection without result files** (question, stuck, stopped, failed, "waiting for release" until the release state
+  shows the version), status file `projectplan-status/1`, dry-run simulation, kill switches, per-plan pause.
+- A configurable list of excluded projects is refused in plans and by the API.
+- API: the `chain` token may additionally file into the projects listed in `AIWERKSTATT_CHAIN_PLAN_PROJECTS` with the title prefix
+  `AIWERKSTATT_CHAIN_PLAN_PREFIX`; `AIWERKSTATT_CHAIN_PLAN_EXCLUDED` projects are never reachable. Everything else about the profile
+  is unchanged (standard models, no attachments, own tasks only, rate limit, review gate).
+- Docs: `docs/chain.md` ("Multi-project plans"), `docs/security.md`; example `scripts/chain/example-projectplan.json`.
+- Tests: `scripts/chain/test_projectplan.py` (format, approval, brakes, priority, release rules, detection, status, command line),
+  `backend/tests/test_chain_plan_token.py` (allowed target and every refusal).
+
 ## 0.34.0 — 2026-11-20
 ### Added — switch the worker pool down: "only N of M slots active"
 - New runtime setting **active worker slots** (0 to `AIWERKSTATT_MAX_PARALLEL_RUNS`). The pool only starts a run while the

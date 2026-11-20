@@ -160,7 +160,62 @@ sends exactly one follow-up to a task that finished without a result file, and e
 a task whose thread shows no activity for more than twice its `hours`. A failed or stopped
 task is shown as a hint for a human. Then it starts whatever is ready.
 
+## Multi-project plans
+
+`scripts/chain/projectplan.py` runs plans that span **several projects** (format `projectplan/2`) with the same API and the
+same `chain` token. The plain chain above stays as it is. Example: `scripts/chain/example-projectplan.json`.
+
+```json
+{"format": "projectplan/2", "name": "example-plan", "title": "…", "date": "2026-11-21",
+ "limits": {"total": 3, "per_project": 1, "per_day": 30, "priority": "free"},
+ "order": ["webshop/A1", "api-core/C1"],
+ "projects": [{"id": "webshop", "name": "Web shop",
+               "release": {"kind": "train", "slug": "webshop", "repo": "owner/webshop", "how": "text"},
+               "limits": {"per_project": 1, "per_day": 4},
+               "history": [{"date": "2026-11-10", "title": "…", "result": "published", "version": "1.4.0"}],
+               "tasks": [{"id": "A1", "track": "ui", "title": "…", "model": "claude-sonnet-5-5", "effort": "medium",
+                          "hours": 2, "priority": 1, "depends_on": ["A0", "api-core/C1"], "release": "train",
+                          "release_fix": false, "optional": false, "prompt": "…"}]}]}
+```
+
+- `projects[].id` is the AIWerkstatt project id the tasks are filed into. `depends_on` names a task of the same project
+  (`A0`) or of another one (`<project>/<ID>`); cycles and unknown names are refused. `release` is `none | train | own`
+  (a version string such as `"1.5.0"` sets only the expected version); a task inherits the kind from its project.
+  `history[]` is past work for a timeline and is never run. `priority` 1 (wishes of people) to 4 (optimisation) orders the
+  plan when `order` is missing.
+- **Nothing runs without approval.** Drafts live in `<root>/projectplans/drafts/<name>.json` and appear in `status` as
+  drafts. `projectplan.py approve <name> [--by NAME]` validates the plan, freezes it (SHA-256, who, when) in `active/` and
+  files what the brakes allow. `withdraw` stops new filing, running tasks go on.
+- **Brakes** (a plan can only lower them): `total` open tasks 4 (default 3), `per_project` 2 (default 1), 1 per track,
+  `per_day` 60 (default 30); a project may lower `per_project` and `per_day`.
+- **Priority** (`"free"`, default): a task is filed only if nothing foreign waits in the queue and a slot is free; urgent
+  foreign tasks always win. `"queue"` files regardless and lets the normal FIFO queue sort it out. The queue state comes
+  from `--load-file` / `AIWERKSTATT_PLAN_LOAD_FILE`, a JSON file `{"waiting": [{"thread": 12, "urgent": false}], "slots_free": 2}`
+  that the operator keeps fresh (for example from `GET /api/pool`). Unknown state fails closed: nothing is filed.
+- **Release**: while the release state of a repository is `stale` or `critical`, or its train is `red`, nothing new is filed for
+  it (except `release_fix: true`). A task with kind `own` never starts next to a running train or another `own` task of the same
+  repository, so there is one release way per repository. The release state is read from `--release-file` /
+  `AIWERKSTATT_PLAN_RELEASE_FILE`: `{"repos": [{"repo": "owner/x", "slug": "x", "level": "ok|stale|critical",
+  "train": {"status": "running|green|requested|red"}, "published": "1.4.0", "published_ts": 1790000000, "unpublished": true}]}`;
+  without the file the release brakes do not apply.
+- **Detection without result files**: a task that no longer works and has an answer is `done`. Its first line
+  `QUESTION FOR THE COORDINATOR:` makes it `question` (waits until a follow-up resumes it), `STUCK:` makes it `stuck`, a stopped
+  or failed task is `stopped` or `failed`; none of these is filed again (`retry <plan>:<project>/<ID>` allows it). A release
+  kind other than `none`, or the line `RELEASE STATE: waiting <slug> <version>`, makes the finished task `waiting_release` until the
+  release state shows the version as published (`published`). Dependents treat `done`, `waiting_release` and `published` as met.
+- **Excluded projects**: `--excluded` / `AIWERKSTATT_CHAIN_PLAN_EXCLUDED` (comma separated project ids) are refused in plans and,
+  with the same variable on the web service, by the API.
+- **Switches**: `<root>/KILL` (shared with chain.py, exit 3) and `<root>/projectplans/OFF`; `pause <name>` / `resume <name>` per plan.
+- Commands: `validate`, `simulate`, `approve`, `withdraw`, `pause`, `resume`, `status [--json]` (also writes
+  `<root>/projectplans/status.json`, format `projectplan-status/1`, no prompts in it), `check` (run it from a timer),
+  `option`, `done`, `retry`.
+- **Setup of the token scope**: on the web service set `AIWERKSTATT_CHAIN_PLAN_PROJECTS` (comma separated project ids the plans
+  file into), `AIWERKSTATT_CHAIN_PLAN_PREFIX` (for example `Project plan · `, also `--prefix` of the tool) and optionally
+  `AIWERKSTATT_CHAIN_PLAN_EXCLUDED`. See [security](security.md#task-chain). The default write limit of a chain token is 6 per hour;
+  raise `AIWERKSTATT_CHAIN_RATE` for plans.
+
 ## Tests
 
-`python3 -m unittest discover -s scripts/chain` (fake API and clock, includes a simulation of
+`python3 -m unittest discover -s scripts/chain` (chain and multi-project plans) and
+`cd backend && python3 -m unittest tests.test_chain_token tests.test_chain_plan_token` (fake API and clock, includes a simulation of
 the example plan).
