@@ -201,6 +201,21 @@ class Profiles(unittest.TestCase):
                     self.load(d)
 
 
+class ProbeName(unittest.TestCase):
+    """0.40.1: two runs that start in the same second get different container names."""
+
+    def test_same_second_different_names(self):
+        prof = {"build": "base", "modes": {"overflow": {"command": ["sh", "run.sh"], "read_only": False}}}
+        req = {"repo": "my-repo", "mode": "overflow", "env": {}, "n": 1, "_slot": 0}
+        names = []
+        for rid in ("1121212752-54b11138", "1121212752-cdae840f"):
+            name, args = REC.run_args(CFG, prof, dict(req, id=rid), "image:1", "/src", None)
+            self.assertEqual(args[args.index("--name") + 1], name)
+            names.append(name)
+        self.assertNotEqual(names[0], names[1])
+        self.assertTrue(names[0].startswith("probe-my-repo-") and names[0].endswith("-54b11138"), names)
+
+
 class CheckRequest(unittest.TestCase):
     def test_valid(self):
         a = REC.check_request(enc(good(version="1.2.3", args=["tests/test_a.py::T::t", "-k", "foo"],

@@ -30,7 +30,7 @@ Output of "run"/"result": plain lines are the output of the test run, unchanged.
 "\\x1eRTR " + JSON ({"kind": "build"|"info"|"image"|"junit"|"busy"|"error"|"end"|"running", ...}).
 
 Rules: at most MAX_SLOTS (2) runs at the same time (one flock per slot, checked at once -> "busy"). Containers run with
---rm --name probe-<repo>-<time> --network none --cap-drop ALL --security-opt no-new-privileges --no-healthcheck
+--rm --name probe-<repo>-<time>-<id> --network none --cap-drop ALL --security-opt no-new-privileges --no-healthcheck
 --memory, a low --cpu-shares and a CPU limit chosen in profiles.json: "cpus" (--cpus, needs a kernel with CFS quota)
 or "cpuset" (--cpuset-cpus, one set per slot). A running test is never aborted, not even when the connection drops
 (SIGHUP/SIGPIPE are ignored; the result stays retrievable for RESULT_DAYS). The only limit is an emergency brake
@@ -648,7 +648,10 @@ def container_command(mode, req):
 
 def run_args(cfg, prof, req, image, source, extra):
     mode = prof["modes"][req["mode"]]
-    name = "probe-%s-%s" % (req["repo"], datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    # 0.40.1: the time stamp alone has one-second resolution - two runs of one gate (e.g. two overflow chunks on two slots)
+    # that start in the same second collided on the name (docker rc 125). The tail of the run id makes it unique.
+    tail = re.sub(r"[^0-9a-f]", "", str(req["id"]).rsplit("-", 1)[-1].lower())[:8] or "%04x" % (os.getpid() & 0xFFFF)
+    name = "probe-%s-%s-%s" % (req["repo"], datetime.datetime.now().strftime("%Y%m%d-%H%M%S"), tail)
     args = ["run", "--rm", "--name", name, "--label", "io.aiwerkstatt.test-runner=%s" % req["id"],
             "--network", "none"] + cpu_args(cfg, req["_slot"]) + limits(cfg)
     args += ["--read-only", "--tmpfs", "/tmp"] if mode.get("read_only", True) else ["--tmpfs", "/tmp"]

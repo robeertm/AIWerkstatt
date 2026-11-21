@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.40.1 — 2026-11-21
+### Fixed — test runner: unique probe container names
+- Two runs that started in the same second (for example two overflow chunks of one gate on two slots) got the same
+  container name `probe-<repo>-<time>`; the second failed with docker rc 125. The name now ends with the tail of the run id
+  (`probe-<repo>-<time>-<id>`). Test: `ProbeName` in `scripts/test-runner/test_remote_test.py`.
+
 ## 0.40.0 — 2026-11-21
 ### Added — parity inventory and CPU cap per agent run
 - `docs/parity-inventory.md`: table of what the private control plane has, what is mirrored here, what is unnecessary by
