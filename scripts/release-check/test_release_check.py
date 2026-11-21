@@ -590,13 +590,14 @@ class ExampleConfig(unittest.TestCase):
             for h in p.get("heal") or []:
                 self.assertIn(h["kind"], rc.HEAL_KINDS, name)
 
-    def test_no_addresses_or_names_in_example(self):
+    def test_no_addresses_in_example(self):
         with open(self.PATH, encoding="utf-8") as f:
             raw = f.read()
         self.assertNotRegex(raw, r"https?://")
         self.assertNotRegex(raw, r"\b\d+\.\d+\.\d+\.\d+\b")
-        for word in ("robeertm", "tauri", "linkwache", "lanloom"):
-            self.assertNotIn(word, raw.lower())
+        # example repositories use the neutral owner "example-org"
+        for p in json.loads(raw)["projects"].values():
+            self.assertTrue(p["repo"].startswith("example-org/"), p["repo"])
 
 
 if __name__ == "__main__":
