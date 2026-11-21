@@ -20,6 +20,10 @@ python3 scripts/branch-check/branch_check.py <clone> --text final-answer.md --js
   work-in-progress commits that were squashed later do not raise a false alarm.
 - `--text` extracts `task/...` and `work/...` branches (add more with `--prefix`) and SHAs (7-40 hex with at least one digit
   and one letter, so dates and plain numbers are ignored).
+- Two things never raise an alarm: `--running` (the task is working again - answer `unclear`) and a train hint. When the final
+  answer says the branch is meant for a collective release train ("train 1.2.0"; `--text` finds it, or give `--train 1.2.0`) and
+  the branch is on a remote, the state is `unclear` ("planned for train 1.2.0") for `--train-grace-hours` (default 48; `--age-hours`
+  is the age of the answer, unknown counts as young) and `not_pushed` after that. A branch that exists only locally is always `not_pushed`.
 - `--main` names the main ref (default `origin/main`); run `git fetch` first if the answer must be current.
 - A task rule that goes with it: a task that waits for a release names its branch and commit in the final answer and pushes the
   branch to the remote first.

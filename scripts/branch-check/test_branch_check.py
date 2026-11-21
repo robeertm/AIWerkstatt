@@ -67,6 +67,46 @@ class Check(Base):
         self.assertEqual(r["state"], "not_pushed")
         self.assertIn("remote branch", r["reason"])
 
+    def test_train_hint_on_remote_is_unclear_then_not_pushed_after_the_grace(self):
+        self.branch("task/7")
+        g(self.c, "push", "-q", "origin", "task/7")
+        r = bc.check(self.cl, ["task/7"], train="1.2.0", age_hours=5)
+        self.assertEqual(r["state"], "unclear")
+        self.assertIn("planned for train 1.2.0", r["reason"])
+        self.assertEqual(bc.check(self.cl, ["task/7"], train="1.2.0")["state"], "unclear")        # age unknown = young
+        late = bc.check(self.cl, ["task/7"], train="1.2.0", age_hours=60)
+        self.assertEqual(late["state"], "not_pushed")
+        self.assertIn("planned for train 1.2.0", late["reason"])
+        self.assertEqual(bc.check(self.cl, ["task/7"])["state"], "not_pushed")                    # no hint: as before
+
+    def test_train_hint_never_saves_a_local_only_branch(self):
+        self.branch("task/8")
+        r = bc.check(self.cl, ["task/8"], train="1.2.0", age_hours=1)
+        self.assertEqual(r["state"], "not_pushed")
+        self.assertIn("only locally", r["reason"])
+
+    def test_running_task_is_not_checked(self):
+        self.branch("task/9")
+        r = bc.check(self.cl, ["task/9"], running=True)
+        self.assertEqual(r["state"], "unclear")
+        self.assertIn("working again", r["reason"])
+
+    def test_train_hint_is_found_in_text(self):
+        self.assertEqual(bc.train_hint("Branch task/1 is ready for release train 1.50.0."), "1.50.0")
+        self.assertEqual(bc.train_hint("goes into train v2.1"), "2.1")
+        self.assertEqual(bc.train_hint("The train leaves later, see v1.0 notes"), "")
+        self.assertEqual(bc.train_hint(None), "")
+
+    def test_cli_picks_the_hint_from_the_text(self):
+        self.branch("task/10")
+        g(self.c, "push", "-q", "origin", "task/10")
+        f = os.path.join(self.t, "answer.md")
+        with open(f, "w") as fh:
+            fh.write("Work is on task/10, planned for train 1.4.0.\n")
+        self.assertEqual(bc.main([self.c, "--text", f, "--json"]), 2)                            # unclear = exit 2
+        self.assertEqual(bc.main([self.c, "--text", f, "--age-hours", "100"]), 3)                # grace over = not_pushed
+        self.assertEqual(bc.main([self.c, "--branch", "task/10", "--running"]), 2)
+
     def test_merged_is_on_main_then_in_tag(self):
         self.branch("task/3")
         g(self.c, "merge", "-q", "--ff-only", "task/3")

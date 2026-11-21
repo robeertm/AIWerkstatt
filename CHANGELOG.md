@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.36.0 — 2026-11-21
+### Changed — branch check without false alarms (`scripts/branch-check/branch_check.py`)
+- A branch the final answer plans for a collective release train ("train 1.2.0", found in `--text` or given with `--train`) is
+  `unclear` instead of `not_pushed` while it is on a remote and the answer is younger than `--train-grace-hours` (default 48);
+  afterwards the finding returns. A branch that exists only locally stays `not_pushed` always.
+- New `--running`: a task that is working again (follow-up, retry) is answered `unclear`; report it only after it ended.
+- Tests in `scripts/branch-check/test_branch_check.py` (+5), docs in `docs/branch-check.md`.
+
 ## 0.35.0 — 2026-11-21
 ### Added — multi-project plans (`scripts/chain/projectplan.py`)
 - New tool next to the task chain: plans of format `projectplan/2` span several projects. Every project has its own tasks and
