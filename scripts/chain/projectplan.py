@@ -25,7 +25,11 @@ AIWERKSTATT_PLAN_LOAD_FILE and ``--release-file`` / AIWERKSTATT_PLAN_RELEASE_FIL
 ever read from a mode 0600 file, never from argv.
 
 A plan runs ONLY after ``approve``. A draft is never started by itself. Hard ceilings (a plan can only lower them):
-``total`` 4 open tasks (default 3), ``per_project`` 2 (default 1), 1 per track, ``per_day`` 60 (default 30). With
+``total`` 5 tasks occupying a slot at the same time (default: all active slots, minus 1 reserve only while an urgent or
+foreign task waits; a plan may set a lower number), ``per_project`` 2 (default 1), 1 per track, ``per_day`` 60 (default 30).
+Only tasks that really hold a slot count (state ``running``): ``question``, ``waiting_release`` and finished tasks never do.
+Refill promptly: run ``check`` whenever a task ends (a hook of your scheduler) and, as a fallback, every 2-3 minutes; the
+status shows ``idle`` (minutes with a free slot and ready tasks). With
 ``priority: "free"`` (default) a task is only filed when nothing foreign waits in the queue and a slot is free.
 Kill switches in ``<root>``: ``KILL`` (shared with chain.py) and ``projectplans/OFF``. The tool never tags or publishes.
 Exit codes: 0 ok, 1 refused (plan or target), 2 error, 3 kill switch on.
@@ -57,8 +61,10 @@ LIVE_KINDS = ("rollout", "none", "workstation")
 LIVE_FOLLOWUP_MAX = 2                # automatic follow-ups per task, then a held state in the status (a person looks)
 LIVE_LINE_RE = re.compile(r"(?im)^\W*LIVE:[ \t]*(.*)$")
 LIVE_PAIR_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]{0,60})\s*=\s*v?(\d+\.\d+\.\d+)")
-LIMITS_DEFAULT = {"total": 3, "per_project": 1, "per_day": 30}
-LIMITS_MAX = {"total": 4, "per_project": 2, "per_day": 60}
+LIMITS_DEFAULT = {"total": 5, "per_project": 1, "per_day": 30}
+LIMITS_MAX = {"total": 5, "per_project": 2, "per_day": 60}
+IDLE_GAP_MIN = 6                    # one measurement counts at most this many minutes (no extrapolation over gaps)
+IDLE_DAYS = 14
 PRIORITIES = ("free", "queue")
 STARTUP_S = 600                      # a freshly filed task counts as active even before the API shows it
 VERBOSE_MAX = 60
@@ -335,6 +341,7 @@ def limits_of(plan):
         v = b.get(k, std)
         out[k] = max(1, min(v if isinstance(v, int) and not isinstance(v, bool) else std, LIMITS_MAX[k]))
     out["priority"] = b.get("priority") if b.get("priority") in PRIORITIES else "free"
+    out["total_auto"] = not (isinstance(b.get("total"), int) and not isinstance(b.get("total"), bool))
     return out
 
 
@@ -604,6 +611,20 @@ class ProjectPlans:
         deps = [(self.s["tasks"].get("%s:%s" % (name, d)) or {}).get("state") for d in e["deps"]]
         return "ready" if all(x in DONE_STATES for x in deps) else "waiting"
 
+    def occupying(self):
+        """Tasks that really hold a slot (or wait in the queue): state ``running`` only. ``question``, ``waiting_release``,
+        finished and stopped tasks never count against the total."""
+        return [(n, k, ts) for n, k, ts in self.open_tasks() if ts.get("state") == "running"]
+
+    def total_effective(self, lim, own):
+        """Effective total: the plan's own cap (if it set one) or all active slots, minus 1 reserve only while an urgent or
+        foreign task waits. ``slots_total`` comes from the load file (default 5)."""
+        info = self.load_info() or {}
+        slots = max(0, min(int(info.get("slots_total") or LIMITS_MAX["total"]), LIMITS_MAX["total"]))
+        waiting = [w for w in (info.get("waiting") or []) if w.get("thread") not in own]
+        reserve = 1 if (lim.get("total_auto") and any(w.get("urgent") for w in waiting)) else 0
+        return max(0, min(lim["total"], slots - reserve))
+
     def open_tasks(self):
         return [(key.split(":", 1)[0], key.split(":", 1)[1], ts) for key, ts in self.s["tasks"].items()
                 if ts.get("state") in ACTIVE]
@@ -861,8 +882,9 @@ class ProjectPlans:
                     self.halt[k] = "project is excluded"
                     continue
                 opn = self.open_tasks()
-                if len(opn) >= lim["total"]:
-                    self.halt[name] = "total brake %d reached" % lim["total"]
+                tot = self.total_effective(lim, own)
+                if len(self.occupying()) >= tot:
+                    self.halt[name] = "total brake %d reached" % tot
                     break
                 pp = per_project_limit(plan, e["project"], lim)
                 if sum(1 for _n, _k, ts in opn if ts.get("project") == pid) >= pp:
@@ -902,7 +924,63 @@ class ProjectPlans:
             allt, _order = flatten(plan)
             for k, e in allt.items():
                 self.inspect(name, k, e)
-        return self.fill(active)
+        new = self.fill(active)
+        try:
+            self.measure_idle(active, new)
+        except Exception:  # noqa: BLE001 — the measurement never disturbs filing
+            pass
+        return new
+
+    def measure_idle(self, active, new):
+        """Metric "idle minutes with ready tasks": minutes in which an active slot was free, nothing foreign waited and a task
+        was ready although nothing was filed. ``unwanted`` = the reason is no deliberate brake."""
+        iz = self.s.setdefault("idle", {})
+        t = self.now()
+        last = iz.get("last_ts")
+        iz["last_ts"] = t
+        days = iz.setdefault("days", {})
+        for d in sorted(days)[:-IDLE_DAYS]:
+            days.pop(d, None)
+        if not last or t <= last:
+            return
+        gap = min((t - float(last)) / 60.0, float(IDLE_GAP_MIN))
+        info = self.load_info()
+        if not info or any(w.get("thread") not in {ts.get("thread") for _p, _k, ts in self.open_tasks()}
+                           for w in info.get("waiting") or []):
+            return
+        if int(info.get("slots_free") or 0) - len(new) <= 0:
+            return
+        deliberate = ("paused", "total brake", "daily brake", "project brake", "previous task", "release", "kill", "OFF", "excluded",
+                      "priority")
+        reasons = {}
+        for name, (plan, _sha) in active.items():
+            ps = self.s["plans"].get(name) or {}
+            if not ps.get("approved") or ps.get("withdrawn"):
+                continue
+            allt, order = flatten(plan)
+            for k in order:
+                if self.state_of(name, k, allt[k], True) != "ready" or k in new:
+                    continue
+                why = "paused" if ps.get("paused") else (self.halt.get(k) or self.halt.get(name) or self.halt.get("*") or "unknown")
+                reasons[clean(re.sub(r"\d+", "N", why), 60)] = 1
+        if not reasons:
+            return
+        unwanted = not self.halt.get("*") and any(not any(x in r for x in deliberate) for r in reasons)
+        dz = days.setdefault(day_of(t), {"min": 0.0, "unwanted_min": 0.0, "reasons": {}})
+        dz["min"] = round(dz["min"] + gap, 2)
+        if unwanted:
+            dz["unwanted_min"] = round(dz["unwanted_min"] + gap, 2)
+        for r in reasons:
+            dz["reasons"][r] = round(dz["reasons"].get(r, 0.0) + gap, 2)
+        dz["reasons"] = dict(sorted(dz["reasons"].items(), key=lambda kv: -kv[1])[:8])
+
+    def idle_block(self):
+        days = (self.s.get("idle") or {}).get("days") or {}
+        today, yesterday = days.get(day_of(self.now())) or {}, days.get(day_of(self.now() - 86400)) or {}
+        return {"today_min": round(float(today.get("min") or 0), 1), "yesterday_min": round(float(yesterday.get("min") or 0), 1),
+                "unwanted_today_min": round(float(today.get("unwanted_min") or 0), 1),
+                "unwanted_yesterday_min": round(float(yesterday.get("unwanted_min") or 0), 1),
+                "reasons_today": today.get("reasons") or {}}
 
     # hand controls
     @staticmethod
@@ -974,7 +1052,9 @@ class ProjectPlans:
         all_nl = ["%s:%s" % (pl["name"], k) for pl in plans for k in pl["not_live"]]
         return {"format": STATUS_FORMAT, "time": int(self.now()), "killed": self.killed(),
                 "live": {"not_live": len(all_nl), "tasks": all_nl[:20]},
-                "halt": clean(self.halt.get("*") or "", 160) or None, "open": len(self.open_tasks()), "plans": plans}
+                "halt": clean(self.halt.get("*") or "", 160) or None, "open": len(self.open_tasks()),
+                "total": {"effective": self.total_effective(limits_of({}), set()), "occupying": len(self.occupying())},
+                "idle": self.idle_block(), "plans": plans}
 
     @staticmethod
     def live_row(e, ts, st):

@@ -194,11 +194,17 @@ same `chain` token. The plain chain above stays as it is. Example: `scripts/chai
 - **Nothing runs without approval.** Drafts live in `<root>/projectplans/drafts/<name>.json` and appear in `status` as
   drafts. `projectplan.py approve <name> [--by NAME]` validates the plan, freezes it (SHA-256, who, when) in `active/` and
   files what the brakes allow. `withdraw` stops new filing, running tasks go on.
-- **Brakes** (a plan can only lower them): `total` open tasks 4 (default 3), `per_project` 2 (default 1), 1 per track,
-  `per_day` 60 (default 30); a project may lower `per_project` and `per_day`.
+- **Brakes** (a plan can only lower them): `total` tasks holding a slot at the same time up to 5 (default: all active slots, see
+  below), `per_project` 2 (default 1), 1 per track, `per_day` 60 (default 30); a project may lower `per_project` and `per_day`.
+- **Never leave slots empty (0.38.0):** without a `total` in the plan the effective total is the number of active slots
+  (`slots_total` in the load file, default 5) minus 1 reserve — the reserve only while an urgent foreign task waits. An explicit
+  `total` is a plain cap without reserve. Only tasks that really hold a slot count (state `running`); `question`,
+  `waiting_release`, finished and stopped tasks never do. Refill promptly: call `projectplan.py check` as soon as a task ends
+  (a hook of your scheduler or runner) and, as a fallback, every 2-3 minutes. The status shows `total` (effective, occupying) and
+  `idle` (minutes with a free slot and ready tasks, today/yesterday, how many of them unwanted, reasons) for a nightly report.
 - **Priority** (`"free"`, default): a task is filed only if nothing foreign waits in the queue and a slot is free; urgent
   foreign tasks always win. `"queue"` files regardless and lets the normal FIFO queue sort it out. The queue state comes
-  from `--load-file` / `AIWERKSTATT_PLAN_LOAD_FILE`, a JSON file `{"waiting": [{"thread": 12, "urgent": false}], "slots_free": 2}`
+  from `--load-file` / `AIWERKSTATT_PLAN_LOAD_FILE`, a JSON file `{"waiting": [{"thread": 12, "urgent": false}], "slots_free": 2, "slots_total": 5}`
   that the operator keeps fresh (for example from `GET /api/pool`). Unknown state fails closed: nothing is filed.
 - **Release**: while the release state of a repository is `stale` or `critical`, or its train is `red`, nothing new is filed for
   it (except `release_fix: true`). A task with kind `own` never starts next to a running train or another `own` task of the same

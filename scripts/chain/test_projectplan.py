@@ -135,13 +135,13 @@ class Format(unittest.TestCase):
 
     def test_limits_only_lower(self):
         t = [project("x", [task("A1")])]
-        self.bad(plan(t, limits={"total": 5}), "above the ceiling")
+        self.bad(plan(t, limits={"total": 6}), "above the ceiling")
         self.bad(plan(t, limits={"per_project": 3}), "above the ceiling")
         self.bad(plan(t, limits={"per_day": 61}), "above the ceiling")
         self.bad(plan(t, limits={"priority": "never"}), "priority")
         self.bad(plan(t, limits={"weekly": 1}), "unknown")
         self.bad(plan([project("x", [task("A1")], limits={"per_project": 3})]), "limits.per_project")
-        self.assertEqual(pp.limits_of(plan(t)), {"total": 3, "per_project": 1, "per_day": 30, "priority": "free"})
+        self.assertEqual(pp.limits_of(plan(t)), {"total": 5, "per_project": 1, "per_day": 30, "priority": "free", "total_auto": True})
         self.assertEqual(pp.limits_of(plan(t, limits={"total": 2, "priority": "queue"}))["total"], 2)
 
     def test_excluded_projects(self):
@@ -221,8 +221,41 @@ class Approval(Base):
 class Brakes(Base):
     def test_total_brake_and_hard_ceiling(self):
         ps = [project("p%d" % i, [task("A1")]) for i in range(6)]
-        self.assertEqual(len(self.go(plan(ps))), 3)                                   # default 3
-        self.assertEqual(self.pl.halt["p1"], "total brake 3 reached")
+        self.assertEqual(len(self.go(plan(ps))), 5)                                   # default: all 5 slots
+        self.assertEqual(self.pl.halt["p1"], "total brake 5 reached")
+
+    def test_reserve_only_while_something_urgent_waits(self):
+        ps = [project("p%d" % i, [task("A1")]) for i in range(6)]
+        self.queue = {"waiting": [], "slots_free": 5, "slots_total": 5}
+        lim = pp.limits_of(plan(ps))
+        self.go(plan(ps, limits={"priority": "queue"}), approve=True)       # filed without queue priority → counts only
+        self.assertEqual(self.pl.total_effective(lim, set()), 5)
+        self.queue = {"waiting": [{"thread": 99, "urgent": True}], "slots_free": 5, "slots_total": 5}
+        self.assertEqual(self.pl.total_effective(lim, set()), 4)             # 1 reserve while an urgent task waits
+        self.assertEqual(self.pl.total_effective(pp.limits_of(plan(ps, limits={"total": 5})), set()), 5)   # explicit number: no reserve
+        self.queue = {"waiting": [], "slots_free": 3, "slots_total": 3}
+        self.assertEqual(self.pl.total_effective(lim, set()), 3)             # never more than the active slots
+
+    def test_only_running_tasks_occupy_a_slot(self):
+        ps = [project("p%d" % i, [task("A1")]) for i in range(6)]
+        self.go(plan(ps, limits={"priority": "queue"}))
+        keys = sorted(self.pl.s["tasks"])
+        self.pl.s["tasks"][keys[0]]["state"] = "question"
+        self.pl.s["tasks"][keys[1]]["state"] = "waiting_release"
+        self.assertEqual(len(self.pl.occupying()), 3)
+        self.assertEqual(len(self.pl.open_tasks()), 4)                       # question stays open for project/release rules
+
+    def test_idle_minutes_are_measured(self):
+        ps = [project("p%d" % i, [task("A1")]) for i in range(2)]
+        self.go(plan(ps, limits={"priority": "queue"}), approve=True)
+        self.api.fail = pp.chain.ChainError("down")
+        self.pl.s["tasks"].clear()                                           # both tasks ready again, API refuses
+        self.pl.check()
+        self.clock.t += 150
+        self.pl.check()
+        b = self.pl.status()["idle"]
+        self.assertAlmostEqual(b["today_min"], 2.5, places=1)
+        self.assertAlmostEqual(b["unwanted_today_min"], 2.5, places=1)
 
     def test_total_brake_can_be_lowered(self):
         ps = [project("p%d" % i, [task("A1")]) for i in range(4)]

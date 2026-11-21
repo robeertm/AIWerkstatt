@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.38.0 — 2026-11-21
+### Added — plans never leave slots empty (multi-project plans)
+- The total brake counts only tasks that really hold a slot (`running`); `question`, `waiting_release`, finished and stopped
+  tasks never do. The ceiling is 5; without a `total` in the plan the effective total is the number of active slots
+  (`slots_total` in the load file, default 5) minus 1 reserve that only applies while an urgent foreign task waits.
+  An explicit `total` stays a plain cap.
+- Refill hook: `projectplan.py check` is meant to run the moment a task ends, plus a 2-3 minute fallback (documented in
+  `docs/chain.md`).
+- Status (additive): `total` (effective, occupying) and `idle` (minutes with a free slot and ready tasks that nothing filed,
+  today/yesterday, unwanted share, reasons).
+- Tests in `scripts/chain/test_projectplan.py` (default total 5, reserve only with an urgent task, only running tasks count,
+  idle minutes).
+
 ## 0.37.0 — 2026-11-21
 ### Added — roll out and measure after every release (multi-project plans)
 - Plan tasks with a release target now carry the mandatory steps "roll out to all running instances, measure the live version"
