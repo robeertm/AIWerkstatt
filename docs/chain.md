@@ -222,6 +222,19 @@ same `chain` token. The plain chain above stays as it is. Example: `scripts/chai
   `AIWERKSTATT_CHAIN_PLAN_EXCLUDED`. See [security](security.md#task-chain). The default write limit of a chain token is 6 per hour;
   raise `AIWERKSTATT_CHAIN_RATE` for plans.
 
+### Roll out + measure after every release
+
+Published is not live. Every task with a release target (`train`/`own`) carries the mandatory steps "roll out to all running
+instances, measure the live version" in its prompt and must end with a line of its own: `LIVE: <instance>=<version> ...`.
+The rule is the project field `live` (a task may override it): `kind` = `rollout` (default), `none` (no running instance,
+e.g. a desktop app or a template repo) or `workstation` (delivered on the main workstation only, nothing is demanded),
+`instances` (names that must appear in the line) and `how` (the roll-out way). The plan checks the **last** `LIVE:` line when
+the task finishes, or, with `RELEASE STATE: waiting ...`, once the release state shows the version published. Missing line,
+a missing instance or a version older than the published one: the plan posts a follow-up to the task (at most 2, every new
+answer is checked again), after that the task stays `live: held` in the status. Only tasks filed with the requirement are
+checked (`live_required`), older state is left alone. `status.json` gains `tasks[].live` and `live.not_live`
+(finished with a release, not confirmed live). Fields are additive.
+
 ## Tests
 
 `python3 -m unittest discover -s scripts/chain` (chain and multi-project plans) and

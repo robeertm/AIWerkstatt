@@ -53,6 +53,10 @@ STATUS_FORMAT = "projectplan-status/1"
 DEFAULT_PREFIX = "Project plan · "
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 RELEASE_KINDS = ("none", "train", "own")
+LIVE_KINDS = ("rollout", "none", "workstation")
+LIVE_FOLLOWUP_MAX = 2                # automatic follow-ups per task, then a held state in the status (a person looks)
+LIVE_LINE_RE = re.compile(r"(?im)^\W*LIVE:[ \t]*(.*)$")
+LIVE_PAIR_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]{0,60})\s*=\s*v?(\d+\.\d+\.\d+)")
 LIMITS_DEFAULT = {"total": 3, "per_project": 1, "per_day": 30}
 LIMITS_MAX = {"total": 4, "per_project": 2, "per_day": 60}
 PRIORITIES = ("free", "queue")
@@ -72,7 +76,7 @@ DONE_STATES = ("done", "waiting_release", "published")
 STATES = ("draft", "planned", "ready", "waiting", "held", "running", "question", "waiting_release", "published",
           "done", "stopped", "stuck", "failed")
 TASK_KEYS = {"id", "track", "title", "model", "effort", "hours", "priority", "depends_on", "release", "release_fix",
-             "optional", "prompt"}
+             "optional", "prompt", "live"}
 
 
 class Refused(Exception):
@@ -123,6 +127,50 @@ def release_of(task, project):
     return {"kind": tr.get("kind") or pr.get("kind") or "none",
             "version": ver if chain.VERSION_RE.match(str(ver or "")) else None,
             "slug": tr.get("slug") or pr.get("slug"), "how": pr.get("how") or ""}
+
+
+def live_of(task, project, release=None):
+    """Roll-out rule of a task: {"required", "kind", "instances", "how"}. Inherited from the project (field ``live``; a plain
+    string is the kind), a task may override it. Required only with a release target (train/own) AND kind ``rollout``
+    (the default). ``none`` = the project has no running instance; ``workstation`` = delivered on the main workstation only."""
+    def norm(x):
+        return {"kind": x} if isinstance(x, str) else (x if isinstance(x, dict) else {})
+    pl, tl = norm(project.get("live")), norm(task.get("live"))
+    kind = tl.get("kind") or pl.get("kind") or "rollout"
+    inst = tl.get("instances") if isinstance(tl.get("instances"), list) else pl.get("instances")
+    rel = release if release is not None else release_of(task, project)
+    return {"required": rel["kind"] != "none" and kind == "rollout", "kind": kind,
+            "instances": [str(i) for i in (inst or []) if isinstance(i, str)], "how": tl.get("how") or pl.get("how") or ""}
+
+
+def live_valid(lf):
+    if isinstance(lf, str):
+        return lf in LIVE_KINDS
+    if not isinstance(lf, dict):
+        return False
+    inst = lf.get("instances", [])
+    return lf.get("kind", "rollout") in LIVE_KINDS and isinstance(inst, list) \
+        and all(isinstance(i, str) and re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,60}$", i) for i in inst) \
+        and isinstance(lf.get("how", ""), str)
+
+
+def live_check(answer, live, version=None):
+    """Check the result line ``LIVE: <instance>=<version> ...`` -> (verdict, pairs, reason). verdict: ok | missing | incomplete |
+    stale. The LAST line counts; ``version`` (the published version, if known) is the lower bound per instance."""
+    lines = LIVE_LINE_RE.findall(answer or "")
+    if not lines:
+        return "missing", {}, "no LIVE: line"
+    pairs = {n: v for n, v in LIVE_PAIR_RE.findall(lines[-1])}
+    if not pairs:
+        return "missing", {}, "LIVE: without <instance>=<version>"
+    gone = [i for i in live.get("instances") or [] if i not in pairs]
+    if gone:
+        return "incomplete", pairs, "missing instance(s): " + ", ".join(gone)
+    if version:
+        old = [n for n, v in pairs.items() if ver_key(v) < ver_key(version)]
+        if old:
+            return "stale", pairs, "older than %s: %s" % (version, ", ".join(old))
+    return "ok", pairs, ""
 
 
 def repo_of(project):
@@ -183,6 +231,8 @@ def validate_plan(plan, excluded=None):
             err.append("%s: release.kind must be %s" % (pid, "|".join(RELEASE_KINDS)))
         if pr.get("repo") is not None and not chain.REPO_RE.match(str(pr.get("repo"))):
             err.append("%s: release.repo is malformed" % pid)
+        if p.get("live") is not None and not live_valid(p.get("live")):
+            err.append("%s: live is invalid (kind %s, instances list)" % (pid, "|".join(LIVE_KINDS)))
         pl = p.get("limits") or {}
         for k, v in (pl.items() if isinstance(pl, dict) else []):
             if k in ("per_project", "per_day") and (isinstance(v, bool) or not isinstance(v, int)
@@ -223,6 +273,8 @@ def validate_plan(plan, excluded=None):
                     err.append("%s: hours missing or above 40" % k)
             except (TypeError, ValueError):
                 err.append("%s: hours is invalid" % k)
+            if t.get("live") is not None and not live_valid(t.get("live")):
+                err.append("%s: live is invalid" % k)
             rl = t.get("release")
             if isinstance(rl, dict) and rl.get("kind", "none") not in RELEASE_KINDS:
                 err.append("%s: release.kind is invalid" % k)
@@ -266,7 +318,8 @@ def flatten(plan):
     for p in plan.get("projects") or []:
         for t in p.get("tasks") or []:
             k = key_of(p["id"], t["id"])
-            allt[k] = {"project": p, "t": t, "release": release_of(t, p),
+            rel = release_of(t, p)
+            allt[k] = {"project": p, "t": t, "release": rel, "live": live_of(t, p, rel),
                        "deps": [d if "/" in str(d) else key_of(p["id"], d) for d in t.get("depends_on") or []]}
     order = [k for k in (plan.get("order") or []) if k in allt]
     if not order:
@@ -362,6 +415,10 @@ class FakeApi:
 
     def get(self, thread):
         return {"status": "working", "timeline": []}
+
+    def comment(self, thread, text):
+        self.comments = getattr(self, "comments", [])
+        self.comments.append((thread, text))
 
 
 # ---------- the runner ----------
@@ -560,8 +617,10 @@ class ProjectPlans:
         """Look at a filed task and advance its state."""
         ts = self.tstate(name, k)
         st = ts.get("state")
-        if st == "waiting_release":
-            self.release_look(ts, e)
+        if st in ("waiting_release", "done", "published"):
+            if st == "waiting_release":
+                self.release_look(ts, e)
+            self.live_follow(name, k, e, ts)
             return
         if st not in ACTIVE:
             return
@@ -595,10 +654,60 @@ class ProjectPlans:
         m = RELEASE_LINE_RE.search(answer)
         if m:
             ts["release_slug"], ts["release_version"] = m.group(1).lower(), m.group(2)
+        if m:
+            ts["release_marker"] = True          # built, not published: LIVE only after publication
         if e["release"]["kind"] != "none" or m:
             ts["state"] = "waiting_release"
             self.release_look(ts, e)
         self.note("finished", task=k, thread=ts["thread"], state=ts["state"], version=ts.get("release_version"))
+        self.live_follow(name, k, e, ts)
+
+    def live_follow(self, name, k, e, ts):
+        """Roll out + measure: check the ``LIVE:`` result line of a task. Only for tasks filed with the requirement
+        (``live_required``), older state is left alone. If the line is missing, an expected instance is missing or a version is
+        older than the published one, a follow-up goes to the task (at most LIVE_FOLLOWUP_MAX, every new answer is checked
+        again), then the task stays ``live: held`` in the status."""
+        if not ts.get("live_required") or not ts.get("thread"):
+            return
+        lz = ts.setdefault("live", {"state": "open", "followups": 0})
+        if lz.get("state") in ("ok", "held"):
+            return
+        if ts.get("state") == "waiting_release" and ts.get("release_marker"):
+            return                               # the release is still pending: check after publication
+        ver = ts.get("published") or ts.get("release_version") or e["release"].get("version")
+        info = self.thread_info(ts["thread"])
+        if info["active"]:
+            return
+        answer = info["answer"]
+        if not answer.strip():
+            return
+        h = hashlib.sha1(answer.encode("utf-8", "replace")).hexdigest()[:12]
+        if lz.get("state") == "followup" and lz.get("answer_hash") == h:
+            return                               # no new answer to the follow-up yet
+        verdict, pairs, why = live_check(answer, e["live"], ver)
+        lz.update({"checked": chain.iso(self.now()), "pairs": pairs, "reason": why or None, "answer_hash": h, "version": ver})
+        if verdict == "ok":
+            lz["state"] = "ok" if (ver or ts.get("state") == "published") else "ok_provisional"
+            self.note("live_ok", task=k, thread=ts["thread"], pairs=pairs)
+            return
+        n = int(lz.get("followups") or 0)
+        if n >= LIVE_FOLLOWUP_MAX:
+            lz["state"] = "held"
+            self.note("live_held", task=k, thread=ts["thread"], reason=why)
+            return
+        text = ("Project plan (watcher): your result has no valid roll-out measurement (%s). Done means published AND live. Roll%s "
+                "out to ALL running instances (how: %s; never wait for an update timer), measure version and health per "
+                "instance and put a line `LIVE: <instance>=<version> ...` into your result.%s If the project really has no "
+                "running instance, start the answer with `QUESTION FOR THE COORDINATOR:` and say why."
+                % (why, (" version %s" % ver) if ver else "", e["live"]["how"] or "the project's notes",
+                   (" Expected instances: %s." % ", ".join(e["live"]["instances"])) if e["live"]["instances"] else ""))
+        try:
+            self.api.comment(int(ts["thread"]), text)
+        except chain.ChainError as ex:
+            self.note("live_followup_error", task=k, error=clean(str(ex), 200))
+            return
+        self.note("live_followup", task=k, thread=ts["thread"], reason=why)
+        lz.update(followups=n + 1, state="followup")
 
     def release_look(self, ts, e):
         """waiting_release -> published once the release state shows the version (or any release after the task end)."""
@@ -669,6 +778,8 @@ class ProjectPlans:
                   % (rel.get("how") or "the project's release process", rel.get("slug") or "<slug>"))
         else:
             rt = "Release target **none**: no release in this task (analysis, check, host file)."
+        if rel["kind"] != "none":
+            rt += "\n- " + self.live_text(e)
         return (
             "%s\n\n## Project plan context (automatic)\n"
             "- Plan **%s** (date %s, SHA %s), task **%s** · project %s · track %s · priority %s · about %s h.\n"
@@ -684,6 +795,23 @@ class ProjectPlans:
             % (t["prompt"].strip(), name, plan.get("date") or "?", sha, k, p.get("name") or p["id"], t["track"],
                t.get("priority", "-"), t.get("hours"), "\n".join(prior) or "- nothing", rt))
 
+    @staticmethod
+    def live_text(e):
+        """Mandatory steps "roll out + measure" for the task text (rule ``live`` of the project/task)."""
+        lv = e["live"]
+        if lv["kind"] == "none":
+            return "**Roll-out: not needed** - the project has no running instance (publishing is delivery). No LIVE line needed."
+        if lv["kind"] == "workstation":
+            return ("**Roll-out: main workstation only** (never through the chain). No LIVE line needed; report workstation steps "
+                    "as a question for the coordinator.")
+        insts = (" Instances: %s." % ", ".join(lv["instances"])) if lv["instances"] else ""
+        return ("**Roll out + measure (mandatory; done means published AND live):** after the tag/release (published, not just "
+                "built) roll out to ALL running instances - how: %s - and measure version and health per instance (never "
+                "just trust 'built').%s Result: one line of its own `LIVE: <instance>=<measured version> <instance>=<version> "
+                "...` (measured values only). If the release is still pending (`RELEASE STATE: waiting ...`), write the line after "
+                "publication - the plan asks for it in a follow-up; a missing line or an older version also gets a follow-up."
+                % (lv["how"] or "from the project's notes (the project's own roll-out command)", insts))
+
     def file_task(self, name, plan, sha, k, e):
         p, t = e["project"], e["t"]
         title = ("%s%s %s: %s" % (self.prefix, p["id"], t["id"], t["title"]))[:200]
@@ -697,7 +825,8 @@ class ProjectPlans:
         rel = e["release"]
         repo = repo_of(p)
         ts.update({"state": "running", "thread": thread, "since": chain.iso(self.now()), "since_ts": self.now(),
-                   "hours": float(t["hours"]), "project": p["id"], "repo": repo, "release_kind": rel["kind"]})
+                   "hours": float(t["hours"]), "project": p["id"], "repo": repo, "release_kind": rel["kind"],
+                   "live_required": bool(e["live"]["required"])})
         self.s["created"].append({"plan": name, "task": k, "project": p["id"], "thread": thread, "ts": self.now()})
         self.note("filed", plan=name, task=k, thread=thread)
         self.out("filed %s as task #%s" % (k, thread))
@@ -825,6 +954,7 @@ class ProjectPlans:
                     "optional": bool(e["t"].get("optional")), "state": st, "thread": ts.get("thread"),
                     "start": ts.get("since_ts"), "end": ts.get("end_ts"),
                     "release_version": ts.get("release_version") or ts.get("published"),
+                    "live": self.live_row(e, ts, st),
                     "halt": clean(self.halt.get(k) or (self.halt.get(name) if st == "ready" else None) or "", 120) or None})
             projects = [{"id": p["id"], "name": clean(p.get("name") or p["id"], 80),
                          "history": [{"date": str(v.get("date"))[:10], "title": clean(v.get("title"), 160),
@@ -832,16 +962,31 @@ class ProjectPlans:
                                       "version": v.get("version") if chain.VERSION_RE.match(str(v.get("version") or "")) else None}
                                      for v in (p.get("history") or []) if isinstance(v, dict)][:VERBOSE_MAX]}
                         for p in plan.get("projects") or []]
+            not_live = [r["key"] for r in rows if (r.get("live") or {}).get("not_live")]
             sim = simulate(plan)
             plans.append({"name": name, "title": clean(plan.get("title") or name, 160), "date": plan.get("date"),
                           "sha": ps.get("sha") or sha, "approved": approved, "by": ps.get("by"),
                           "paused": bool(ps.get("paused")), "withdrawn": ps.get("withdrawn"),
                           "limits": limits_of(plan), "sum_h": sim["sum_h"], "dry_run_end_h": sim["end_h"],
-                          "projects": projects, "tasks": rows,
+                          "projects": projects, "tasks": rows, "not_live": not_live,
                           "counts": {x: sum(1 for r in rows if r["state"] == x) for x in STATES
                                      if any(r["state"] == x for r in rows)}})
+        all_nl = ["%s:%s" % (pl["name"], k) for pl in plans for k in pl["not_live"]]
         return {"format": STATUS_FORMAT, "time": int(self.now()), "killed": self.killed(),
+                "live": {"not_live": len(all_nl), "tasks": all_nl[:20]},
                 "halt": clean(self.halt.get("*") or "", 160) or None, "open": len(self.open_tasks()), "plans": plans}
+
+    @staticmethod
+    def live_row(e, ts, st):
+        """Field ``live`` per task in the status (additive): required, state (n/a|open|followup|ok|ok_provisional|held), followups,
+        not_live (= finished with a release but without a confirmed live version)."""
+        if not ts.get("live_required"):
+            return {"required": bool(e["live"]["required"]), "state": "n/a", "not_live": False}
+        lz = ts.get("live") or {}
+        s_ = lz.get("state") or "open"
+        published = st in ("published", "done") or (st == "waiting_release" and not ts.get("release_marker"))
+        return {"required": True, "state": s_, "followups": int(lz.get("followups") or 0),
+                "not_live": bool(published and s_ not in ("ok", "ok_provisional")), "reason": clean(lz.get("reason") or "", 120) or None}
 
     def write_status(self):
         st = self.status()

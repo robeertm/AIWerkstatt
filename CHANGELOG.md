@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.37.0 — 2026-11-21
+### Added — roll out and measure after every release (multi-project plans)
+- Plan tasks with a release target now carry the mandatory steps "roll out to all running instances, measure the live version"
+  and must end with a result line `LIVE: <instance>=<version> ...`. Project/task field `live`: `kind` `rollout` (default) |
+  `none` (no running instance) | `workstation` (main workstation only), `instances`, `how`.
+- The plan checks the last `LIVE:` line when the task finishes (or after publication when `RELEASE STATE: waiting` was
+  reported). A missing line, a missing instance or an older version posts a follow-up to the task (at most 2), then the task is
+  held (`live: held`) in the status. Older state without the marker is untouched.
+- `status.json` (additive): `tasks[].live`, `live.not_live`. Tests in `test_projectplan.py` (class `LiveCheck`), docs in `docs/chain.md`.
+
 ## 0.36.1 — 2026-11-21
 ### Docs — credit limit of plan chains
 - The private counterpart gained a switchable credit guard and a card/endpoint/CLI to set its floor. The public task chain has

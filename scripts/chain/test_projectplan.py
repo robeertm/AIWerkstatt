@@ -510,5 +510,119 @@ class CommandLine(Base):
             api._token()
 
 
+class LiveCheck(Base):
+    """Roll out + measure: mandatory steps in the task text, the ``LIVE:`` line, a follow-up when it is missing or stale."""
+
+    def live_plan(self, **live):
+        kw = dict(kind="rollout", instances=["i1", "i2"], how="the project roll-out command")
+        kw.update(live)
+        return plan([project("x", [task("A1")], release={"kind": "own", "slug": "s"}, live=kw),
+                     project("y", [task("B1")], release={"kind": "own", "slug": "t"}, live="none"),
+                     project("z", [task("C1")], release={"kind": "none"})], limits={"per_project": 1})
+
+    def pub(self, ver, ts=100):
+        self.rel = {"repos": [{"slug": "s", "level": "ok", "published": ver, "published_ts": ts, "unpublished": False}]}
+
+    def test_check_rules(self):
+        lv = {"instances": ["a", "b"]}
+        self.assertEqual(pp.live_check("no line", lv)[0], "missing")
+        self.assertEqual(pp.live_check("LIVE: fine", lv)[0], "missing")
+        self.assertEqual(pp.live_check("LIVE: a=1.2.3", lv)[0], "incomplete")
+        self.assertEqual(pp.live_check("LIVE: a=1.2.2 b=1.2.3", lv, "1.2.3")[0], "stale")
+        self.assertEqual(pp.live_check("LIVE: a=1.2.3 b=v1.2.3", lv, "1.2.3")[0], "ok")
+        self.assertEqual(pp.live_check("LIVE: a=1.0.0 b=1.0.0\nx\nLIVE: a=1.2.3 b=1.2.3", lv, "1.2.3")[0], "ok")
+        self.assertEqual(pp.live_check("LIVE: q=9.9.9", {"instances": []})[0], "ok")
+
+    def test_live_of_inherits_and_overrides(self):
+        proj = {"live": {"kind": "rollout", "instances": ["i1"], "how": "w"}, "release": {"kind": "train"}}
+        self.assertTrue(pp.live_of({}, proj)["required"])
+        self.assertFalse(pp.live_of({"release": "none"}, proj)["required"])
+        self.assertFalse(pp.live_of({"live": "none"}, proj)["required"])
+        self.assertFalse(pp.live_of({"live": {"kind": "workstation"}}, proj)["required"])
+        self.assertTrue(pp.live_of({}, {"release": {"kind": "own"}})["required"])
+
+    def test_validation(self):
+        for bad in ("whatever", {"kind": "x"}, {"instances": "a"}, {"instances": ["a b"]}, 5):
+            err = pp.validate_plan(plan([project("x", [task("A1")], live=bad)]), [])
+            self.assertTrue(any("live" in e for e in err), bad)
+        self.assertEqual(pp.validate_plan(plan([project("x", [task("A1", live="workstation")])]), []), [])
+
+    def test_task_text_carries_the_mandatory_steps(self):
+        self.go(self.live_plan(), approve=True)
+        r = self.api.requests
+        self.assertIn("Roll out + measure (mandatory", r[1])
+        self.assertIn("LIVE: <instance>=", r[1])
+        self.assertIn("i1, i2", r[1])
+        self.assertIn("the project roll-out command", r[1])
+        self.assertTrue(any("Roll-out: not needed" in v for v in r.values()))
+        self.assertTrue(all("Roll out + measure" not in v for k, v in r.items() if "no release in this task" in v))
+
+    def test_missing_line_follow_up_then_ok(self):
+        self.go(self.live_plan(), approve=True)
+        self.pub("1.5.0")
+        self.api.finish(1, "done, published 1.5.0")
+        self.step()
+        self.assertEqual(len(self.api.comments), 1)
+        self.assertIn("LIVE:", self.api.comments[0][1])
+        self.assertEqual(self.pl.s["tasks"]["p1:x/A1"]["live"]["state"], "followup")
+        self.step()
+        self.assertEqual(len(self.api.comments), 1)                       # same answer: no duplicate
+        self.api.finish(1, "rolled out\nLIVE: i1=1.5.0 i2=1.5.0")
+        self.step()
+        self.assertEqual(self.pl.s["tasks"]["p1:x/A1"]["live"]["state"], "ok")
+        self.assertEqual(len(self.api.comments), 1)
+        st = self.pl.status()
+        row = {r["key"]: r for r in st["plans"][0]["tasks"]}["x/A1"]
+        self.assertFalse(row["live"]["not_live"])
+
+    def test_release_pending_checks_after_publication_and_catches_stale(self):
+        self.go(self.live_plan(), approve=True)
+        self.api.finish(1, "built\nRELEASE STATE: waiting s 1.5.0\nLIVE: i1=1.4.0 i2=1.4.0")
+        self.rel = {"repos": [{"slug": "s", "level": "ok", "published": "1.4.0", "unpublished": True}]}
+        self.step()
+        self.assertEqual(self.st("p1", "x/A1"), "waiting_release")
+        self.assertEqual(getattr(self.api, "comments", []), [])           # not published yet: nothing demanded
+        self.pub("1.5.0")
+        self.step()
+        self.assertEqual(self.st("p1", "x/A1"), "published")
+        self.assertEqual(len(self.api.comments), 1)                      # LIVE shows 1.4.0: stale
+        self.assertIn("1.5.0", self.api.comments[0][1])
+        st = self.pl.status()
+        self.assertTrue({r["key"]: r for r in st["plans"][0]["tasks"]}["x/A1"]["live"]["not_live"])
+        self.assertEqual(st["live"]["not_live"], 1)
+
+    def test_after_two_follow_ups_it_is_held_and_quiet(self):
+        self.go(self.live_plan(), approve=True)
+        self.pub("1.5.0")
+        self.api.finish(1, "done")
+        for i in range(pp.LIVE_FOLLOWUP_MAX):
+            self.step()
+            self.assertEqual(len(self.api.comments), i + 1)
+            self.api.finish(1, "again without a line %d" % i)
+        self.step()
+        self.assertEqual(len(self.api.comments), pp.LIVE_FOLLOWUP_MAX)
+        self.assertEqual(self.pl.s["tasks"]["p1:x/A1"]["live"]["state"], "held")
+        self.step()
+        self.assertEqual(len(self.api.comments), pp.LIVE_FOLLOWUP_MAX)
+
+    def test_no_instance_and_no_release_need_nothing(self):
+        self.go(self.live_plan(), approve=True)
+        self.api.finish(2, "done, no LIVE")                               # project y: live none
+        self.api.finish(3, "analysis")                                    # project z: release none
+        self.step()
+        self.assertEqual(getattr(self.api, "comments", []), [])
+
+    def test_old_state_without_marker_is_left_alone(self):
+        self.go(self.live_plan(), approve=True)
+        self.pl.s["tasks"]["p1:x/A1"].pop("live_required", None)
+        self.pub("1.5.0")
+        self.api.finish(1, "done without LIVE")
+        self.step()
+        self.assertEqual(getattr(self.api, "comments", []), [])
+        row = {r["key"]: r for r in self.pl.status()["plans"][0]["tasks"]}["x/A1"]
+        self.assertEqual(row["live"]["state"], "n/a")
+        self.assertEqual(self.pl.status()["live"]["not_live"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

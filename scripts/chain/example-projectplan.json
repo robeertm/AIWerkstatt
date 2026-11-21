@@ -9,6 +9,7 @@
     {
       "id": "webshop", "name": "Web shop",
       "release": {"kind": "train", "slug": "webshop", "repo": "owner/webshop", "how": "one release train per repository"},
+      "live": {"kind": "rollout", "instances": ["webshop-prod", "webshop-staging"], "how": "the project's deploy script"},
       "history": [{"date": "2026-11-10", "title": "Checkout rewrite", "result": "published", "version": "1.4.0"}],
       "tasks": [
         {"id": "A1", "track": "ui", "title": "Cart page", "model": "claude-sonnet-5-5", "effort": "medium", "hours": 2, "priority": 1,
