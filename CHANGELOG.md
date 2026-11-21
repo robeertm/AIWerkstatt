@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.39.1 — 2026-11-21
+### Docs
+- All 15 README screenshots re-rendered against the current UI (v0.39.x) with neutral demo data: the **Agents at work**
+  strip now shows the slot switch, remaining time per run, waiting-order start and test runner line. Leak gate green.
+
 ## 0.39.0 — 2026-11-21
 ### Added — security gate (dependencies + secrets in history)
 - `scripts/security-gate/security_gate.py`: Python (`pip-audit`), Node (`npm audit`) and Rust (`cargo audit`, if installed)
