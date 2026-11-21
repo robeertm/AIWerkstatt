@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.39.0 — 2026-11-21
+### Added — security gate (dependencies + secrets in history)
+- `scripts/security-gate/security_gate.py`: Python (`pip-audit`), Node (`npm audit`) and Rust (`cargo audit`, if installed)
+  dependency audit with critical/high = red, plus a secret scan over the **whole git history** using the block rules of
+  `backend/scrub/scan.py` (no second pattern set; findings masked + fingerprint).
+- Exceptions in `security-exceptions.json` need a reason and an expiry date (max 366 days); an invalid list is red, an expired one no longer covers.
+- Offline-capable through a content-keyed result cache; no result and no network = red (fail closed). One core, `nice -n 19`.
+- CI: new job `security-gate` (full-history checkout, tests, gate, JSON artifact). Docs: `docs/security-gate.md`; tests: `scripts/security-gate`.
+
 ## 0.38.0 — 2026-11-21
 ### Added — plans never leave slots empty (multi-project plans)
 - The total brake counts only tasks that really hold a slot (`running`); `question`, `waiting_release`, finished and stopped

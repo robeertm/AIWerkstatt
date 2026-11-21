@@ -17,6 +17,32 @@ jobs:
       - name: Leak scan
         run: python backend/scrub/scan.py .
 
+  security-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # the secret scan walks the whole history
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install pip-audit
+        run: python -m pip install --quiet pip-audit==2.10.1
+      - name: Gate tests
+        run: python -m unittest discover -s scripts/security-gate
+      # Red on critical/high dependency findings and on any secret ever committed
+      # (exceptions: security-exceptions.json, reason + expiry mandatory).
+      - name: Security gate
+        run: python scripts/security-gate/security_gate.py check . --json security-gate.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-gate
+          path: security-gate.json
+
   cli-pin:
     runs-on: ubuntu-latest
     steps:
@@ -36,7 +62,7 @@ jobs:
       - name: Byte-compile backend + agent-runner
         run: |
           python -m py_compile backend/*.py backend/providers/*.py backend/scrub/*.py
-          python -m py_compile agent-runner/*.py agent-runner/providers/*.py scripts/chain/*.py scripts/test-runner/*.py scripts/branch-check/*.py
+          python -m py_compile agent-runner/*.py agent-runner/providers/*.py scripts/chain/*.py scripts/test-runner/*.py scripts/branch-check/*.py scripts/security-gate/*.py
       # Without the docker package the orchestrator runs without a Docker client, so the
       # tests need no Docker daemon on the runner.
       - name: Backend tests
