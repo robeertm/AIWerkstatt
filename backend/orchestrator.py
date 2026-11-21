@@ -99,6 +99,17 @@ MEM_LIMIT = os.environ.get("AIWERKSTATT_RUN_MEM", "2g")
 MAX_PARALLEL_RUNS = int(os.environ.get("AIWERKSTATT_MAX_PARALLEL_RUNS", "5") or 0)
 PIDS_LIMIT = int(os.environ.get("AIWERKSTATT_RUN_PIDS", "512"))
 
+
+def run_nano_cpus(raw=None):
+    """CPU cap per agent container (0.40.0): ``AIWERKSTATT_RUN_CPUS`` = number of cores (e.g. ``1.5``).
+    Empty, 0, negative or unreadable = no cap (the old behaviour). Returns Docker ``nano_cpus`` or None."""
+    raw = os.environ.get("AIWERKSTATT_RUN_CPUS", "") if raw is None else raw
+    try:
+        cores = float(str(raw).strip() or 0)
+    except ValueError:
+        return None
+    return int(cores * 1e9) if cores > 0 else None
+
 # Scan the app the agent built for hard-coded secrets BEFORE it goes live — the same
 # deterministic gate that guards publishing. On by default; set to "0" to opt out.
 DEPLOY_SECRET_SCAN = os.environ.get("AIWERKSTATT_DEPLOY_SECRET_SCAN", "1") != "0"
@@ -343,9 +354,12 @@ class Orchestrator:
         }
         name = "aiwerkstatt-run-%s-%d-%d" % (slug, thread_id, int(time.time()))
         _log("launch %s (provider=%s model=%s)" % (name, provider, d.get("model")))
+        extra = {}
+        if run_nano_cpus():
+            extra["nano_cpus"] = run_nano_cpus()
         container = self._client.containers.run(
             config.AGENT_RUNNER_IMAGE,
-            detach=True, name=name, environment=env, volumes=volumes,
+            detach=True, name=name, environment=env, volumes=volumes, **extra,
             user="%s:%s" % (APP_UID, APP_UID),
             cap_drop=["ALL"], security_opt=["no-new-privileges"],
             pids_limit=PIDS_LIMIT, mem_limit=MEM_LIMIT,

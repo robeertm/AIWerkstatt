@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.40.0 — 2026-11-21
+### Added — parity inventory and CPU cap per agent run
+- `docs/parity-inventory.md`: table of what the private control plane has, what is mirrored here, what is unnecessary by
+  design, what is a real gap (queue priority) and what stays private on purpose.
+- `AIWERKSTATT_RUN_CPUS` (cores, e.g. `1.5`): optional CPU cap for every agent container; empty or 0 = no cap (unchanged).
+  Test: `backend/tests/test_run_cpus.py`.
+
 ## 0.39.1 — 2026-11-21
 ### Docs
 - All 15 README screenshots re-rendered against the current UI (v0.39.x) with neutral demo data: the **Agents at work**
