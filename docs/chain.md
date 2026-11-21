@@ -153,6 +153,14 @@ Steps in `manual_steps` are sorted when a result is recorded:
 stays with `kind` and `reason`. Entries from older state files are sorted on loading. The result
 file may carry `"release": "published" | "requested" | "held" | "none"`.
 
+## Credit protection
+
+The chain has no credit or quota guard of its own: it never reads an account balance or a plan
+limit, so there is nothing to switch off and no setting to expose. Pace is set by the plan
+limits (`per_day`, `per_track`), the soft pause (`chain.py pause | resume`) and the kill file.
+If you want a credit floor, wrap `chain.py pause` / `resume` in your own script and drive it from
+whatever usage number you trust (for example the per-user plan status the web service shows).
+
 ## Self-healing
 
 Run `chain.py check` every few minutes from a timer. It picks up result files that appeared,

@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.36.1 — 2026-11-21
+### Docs — credit limit of plan chains
+- The private counterpart gained a switchable credit guard and a card/endpoint/CLI to set its floor. The public task chain has
+  no credit or quota logic, so there is nothing to port; `docs/chain.md` now says so and shows how to build a floor with
+  `pause` / `resume`. No code change.
+
 ## 0.36.0 — 2026-11-21
 ### Changed — branch check without false alarms (`scripts/branch-check/branch_check.py`)
 - A branch the final answer plans for a collective release train ("train 1.2.0", found in `--text` or given with `--train`) is
