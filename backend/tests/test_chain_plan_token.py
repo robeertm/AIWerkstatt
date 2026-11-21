@@ -35,6 +35,10 @@ class ChainPlanToken(unittest.TestCase):
         cls.token = store.api_token_create("plan-a", "chain")
         cls.other_tok = store.api_token_create("plan-b", "chain")
         cls.c = wk.app.test_client()
+        # Projects once per class: each project takes a port from the shared range (8100-8199); five per test case
+        # exhausted it in the combined `unittest discover` run.
+        mk = lambda name: engine.create_project(name + " plan-token", "x", "d", "admin", provider="demo")["id"]  # noqa: E731
+        cls.coll, cls.pa, cls.pb, cls.ex, cls.out = mk("Coll"), mk("PlanA"), mk("PlanB"), mk("Excl"), mk("Outside")
 
     def setUp(self):
         self._orig_deploy = wk.ORCH.deploy
@@ -42,9 +46,6 @@ class ChainPlanToken(unittest.TestCase):
         self._orig_limit = wk.CHAIN_LIMIT.limit
         wk.CHAIN_LIMIT.limit = 50
         wk.CHAIN_LIMIT.reset()
-        n = self.id().rsplit(".", 1)[-1][:14]
-        mk = lambda name: engine.create_project(name + " " + n, "x", "d", "admin", provider="demo")["id"]  # noqa: E731
-        self.coll, self.pa, self.pb, self.ex, self.out = mk("Coll"), mk("PlanA"), mk("PlanB"), mk("Excl"), mk("Outside")
         os.environ["AIWERKSTATT_CHAIN_PROJECT"] = self.coll
         os.environ["AIWERKSTATT_CHAIN_TITLE_PREFIX"] = CHAIN_PREFIX
         os.environ["AIWERKSTATT_CHAIN_PLAN_PROJECTS"] = "%s, %s, %s" % (self.pa, self.pb, self.ex)
