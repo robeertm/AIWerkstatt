@@ -1,0 +1,10 @@
+# Watches the drop folder written by `release_check.py trigger <project> [<version>]` (for example from a release script).
+[Unit]
+Description=Release check: watch for trigger files
+
+[Path]
+PathExistsGlob=/var/lib/release-check/trigger/*.json
+Unit=release-check-trigger.service
+
+[Install]
+WantedBy=paths.target

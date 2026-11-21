@@ -1,0 +1,12 @@
+[Unit]
+Description=Release check right after a release (trigger file)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=CHANGE_ME
+Environment=RELEASE_CHECK_CONFIG=/etc/release-check/deliverables.json
+Environment=RELEASE_CHECK_STATE=/var/lib/release-check
+ExecStart=/usr/bin/python3 /opt/aiwerkstatt/scripts/release-check/release_check.py run-triggers
+Nice=19
+TimeoutStartSec=90min

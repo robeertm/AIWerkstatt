@@ -1,0 +1,15 @@
+# Example unit: one check run. Copy to /etc/systemd/system/ (or ~/.config/systemd/user/), adjust the paths and the user.
+[Unit]
+Description=Release check: every published release has every advertised deliverable
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=CHANGE_ME
+Environment=RELEASE_CHECK_CONFIG=/etc/release-check/deliverables.json
+Environment=RELEASE_CHECK_STATE=/var/lib/release-check
+ExecStart=/usr/bin/python3 /opt/aiwerkstatt/scripts/release-check/release_check.py check
+# Exit 1 means gaps; the unit then shows as failed, which is what you want to see.
+Nice=19
+CPUQuota=100%
+TimeoutStartSec=90min

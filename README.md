@@ -234,6 +234,13 @@ Heavy test suites can run on a second machine through a forced-command SSH key, 
 at 2 runs at once, with the machine's load shown in the admin overview. Standard library only, off unless
 configured. See [docs/test-runner.md](docs/test-runner.md).
 
+### ✅ Release check
+
+After each release, a standard-library script checks that the **published** release contains every deliverable the project
+advertises: declared files and signatures, checksums, updater manifest, container image tags, version files, release notes and
+a download page. Gaps are waited out, healed through declared ways, and only then reported through an operator hook. See
+[docs/release-check.md](docs/release-check.md).
+
 ## 💬 Feedback
 
 Bug reports and feature ideas are very welcome — please [open an issue](https://github.com/robeertm/AIWerkstatt/issues).

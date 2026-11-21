@@ -1,0 +1,72 @@
+{
+  "format": "deliverables/1",
+  "_comment": "Copy to deliverables.json and edit. {v} = version without the leading v. Page URLs never go in here: they live in probes.json in the state directory.",
+  "on_red": ["/usr/local/bin/notify-release-gap"],
+  "excluded": {
+    "legacy-tool": "no longer shipped"
+  },
+  "projects": {
+    "desktop-app": {
+      "name": "Desktop App",
+      "repo": "example-org/desktop-app",
+      "source": "README download table, download page, releases 1.0.0-1.2.0",
+      "release": "github",
+      "notes": true,
+      "latest": true,
+      "grace_min": 150,
+      "assets": [
+        {"pattern": "app-mobile-{v}.apk", "title": "Mobile package"},
+        {"pattern": "app_{v}_x64-setup.exe", "title": "Windows installer", "signature": ".sig"},
+        {"pattern": "app_{v}_universal.dmg", "title": "macOS disk image"},
+        {"pattern": "app_{v}_amd64.AppImage", "title": "Linux x86_64 package", "signature": ".sig"},
+        {"pattern": "latest.json", "title": "Updater manifest"},
+        {"pattern": "SHA256SUMS.txt", "title": "Checksums"}
+      ],
+      "checksums": {"file": "SHA256SUMS.txt", "all": true},
+      "updater_manifest": {"file": "latest.json"},
+      "minisign": {"repo_file": "desktop/updater.conf.json", "json_path": "updater.pubkey"},
+      "pages": [
+        {"probe": "desktop-app-download", "title": "Download page",
+         "patterns": ["app-mobile-{v}.apk", "app_{v}_x64-setup.exe", "app_{v}_amd64.AppImage"]}
+      ],
+      "heal": [
+        {"kind": "command", "for": ["app-mobile-{v}.apk"], "title": "Build and attach the mobile package",
+         "command": ["python3", "scripts/attach_mobile.py", "v{v}"], "requires": "scripts/attach_mobile.py"},
+        {"kind": "rerun_ci"},
+        {"kind": "promote", "workflow": "promote.yml"}
+      ]
+    },
+    "container-app": {
+      "name": "Container App",
+      "repo": "example-org/container-app",
+      "source": "README: multi-arch image, in-app updater",
+      "release": "github",
+      "notes": true,
+      "latest": true,
+      "grace_min": 90,
+      "assets": [],
+      "images": [
+        {"name": "ghcr.io/example-org/container-app", "tags": ["{v}", "latest"], "latest_equal": true,
+         "signed": true, "sbom": true}
+      ],
+      "version_files": [
+        {"repo": "example-org/container-app", "path": "VERSION", "ref": "v{v}", "pattern": "^{v}\\s*$",
+         "title": "Version file"}
+      ],
+      "heal": [{"kind": "rerun_ci"}, {"kind": "promote"}]
+    },
+    "tag-service": {
+      "name": "Tag-only Service",
+      "repo": "example-org/tag-service",
+      "source": "tags are the release; the changelog must carry the tagged version",
+      "release": "tag",
+      "notes": true,
+      "changelog": "CHANGELOG.md",
+      "grace_min": 30,
+      "report_only": true,
+      "version_files": [
+        {"repo": "example-org/tag-service", "path": "VERSION", "ref": "v{v}", "pattern": "^{v}\\s*$"}
+      ]
+    }
+  }
+}

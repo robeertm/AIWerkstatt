@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.41.0 — 2026-11-21
+### Added — release check (published release completeness)
+- `scripts/release-check/release_check.py`: after each release, checks that the published release contains every deliverable the
+  project declares in `deliverables.json` (format `deliverables/1`): assets present and non-empty, `.sig` partners, checksum file
+  entries equal to the GitHub asset digest, no file with a foreign version, updater manifest (version, platform URLs, signature
+  equals `.sig`), minisign signatures verified cryptographically (optional `cryptography`), container image tags (`:<version>`,
+  `:latest`, signature / SBOM through the OCI referrers tag scheme, any registry with the anonymous bearer-token flow), version
+  files at a ref, release notes, the latest-release marker and a download page probe.
+- Gaps inside a grace period or while CI of the tag runs are waiting; every gap must persist 20 minutes before healing (repository
+  command, re-run failed CI runs, promote workflow, never promoting back when a newer version is in flight) or red. On red an
+  optional operator hook (`on_red`) runs once per project and version with a JSON report. Output format `release-check/1`, last
+  line `RELEASE-CHECK: green|waiting|gaps`, exit 0/1/2; a `STOP` file turns healing and the hook off.
+- Commands `check`, `status`, `history`, `assign`, `trigger`, `run-triggers`; example declaration, example systemd units,
+  `docs/release-check.md`. Tests: `scripts/release-check/test_release_check.py` (CI job `backend`).
+
 ## 0.40.1 — 2026-11-21
 ### Fixed — test runner: unique probe container names
 - Two runs that started in the same second (for example two overflow chunks of one gate on two slots) got the same
