@@ -192,7 +192,7 @@ class Approval(Base):
             self.pl.approve("p1")
 
     def test_withdraw_stops_new_filing_only(self):
-        p = plan([project("x", [task("A1"), task("A2", track="u")])], limits={"total": 1})
+        p = plan([project("x", [task("A1"), task("A2", depends_on=["A1"])])])
         self.go(p)
         self.pl.withdraw("p1", "changed my mind")
         self.api.finish(1, "ok")
@@ -219,35 +219,27 @@ class Approval(Base):
 
 
 class Brakes(Base):
-    def test_total_brake_and_hard_ceiling(self):
-        ps = [project("p%d" % i, [task("A1")]) for i in range(6)]
-        self.assertEqual(len(self.go(plan(ps))), 5)                                   # default: all 5 slots
-        self.assertEqual(self.pl.halt["p1"], "total brake 5 reached")
+    def test_no_total_ceiling_every_ready_task_is_queued(self):
+        ps = [project("p%d" % i, [task("A1")]) for i in range(8)]
+        self.assertEqual(len(self.go(plan(ps))), 8)                                   # no total, no slot check
+        self.assertFalse(self.pl.status()["total"]["applies"])
 
-    def test_reserve_only_while_something_urgent_waits(self):
-        ps = [project("p%d" % i, [task("A1")]) for i in range(6)]
-        self.queue = {"waiting": [], "slots_free": 5, "slots_total": 5}
-        lim = pp.limits_of(plan(ps))
-        self.go(plan(ps, limits={"priority": "queue"}), approve=True)       # filed without queue priority → counts only
-        self.assertEqual(self.pl.total_effective(lim, set()), 5)
-        self.queue = {"waiting": [{"thread": 99, "urgent": True}], "slots_free": 5, "slots_total": 5}
-        self.assertEqual(self.pl.total_effective(lim, set()), 4)             # 1 reserve while an urgent task waits
-        self.assertEqual(self.pl.total_effective(pp.limits_of(plan(ps, limits={"total": 5})), set()), 5)   # explicit number: no reserve
-        self.queue = {"waiting": [], "slots_free": 3, "slots_total": 3}
-        self.assertEqual(self.pl.total_effective(lim, set()), 3)             # never more than the active slots
+    def test_old_total_and_per_project_limits_have_no_effect(self):
+        ps = [project("p%d" % i, [task("A1")]) for i in range(4)]
+        self.assertEqual(len(self.go(plan(ps, limits={"total": 1, "per_project": 1}))), 4)
 
     def test_only_running_tasks_occupy_a_slot(self):
         ps = [project("p%d" % i, [task("A1")]) for i in range(6)]
-        self.go(plan(ps, limits={"priority": "queue"}))
+        self.go(plan(ps))
         keys = sorted(self.pl.s["tasks"])
         self.pl.s["tasks"][keys[0]]["state"] = "question"
         self.pl.s["tasks"][keys[1]]["state"] = "waiting_release"
-        self.assertEqual(len(self.pl.occupying()), 3)
-        self.assertEqual(len(self.pl.open_tasks()), 4)                       # question stays open for project/release rules
+        self.assertEqual(len(self.pl.occupying()), 4)
+        self.assertEqual(len(self.pl.open_tasks()), 5)
 
     def test_idle_minutes_are_measured(self):
         ps = [project("p%d" % i, [task("A1")]) for i in range(2)]
-        self.go(plan(ps, limits={"priority": "queue"}), approve=True)
+        self.go(plan(ps), approve=True)
         self.api.fail = pp.chain.ChainError("down")
         self.pl.s["tasks"].clear()                                           # both tasks ready again, API refuses
         self.pl.check()
@@ -257,25 +249,10 @@ class Brakes(Base):
         self.assertAlmostEqual(b["today_min"], 2.5, places=1)
         self.assertAlmostEqual(b["unwanted_today_min"], 2.5, places=1)
 
-    def test_total_brake_can_be_lowered(self):
-        ps = [project("p%d" % i, [task("A1")]) for i in range(4)]
-        self.assertEqual(len(self.go(plan(ps, limits={"total": 2}))), 2)
-
-    def test_per_project_brake_and_track_rule(self):
+    def test_track_rule_not_a_project_brake(self):
         p = plan([project("x", [task("A1", track="a"), task("A2", track="b"), task("A3", track="a")])])
-        self.assertEqual(self.go(p), ["x/A1"])                                         # default 1 per project
-        self.assertIn("project brake", self.pl.halt["x/A2"])
-
-    def test_two_per_project_and_track_rule(self):
-        q = plan([project("x", [task("A1", track="a"), task("A2", track="a"), task("A3", track="b")])],
-                 limits={"per_project": 2})
-        self.assertEqual(self.go(q), ["x/A1", "x/A3"])                                 # A2: same track as A1
-        self.assertIn("track a", self.pl.halt["x/A2"])
-
-    def test_project_may_lower_per_project(self):
-        p = plan([project("x", [task("A1", track="a"), task("A2", track="b")], limits={"per_project": 1})],
-                 limits={"per_project": 2})
-        self.assertEqual(self.go(p), ["x/A1"])
+        self.assertEqual(self.go(p), ["x/A1", "x/A2"])                                 # A3: same track as A1
+        self.assertIn("track a", self.pl.halt["x/A3"])
 
     def test_daily_brakes(self):
         ps = [project("x", [task("A1"), task("A2", depends_on=["A1"])]), project("y", [task("B1")])]
@@ -325,41 +302,62 @@ class Brakes(Base):
 
 
 class Priority(Base):
-    def test_foreign_work_waiting_holds_the_plan(self):
-        self.queue = {"waiting": [{"thread": 99, "urgent": False}], "slots_free": 3}
-        self.assertEqual(self.go(plan([project("x", [task("A1")])])), [])
-        self.assertIn("foreign", self.pl.halt["p1"])
+    def test_queue_state_is_never_a_reason_to_hold_back(self):
+        for q in ({"waiting": [{"thread": 99, "urgent": True}], "slots_free": 0}, None):
+            self.queue = q
+            self.mk()
+            self.assertEqual(self.go(plan([project("x", [task("A1")])])), ["x/A1"])
+            shutil.rmtree(self.root)
+            os.makedirs(self.root)
+            self.api = Api()
 
-    def test_urgent_task_holds_the_plan(self):
-        self.queue = {"waiting": [{"thread": 99, "urgent": True}], "slots_free": 3}
-        self.assertEqual(self.go(plan([project("x", [task("A1")])])), [])
-        self.assertIn("urgent", self.pl.halt["p1"])
+    def test_plans_are_filed_in_plan_priority_order(self):
+        a = plan([project("x", [task("A1")])], name="low", plan_priority=7)
+        b = plan([project("y", [task("B1")])], name="high", plan_priority=2)
+        c = plan([project("z", [task("C1")])], name="mid")
+        for p in (a, b, c):
+            self.draft(p)
+        for n in ("low", "high", "mid"):
+            self.pl.approve(n, "tester")
+        self.assertEqual(self.pl.fill(), ["y/B1", "z/C1", "x/A1"])
+        self.assertEqual([t for _p, t in self.api.created][0], PREFIX + "y B1: T B1")
 
-    def test_no_free_slot_holds_the_plan(self):
-        self.queue = {"waiting": [], "slots_free": 0}
-        self.assertEqual(self.go(plan([project("x", [task("A1")])])), [])
-        self.assertIn("slot", self.pl.halt["p1"])
+    def test_plan_priority_override_and_validation(self):
+        t = [project("x", [task("A1")])]
+        for bad in (0, 10, True, "2", 2.5):
+            self.assertTrue(any("plan_priority" in e for e in pp.validate_plan(plan(t, plan_priority=bad))))
+        self.assertEqual(pp.validate_plan(plan(t, plan_priority=9)), [])
+        self.go(plan(t, plan_priority=3))
+        self.assertEqual(self.pl.plan_priority("p1", plan(t, plan_priority=3)), 3)
+        self.pl.set_plan_priority("p1", 1)
+        self.assertEqual(self.pl.plan_priority("p1"), 1)
+        self.assertEqual(self.pl.status()["plans"][0]["plan_priority"], 1)
+        with self.assertRaises(pp.Refused):
+            self.pl.set_plan_priority("p1", 12)
+        with self.assertRaises(pp.Refused):
+            self.pl.set_plan_priority("nope", 2)
 
-    def test_unknown_queue_fails_closed(self):
-        self.queue = None
-        self.assertEqual(self.go(plan([project("x", [task("A1")])])), [])
-        self.assertIn("unknown", self.pl.halt["p1"])
-
-    def test_slots_are_shared_with_tasks_filed_in_the_same_round(self):
-        self.queue = {"waiting": [], "slots_free": 2}
-        ps = [project("p%d" % i, [task("A1")]) for i in range(3)]
-        self.assertEqual(len(self.go(plan(ps))), 2)
-
-    def test_own_waiting_tasks_do_not_count_as_foreign(self):
-        p = plan([project("x", [task("A1")]), project("y", [task("B1")])])
+    def test_waiting_block_lists_unfiled_tasks_without_prompt_text(self):
+        p = plan([project("x", [task("A1"), task("A2", depends_on=["A1"]), task("A3", track="u")]),
+                  project("y", [task("B1", depends_on=["x/A2"])])])
         self.go(p)
-        self.queue = {"waiting": [{"thread": 1, "urgent": False}], "slots_free": 2}
-        self.assertEqual(self.pl.fill(), [])        # both already filed
-        self.assertNotIn("foreign", self.pl.halt.get("p1", ""))
+        wp = self.pl.status()["waiting_on_predecessor"]
+        self.assertEqual(sorted(w["key"] for w in wp), ["x/A2", "y/B1"])
+        a2 = [w for w in wp if w["key"] == "x/A2"][0]
+        self.assertEqual(a2["kind"], "predecessor")
+        self.assertEqual(a2["waiting_on"][0]["key"], "x/A1")
+        self.assertIn("x/A1", a2["reason"])
+        self.assertNotIn("do A2", json.dumps(wp))
+        self.assertIn("waiting on predecessor", pp.status_text(self.pl.status()))
 
-    def test_queue_mode_ignores_the_queue(self):
-        self.queue = {"waiting": [{"thread": 99, "urgent": False}], "slots_free": 0}
-        self.assertEqual(self.go(plan([project("x", [task("A1")])], limits={"priority": "queue"})), ["x/A1"])
+    def test_waiting_block_shows_held_ready_tasks_and_pause(self):
+        p = plan([project("x", [task("A1"), task("A2", track="u")])], limits={"per_day": 1})
+        self.go(p)
+        held = [w for w in self.pl.status()["waiting_on_predecessor"] if w["kind"] == "held"]
+        self.assertEqual(len(held), 1)
+        self.assertIn("daily brake", held[0]["reason"])
+        self.pl.s["plans"]["p1"]["paused"] = True
+        self.assertTrue(self.pl.fill() == [])
 
 
 class Releases(Base):
@@ -486,15 +484,17 @@ class StatusAndSimulation(Base):
         pp.chain.write_atomic(self.pl.path("status.json"), json.dumps(st))
         self.assertTrue(os.path.exists(self.pl.path("status.json")))
 
-    def test_simulation_respects_brakes_and_dependencies(self):
+    def test_simulation_respects_dependencies_and_tracks(self):
         p = plan([project("x", [task("A1", hours=2), task("A2", hours=1, depends_on=["A1"])]),
                   project("y", [task("B1", hours=1, depends_on=["x/A1"])])])
         sim = pp.simulate(p)
         self.assertEqual(sim["tasks"]["x/A2"][0], 2.0)
         self.assertEqual(sim["tasks"]["y/B1"][0], 2.0)
         self.assertEqual(sim["end_h"], 3.0)
-        one = pp.simulate(plan([project("x", [task("A1", track="a"), task("A2", track="b")])]))
-        self.assertEqual(one["end_h"], 2.0)                                              # one per project by default
+        one = pp.simulate(plan([project("x", [task("A1", track="a"), task("A2", track="a")])]))
+        self.assertEqual(one["end_h"], 2.0)                                              # one per track
+        two = pp.simulate(plan([project("x", [task("A1", track="a"), task("A2", track="b")])]))
+        self.assertEqual(two["end_h"], 1.0)                                              # no per-project brake
         self.assertEqual(pp.simulate(plan([project("x", [task("A1", optional=True)])]))["tasks"], {})
 
 
@@ -532,6 +532,16 @@ class CommandLine(Base):
         open(os.path.join(self.root, "KILL"), "w").close()
         self.assertEqual(self.cli("check")[0], 3)
         self.assertEqual(self.cli("status")[0], 0)                                       # status still readable
+
+    def test_plan_priority_command(self):
+        self.draft(plan([project("x", [task("A1")])]))
+        self.cli("approve", "p1", "--by", "tester")
+        rc, _out, _ = self.cli("plan-priority", "p1", "2")
+        self.assertEqual(rc, 0)
+        rc, out, _ = self.cli("status", "--json")
+        self.assertEqual(json.loads(out)["plans"][0]["plan_priority"], 2)
+        self.assertEqual(self.cli("plan-priority", "p1", "0")[0], 1)
+        self.assertEqual(self.cli("plan-priority", "nope", "3")[0], 1)
 
     def test_token_file_must_be_private(self):
         tok = os.path.join(self.root, "token")

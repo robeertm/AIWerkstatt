@@ -175,7 +175,7 @@ same `chain` token. The plain chain above stays as it is. Example: `scripts/chai
 
 ```json
 {"format": "projectplan/2", "name": "example-plan", "title": "…", "date": "2026-11-21",
- "limits": {"total": 3, "per_project": 1, "per_day": 30, "priority": "free"},
+ "plan_priority": 5, "limits": {"per_day": 30},
  "order": ["webshop/A1", "api-core/C1"],
  "projects": [{"id": "webshop", "name": "Web shop",
                "release": {"kind": "train", "slug": "webshop", "repo": "owner/webshop", "how": "text"},
@@ -194,18 +194,21 @@ same `chain` token. The plain chain above stays as it is. Example: `scripts/chai
 - **Nothing runs without approval.** Drafts live in `<root>/projectplans/drafts/<name>.json` and appear in `status` as
   drafts. `projectplan.py approve <name> [--by NAME]` validates the plan, freezes it (SHA-256, who, when) in `active/` and
   files what the brakes allow. `withdraw` stops new filing, running tasks go on.
-- **Brakes** (a plan can only lower them): `total` tasks holding a slot at the same time up to 5 (default: all active slots, see
-  below), `per_project` 2 (default 1), 1 per track, `per_day` 60 (default 30); a project may lower `per_project` and `per_day`.
-- **Never leave slots empty (0.38.0):** without a `total` in the plan the effective total is the number of active slots
-  (`slots_total` in the load file, default 5) minus 1 reserve — the reserve only while an urgent foreign task waits. An explicit
-  `total` is a plain cap without reserve. Only tasks that really hold a slot count (state `running`); `question`,
-  `waiting_release`, finished and stopped tasks never do. Refill promptly: call `projectplan.py check` as soon as a task ends
-  (a hook of your scheduler or runner) and, as a fallback, every 2-3 minutes. The status shows `total` (effective, occupying) and
-  `idle` (minutes with a free slot and ready tasks, today/yesterday, how many of them unwanted, reasons) for a nightly report.
-- **Priority** (`"free"`, default): a task is filed only if nothing foreign waits in the queue and a slot is free; urgent
-  foreign tasks always win. `"queue"` files regardless and lets the normal FIFO queue sort it out. The queue state comes
-  from `--load-file` / `AIWERKSTATT_PLAN_LOAD_FILE`, a JSON file `{"waiting": [{"thread": 12, "urgent": false}], "slots_free": 2, "slots_total": 5}`
-  that the operator keeps fresh (for example from `GET /api/pool`). Unknown state fails closed: nothing is filed.
+- **Queue first (0.43.0):** every ready task (dependencies done) is filed at once and waits in the normal queue. There is
+  no total ceiling, no per-project ceiling and no "only when a slot is free" rule any more; `limits.total`, `limits.per_project`
+  and `limits.priority` are still accepted in old plans but have no effect. What holds a task back is a real dependency or an
+  emergency brake: kill switches, pause, the previous task of the same track, the release way of the repository below and
+  `per_day` (60 at most, default 30; a project may lower it).
+- **Plan priority:** optional plan field `plan_priority`, an integer 1-9 (1 = first, default 5), override with
+  `projectplan.py plan-priority <plan> <n>` (stored in the state). Plans are walked in that order, so tasks of a more important
+  plan are filed first. AIWerkstatt has no queue interface that moves an already filed task, so the order is the filing order
+  only; a task that is already queued is never moved afterwards.
+- **Status:** each plan carries `plan_priority`; the block `total` is kept for compatibility (`applies: false`); the block
+  `waiting_on_predecessor` lists every task of an approved plan that is not filed yet, either with its open dependencies
+  (`kind: predecessor`) or ready but held (`kind: held`, with the reason), plan priority first, titles and keys only. `idle` reports
+  minutes with a free slot and ready, unfiled tasks for a nightly report. Call `projectplan.py check` as soon as a task ends
+  (a hook of your scheduler or runner) and, as a fallback, every 2-3 minutes, so a task whose predecessor finished is queued at once.
+  The load file (`--load-file`) is now only used for that idle measurement.
 - **Release**: while the release state of a repository is `stale` or `critical`, or its train is `red`, nothing new is filed for
   it (except `release_fix: true`). A task with kind `own` never starts next to a running train or another `own` task of the same
   repository, so there is one release way per repository. The release state is read from `--release-file` /

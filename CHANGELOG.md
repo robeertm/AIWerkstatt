@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.43.0 — 2026-11-22
+### Changed — multi-project plans queue everything
+- `scripts/chain/projectplan.py`: every ready task (dependencies done) is filed at once and waits in the normal queue. The total
+  ceiling, the per-project ceiling and the "only when nothing foreign waits and a slot is free" rule are gone; `limits.total`,
+  `limits.per_project` and `limits.priority` stay valid in old plans without effect. Kept: kill switches, pause, one running task
+  per track, the release way of a repository, the daily emergency brake. The dry-run simulation no longer applies a per-project cap.
+- Plan priority: optional plan field `plan_priority` (1-9, 1 = first, default 5, validated), override command
+  `projectplan.py plan-priority <plan> <n>`. Plans are filed in that order. There is no queue interface that reorders an already
+  filed task here, so priority only decides the filing order; a filed task is never moved afterwards.
+- Status (additive): `plan_priority` per plan, block `waiting_on_predecessor` (unfiled tasks with open dependencies or the reason they
+  are held; keys and titles only), per-task `waiting_on`; block `total` now reports `applies: false`.
+- Tests rewritten for the new behaviour (`Brakes`, `Priority`, simulation) and extended; docs/chain.md updated.
+
 ## 0.42.0 — 2026-11-22
 ### Added — app feedback intake
 - Service token profile `app`: bound to one project and one instance (`service_token.py create <name> --profile app --project <p> --instance <i>`;

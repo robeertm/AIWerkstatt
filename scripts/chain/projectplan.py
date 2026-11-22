@@ -17,6 +17,7 @@ Python standard library only; works with ``python3 -I``.
     projectplan.py option <plan>:<project>/<ID>    allow an optional task
     projectplan.py done <plan>:<project>/<ID> [--reason T]    mark a task finished by hand
     projectplan.py retry <plan>:<project>/<ID>     allow a stopped / stuck / failed task again
+    projectplan.py plan-priority <plan> <1-9>      override the plan priority (1 = first, default 5)
 
 Options (or environment): ``--root`` / AIWERKSTATT_CHAIN_ROOT (default <data>/chain; files live in ``<root>/projectplans``),
 ``--token-file``, ``--url``, ``--prefix`` / AIWERKSTATT_CHAIN_PLAN_PREFIX (default "Project plan · "), ``--excluded`` /
@@ -24,13 +25,16 @@ AIWERKSTATT_CHAIN_PLAN_EXCLUDED (comma separated project ids no plan may touch),
 AIWERKSTATT_PLAN_LOAD_FILE and ``--release-file`` / AIWERKSTATT_PLAN_RELEASE_FILE (see docs/chain.md). The token is only
 ever read from a mode 0600 file, never from argv.
 
-A plan runs ONLY after ``approve``. A draft is never started by itself. Hard ceilings (a plan can only lower them):
-``total`` 5 tasks occupying a slot at the same time (default: all active slots, minus 1 reserve only while an urgent or
-foreign task waits; a plan may set a lower number), ``per_project`` 2 (default 1), 1 per track, ``per_day`` 60 (default 30).
-Only tasks that really hold a slot count (state ``running``): ``question``, ``waiting_release`` and finished tasks never do.
-Refill promptly: run ``check`` whenever a task ends (a hook of your scheduler) and, as a fallback, every 2-3 minutes; the
-status shows ``idle`` (minutes with a free slot and ready tasks). With
-``priority: "free"`` (default) a task is only filed when nothing foreign waits in the queue and a slot is free.
+A plan runs ONLY after ``approve``. A draft is never started by itself.
+Queue first (0.43.0): EVERY ready task (dependencies done) is filed at once and waits in the normal queue; there is no total
+ceiling, no per-project ceiling and no "only when a slot is free" rule any more (``limits.total``, ``limits.per_project`` and
+``limits.priority`` are accepted in old plans without effect). What still holds a task back is a real dependency or an
+emergency brake: kill switches, pause, the previous task of the same track, the release way of the repository and
+``per_day`` (60 at most, default 30; a project may lower it). Plans are walked in order of their plan priority
+(``plan_priority`` 1-9, 1 = first, default 5, override with ``plan-priority``), so tasks of a more important plan are filed
+first. The status lists every task that is not filed yet under ``waiting_on_predecessor``.
+Refill promptly: run ``check`` whenever a task ends (a hook of your scheduler) and, as a fallback, every 2-3 minutes, so a
+task whose predecessor finished is filed at once; the status shows ``idle`` (minutes with a free slot and ready, unfiled tasks).
 Kill switches in ``<root>``: ``KILL`` (shared with chain.py) and ``projectplans/OFF``. The tool never tags or publishes.
 Exit codes: 0 ok, 1 refused (plan or target), 2 error, 3 kill switch on.
 """
@@ -62,10 +66,12 @@ LIVE_FOLLOWUP_MAX = 2                # automatic follow-ups per task, then a hel
 LIVE_LINE_RE = re.compile(r"(?im)^\W*LIVE:[ \t]*(.*)$")
 LIVE_PAIR_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]{0,60})\s*=\s*v?(\d+\.\d+\.\d+)")
 LIMITS_DEFAULT = {"total": 5, "per_project": 1, "per_day": 30}
-LIMITS_MAX = {"total": 5, "per_project": 2, "per_day": 60}
+LIMITS_MAX = {"total": 5, "per_project": 2, "per_day": 60}   # total / per_project: accepted, no effect since 0.43.0
 IDLE_GAP_MIN = 6                    # one measurement counts at most this many minutes (no extrapolation over gaps)
 IDLE_DAYS = 14
-PRIORITIES = ("free", "queue")
+PRIORITIES = ("free", "queue")      # 0.43.0: accepted in old plans, without effect (everything is queued)
+PLAN_PRIORITY_DEFAULT = 5            # plan priority 1 (first) ... 9
+PLAN_PRIORITY_MIN, PLAN_PRIORITY_MAX = 1, 9
 STARTUP_S = 600                      # a freshly filed task counts as active even before the API shows it
 VERBOSE_MAX = 60
 LOG_MAX = 300
@@ -216,6 +222,9 @@ def validate_plan(plan, excluded=None):
                 err.append("limits.%s = %d is above the ceiling %d" % (k, v, LIMITS_MAX[k]))
         else:
             err.append("limits.%s is unknown" % k)
+    pv = plan.get("plan_priority")
+    if pv is not None and (isinstance(pv, bool) or not isinstance(pv, int) or not PLAN_PRIORITY_MIN <= pv <= PLAN_PRIORITY_MAX):
+        err.append("plan_priority must be an integer %d-%d (1 = first)" % (PLAN_PRIORITY_MIN, PLAN_PRIORITY_MAX))
     tasks, pids = {}, set()
     for p in projects:
         if not isinstance(p, dict):
@@ -351,11 +360,10 @@ def per_project_limit(plan, project, lim):
 
 
 def simulate(plan, slots=5):
-    """Dry schedule: in order, the first startable task (dependencies, 1 per track, per project, total). Optional tasks
+    """Dry schedule: in order, the first startable task (dependencies, 1 per track; ``slots`` parallel runs). Optional tasks
     stay out. -> {end_h, tasks: {key: (start_h, end_h)}, unscheduled, sum_h, per_project, slots}"""
     allt, order = flatten(plan)
-    lim = limits_of(plan)
-    total = min(lim["total"], slots)
+    total = max(1, slots)
     pend = [k for k in order if not allt[k]["t"].get("optional")]
     spans, run, done, now = {}, {}, set(), 0.0
     for _ in range(10000):
@@ -367,8 +375,6 @@ def simulate(plan, slots=5):
                 e = allt[k]
                 pid = e["project"]["id"]
                 if not all(d in done for d in e["deps"]):
-                    continue
-                if sum(1 for j in run if allt[j]["project"]["id"] == pid) >= per_project_limit(plan, e["project"], lim):
                     continue
                 if any(allt[j]["project"]["id"] == pid and allt[j]["t"]["track"] == e["t"]["track"] for j in run):
                     continue
@@ -616,14 +622,32 @@ class ProjectPlans:
         finished and stopped tasks never count against the total."""
         return [(n, k, ts) for n, k, ts in self.open_tasks() if ts.get("state") == "running"]
 
-    def total_effective(self, lim, own):
-        """Effective total: the plan's own cap (if it set one) or all active slots, minus 1 reserve only while an urgent or
-        foreign task waits. ``slots_total`` comes from the load file (default 5)."""
+    def total_info(self):
+        """Block ``total`` in the status (additive). Since 0.43.0 there is no total ceiling: ``applies`` is false."""
         info = self.load_info() or {}
         slots = max(0, min(int(info.get("slots_total") or LIMITS_MAX["total"]), LIMITS_MAX["total"]))
-        waiting = [w for w in (info.get("waiting") or []) if w.get("thread") not in own]
-        reserve = 1 if (lim.get("total_auto") and any(w.get("urgent") for w in waiting)) else 0
-        return max(0, min(lim["total"], slots - reserve))
+        return {"effective": slots, "occupying": len(self.occupying()), "applies": False,
+                "text": "no total ceiling: every ready task is queued"}
+
+    def plan_priority(self, name, plan=None):
+        """Plan priority 1 (first) ... 9: override in the state (``plan-priority``), then the plan field, else 5."""
+        for v in ((self.s["plans"].get(name) or {}).get("plan_priority"), (plan or {}).get("plan_priority")):
+            if isinstance(v, int) and not isinstance(v, bool) and PLAN_PRIORITY_MIN <= v <= PLAN_PRIORITY_MAX:
+                return v
+        return PLAN_PRIORITY_DEFAULT
+
+    def plans_by_priority(self, active):
+        return sorted(active, key=lambda n: (self.plan_priority(n, active[n][0]), n))
+
+    def set_plan_priority(self, name, value):
+        ps = self.s["plans"].get(name)
+        if not ps:
+            raise Refused("plan %s is not approved" % clean(name, 64))
+        if isinstance(value, bool) or not isinstance(value, int) or not PLAN_PRIORITY_MIN <= value <= PLAN_PRIORITY_MAX:
+            raise Refused("plan priority must be %d-%d (1 = first)" % (PLAN_PRIORITY_MIN, PLAN_PRIORITY_MAX))
+        ps["plan_priority"] = value
+        self.note("plan_priority", plan=name, value=value)
+        self.out("plan priority of %s: %d" % (name, value))
 
     def open_tasks(self):
         return [(key.split(":", 1)[0], key.split(":", 1)[1], ts) for key, ts in self.s["tasks"].items()
@@ -854,7 +878,8 @@ class ProjectPlans:
         return True
 
     def fill(self, active=None):
-        """File every ready task of every approved plan, as far as switches, priority and brakes allow.
+        """Queue every ready task of every approved plan at once (0.43.0), most important plan first. Only switches, pause,
+        the track rule, the release way and the daily emergency brake hold a task back.
         Returns the filed keys; ``self.halt`` holds the reason per task or plan."""
         self.halt = {}
         active = active if active is not None else self.load_plans("active")
@@ -863,8 +888,8 @@ class ProjectPlans:
             self.halt["*"] = why
             return []
         new = []
-        own = {ts.get("thread") for _p, _k, ts in self.open_tasks() if ts.get("thread")}
-        for name, (plan, sha) in active.items():
+        for name in self.plans_by_priority(active):
+            plan, sha = active[name]
             ps = self.s["plans"].get(name) or {}
             if not ps.get("approved") or ps.get("withdrawn"):
                 continue
@@ -882,14 +907,6 @@ class ProjectPlans:
                     self.halt[k] = "project is excluded"
                     continue
                 opn = self.open_tasks()
-                tot = self.total_effective(lim, own)
-                if len(self.occupying()) >= tot:
-                    self.halt[name] = "total brake %d reached" % tot
-                    break
-                pp = per_project_limit(plan, e["project"], lim)
-                if sum(1 for _n, _k, ts in opn if ts.get("project") == pid) >= pp:
-                    self.halt[k] = "project brake (%d)" % pp
-                    continue
                 if any(ts.get("project") == pid and allt.get(kk, {}).get("t", {}).get("track") == e["t"]["track"]
                        for pn, kk, ts in opn if pn == name):
                     self.halt[k] = "previous task of track %s is running" % e["t"]["track"]
@@ -905,11 +922,6 @@ class ProjectPlans:
                 if not ok:
                     self.halt[k] = why
                     continue
-                if lim["priority"] == "free":
-                    ok, why = self.slot_free(own, len(new))
-                    if not ok:
-                        self.halt[name] = "priority: " + why
-                        break
                 if self.file_task(name, plan, sha, k, e):
                     new.append(k)
                 else:
@@ -950,8 +962,7 @@ class ProjectPlans:
             return
         if int(info.get("slots_free") or 0) - len(new) <= 0:
             return
-        deliberate = ("paused", "total brake", "daily brake", "project brake", "previous task", "release", "kill", "OFF", "excluded",
-                      "priority")
+        deliberate = ("paused", "daily brake", "previous task", "release", "kill", "OFF", "excluded")
         reasons = {}
         for name, (plan, _sha) in active.items():
             ps = self.s["plans"].get(name) or {}
@@ -1033,7 +1044,8 @@ class ProjectPlans:
                     "start": ts.get("since_ts"), "end": ts.get("end_ts"),
                     "release_version": ts.get("release_version") or ts.get("published"),
                     "live": self.live_row(e, ts, st),
-                    "halt": clean(self.halt.get(k) or (self.halt.get(name) if st == "ready" else None) or "", 120) or None})
+                    "halt": clean(self.halt.get(k) or (self.halt.get(name) if st == "ready" else None) or "", 120) or None,
+                    "waiting_on": self.waiting_on(name, e) if st == "waiting" else []})
             projects = [{"id": p["id"], "name": clean(p.get("name") or p["id"], 80),
                          "history": [{"date": str(v.get("date"))[:10], "title": clean(v.get("title"), 160),
                                       "result": clean(v.get("result"), 200) or None,
@@ -1043,6 +1055,7 @@ class ProjectPlans:
             not_live = [r["key"] for r in rows if (r.get("live") or {}).get("not_live")]
             sim = simulate(plan)
             plans.append({"name": name, "title": clean(plan.get("title") or name, 160), "date": plan.get("date"),
+                          "plan_priority": self.plan_priority(name, plan),
                           "sha": ps.get("sha") or sha, "approved": approved, "by": ps.get("by"),
                           "paused": bool(ps.get("paused")), "withdrawn": ps.get("withdrawn"),
                           "limits": limits_of(plan), "sum_h": sim["sum_h"], "dry_run_end_h": sim["end_h"],
@@ -1053,8 +1066,41 @@ class ProjectPlans:
         return {"format": STATUS_FORMAT, "time": int(self.now()), "killed": self.killed(),
                 "live": {"not_live": len(all_nl), "tasks": all_nl[:20]},
                 "halt": clean(self.halt.get("*") or "", 160) or None, "open": len(self.open_tasks()),
-                "total": {"effective": self.total_effective(limits_of({}), set()), "occupying": len(self.occupying())},
-                "idle": self.idle_block(), "plans": plans}
+                "total": self.total_info(),
+                "idle": self.idle_block(), "plans": plans, "waiting_on_predecessor": self.waiting_block(plans)}
+
+    def waiting_on(self, name, e):
+        """Open dependencies of a task: [{key, state, thread}]."""
+        out = []
+        for d in e["deps"]:
+            ts = self.s["tasks"].get("%s:%s" % (name, d)) or {}
+            if ts.get("state") in DONE_STATES:
+                continue
+            out.append({"key": d, "state": ts.get("state") or "open", "thread": ts.get("thread")})
+        return out
+
+    @staticmethod
+    def waiting_block(plans):
+        """Every task of an approved plan that is not filed yet: open dependencies (``predecessor``) or ready but held
+        (``held``: reason). Plan priority first. Only keys and titles, never task text."""
+        out = []
+        for pl in sorted(plans, key=lambda x: (x.get("plan_priority") or PLAN_PRIORITY_DEFAULT, x["name"])):
+            if not pl.get("approved"):
+                continue
+            for r in pl["tasks"]:
+                if r["state"] == "waiting":
+                    parts = ["%s (%s%s)" % (w["key"], w["state"], " #%s" % w["thread"] if w.get("thread") else "")
+                             for w in r.get("waiting_on") or []]
+                    why, kind = "waiting for predecessor: " + ", ".join(parts) if parts else "waiting for predecessor", "predecessor"
+                elif r["state"] == "ready":
+                    why, kind = r.get("halt") or ("paused" if pl.get("paused") else "will be queued shortly"), "held"
+                else:
+                    continue
+                out.append({"plan": pl["name"], "plan_priority": pl.get("plan_priority"), "key": r["key"],
+                            "project": r["project"], "id": r["id"], "title": r["title"], "hours": r["hours"],
+                            "state": r["state"], "kind": kind, "waiting_on": r.get("waiting_on") or [],
+                            "reason": clean(why, 200)})
+        return out
 
     @staticmethod
     def live_row(e, ts, st):
@@ -1079,14 +1125,21 @@ def status_text(st):
                                                " · held: " + st["halt"] if st.get("halt") else "")]
     for p in st["plans"]:
         lines.append("")
-        lines.append("%s — %s · %d tasks · %.0f h · dry run %.1f h%s" % (
-            p["name"], "approved" if p["approved"] else "DRAFT (not approved)", len(p["tasks"]), p["sum_h"],
+        lines.append("%s — %s · priority %s · %d tasks · %.0f h · dry run %.1f h%s" % (
+            p["name"], "approved" if p["approved"] else "DRAFT (not approved)", p.get("plan_priority", PLAN_PRIORITY_DEFAULT),
+            len(p["tasks"]), p["sum_h"],
             p["dry_run_end_h"], " · paused" if p["paused"] else ""))
         lines.append("   " + ", ".join("%s %d" % kv for kv in sorted(p["counts"].items())))
         for r in p["tasks"]:
             if r["state"] in ("running", "question", "waiting_release", "stuck", "stopped", "failed", "ready"):
                 lines.append("   %-28s %-16s %s%s" % (r["key"], r["state"], "#%s " % r["thread"] if r.get("thread") else "",
                                                       "(%s)" % r["halt"] if r.get("halt") else ""))
+    wp = st.get("waiting_on_predecessor") or []
+    if wp:
+        lines.append("")
+        lines.append("waiting on predecessor (%d, not queued yet):" % len(wp))
+        for w in wp[:40]:
+            lines.append("   %-28s %s" % (w["key"], w["reason"]))
     if not st["plans"]:
         lines.append("no plans (drafts go to <root>/projectplans/drafts/, approve with: projectplan.py approve <name>)")
     return "\n".join(lines)
@@ -1128,6 +1181,9 @@ def build_parser():
     d.add_argument("target")
     d.add_argument("--reason", default="")
     sub.add_parser("retry").add_argument("target")
+    pr = sub.add_parser("plan-priority", help="plan priority 1 (first) ... 9")
+    pr.add_argument("plan")
+    pr.add_argument("value", type=int)
     return ap
 
 
@@ -1178,6 +1234,9 @@ def main(argv=None, out=print, api=None, clock=None, load=None, release_state=No
             elif a.cmd == "check":
                 for k in pp.check():
                     out("filed %s" % k)
+            elif a.cmd == "plan-priority":
+                pp.set_plan_priority(a.plan, a.value)
+                pp.fill()
             elif a.cmd == "done":
                 pp.mark_done(a.target, a.reason)
             elif a.cmd == "retry":
