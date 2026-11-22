@@ -37,13 +37,24 @@ def iso(t):
 
 
 class Requeue(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # ONE project for the class: in the shared `unittest discover` run every test module uses the same database, and a
+        # project per test used up the port range (8100-8199) for later modules.
+        # Earlier modules of the same run may already have filled 8100-8199 — this class takes its own range.
+        alt = engine.config.PORT_RANGE
+        engine.config.PORT_RANGE = (28100, 28199)
+        try:
+            p = engine.create_project("Stall %d" % time.time_ns(), "x", "d", "tester")
+        finally:
+            engine.config.PORT_RANGE = alt
+        cls.project = p if isinstance(p, dict) else engine.get_project(p)
+
     def setUp(self):
         self.ev = tempfile.mkdtemp(prefix="aiw-sge-ev-")
         self.q = tempfile.mkdtemp(prefix="aiw-sge-q-")
         self.old = (engine.EVENTS_DIR, engine.TASK_QUEUE)
         engine.EVENTS_DIR, engine.TASK_QUEUE = self.ev, self.q
-        p = engine.create_project("Stall %d" % time.time_ns(), "x", "d", "tester")
-        self.project = p if isinstance(p, dict) else engine.get_project(p)
         r = engine.create_thread(self.project, "Build it", "Build a clock.", "tester")
         self.thread = r["thread_id"]
         self.task = db.query_one("SELECT id FROM tasks WHERE thread_id=?", (self.thread,))["id"]
@@ -121,7 +132,9 @@ class Requeue(unittest.TestCase):
 
     def test_self_healer_does_not_queue_it_a_second_time(self):
         self.hung()
-        self.assertEqual(engine.resurrect_stale_tasks(lambda pid: False), [])     # descriptor present -> not claimed yet
+        # descriptor present -> not claimed yet; other modules of a shared run may leave their own stale tasks behind
+        mine = [x for x in engine.resurrect_stale_tasks(lambda pid: False) if self.task in tuple(x)[1:3]]
+        self.assertEqual(mine, [])
         self.assertEqual(self.row()["attempts"] or 0, 0)
 
 
@@ -161,9 +174,12 @@ class OverdueInPool(unittest.TestCase):
         self.assertTrue(r["eta_text"].startswith("done in"), r)
 
     def test_experience_overrun_is_overdue(self):
-        for i in range(3):
-            db.execute("INSERT INTO tasks(thread_id,kind,status,started_at,finished_at,created_at) VALUES(1,'new','done',?,?,?)",
-                       (iso(1_800_000_000), iso(1_800_001_200), store.now()))
+        # Experience = median of the latest finished tasks in the WHOLE database — other tests leave done tasks behind, so
+        # enough 20-minute rows that they decide the median on their own, at realistic (past) times.
+        t0 = time.time() - 6 * 3600
+        for i in range(25):
+            db.execute("INSERT INTO tasks(thread_id,kind,status,started_at,finished_at,created_at) VALUES(987654,'new','done',?,?,?)",
+                       (iso(t0 + 60 * i), iso(t0 + 60 * i + 1200), store.now()))
         r = self.run_with(3600)
         self.assertTrue(r["eta_text"].startswith("overdue since "), r)
         self.assertTrue(r["eta_overdue_since"])
