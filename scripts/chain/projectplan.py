@@ -29,8 +29,9 @@ A plan runs ONLY after ``approve``. A draft is never started by itself.
 Queue first (0.43.0): EVERY ready task (dependencies done) is filed at once and waits in the normal queue; there is no total
 ceiling, no per-project ceiling and no "only when a slot is free" rule any more (``limits.total``, ``limits.per_project`` and
 ``limits.priority`` are accepted in old plans without effect). What still holds a task back is a real dependency or an
-emergency brake: kill switches, pause, the previous task of the same track, the release way of the repository and
-``per_day`` (60 at most, default 30; a project may lower it). Plans are walked in order of their plan priority
+emergency brake: kill switches, pause, the previous task of the same track and the release way of the repository.
+``per_day`` is still accepted in plans but has no effect since 0.45.0 (the old count ran over all plans and silently held back
+ready tasks). Plans are walked in order of their plan priority
 (``plan_priority`` 1-9, 1 = first, default 5, override with ``plan-priority``), so tasks of a more important plan are filed
 first. The status lists every task that is not filed yet under ``waiting_on_predecessor``.
 Refill promptly: run ``check`` whenever a task ends (a hook of your scheduler) and, as a fallback, every 2-3 minutes, so a
@@ -879,7 +880,7 @@ class ProjectPlans:
 
     def fill(self, active=None):
         """Queue every ready task of every approved plan at once (0.43.0), most important plan first. Only switches, pause,
-        the track rule, the release way and the daily emergency brake hold a task back.
+        the track rule and the release way hold a task back (no daily brake since 0.45.0).
         Returns the filed keys; ``self.halt`` holds the reason per task or plan."""
         self.halt = {}
         active = active if active is not None else self.load_plans("active")
@@ -910,13 +911,6 @@ class ProjectPlans:
                 if any(ts.get("project") == pid and allt.get(kk, {}).get("t", {}).get("track") == e["t"]["track"]
                        for pn, kk, ts in opn if pn == name):
                     self.halt[k] = "previous task of track %s is running" % e["t"]["track"]
-                    continue
-                if self.created_today() >= lim["per_day"]:
-                    self.halt[name] = "daily brake %d reached" % lim["per_day"]
-                    break
-                pd = (e["project"].get("limits") or {}).get("per_day")
-                if pd and self.created_today(pid) >= int(pd):
-                    self.halt[k] = "daily brake of the project (%d)" % int(pd)
                     continue
                 ok, why = self.release_free(name, k, e)
                 if not ok:

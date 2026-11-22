@@ -197,8 +197,8 @@ same `chain` token. The plain chain above stays as it is. Example: `scripts/chai
 - **Queue first (0.43.0):** every ready task (dependencies done) is filed at once and waits in the normal queue. There is
   no total ceiling, no per-project ceiling and no "only when a slot is free" rule any more; `limits.total`, `limits.per_project`
   and `limits.priority` are still accepted in old plans but have no effect. What holds a task back is a real dependency or an
-  emergency brake: kill switches, pause, the previous task of the same track, the release way of the repository below and
-  `per_day` (60 at most, default 30; a project may lower it).
+  emergency brake: kill switches, pause, the previous task of the same track and the release way of the repository below.
+  `per_day` is still accepted but has no effect since 0.45.0 (the count ran over all plans and silently held tasks back).
 - **Plan priority:** optional plan field `plan_priority`, an integer 1-9 (1 = first, default 5), override with
   `projectplan.py plan-priority <plan> <n>` (stored in the state). Plans are walked in that order, so tasks of a more important
   plan are filed first. AIWerkstatt has no queue interface that moves an already filed task, so the order is the filing order

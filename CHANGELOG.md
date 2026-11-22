@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.45.0 — 2026-11-22
+### Fixed — project plan chain: ready tasks were silently held back by the daily brake
+- The daily brake compared the number of tasks filed today across ALL plans with the limit of a single plan and stopped that plan
+  for the rest of the day - a plan with top priority filed nothing while plans with a lower priority carried on, and the status
+  only said "will be queued shortly". The brake is removed (`per_day` stays an accepted plan field without effect, in line
+  with 0.43.0: no hidden brakes, everything goes through the queue). What still holds a task back is a real dependency, the
+  track rule, the release way, pause and the kill switches - each with its reason in the status.
+- Tests in `scripts/chain/test_projectplan.py` (no daily brake, held task by track rule); docs/chain.md.
+
 ## 0.44.0 — 2026-11-22
 ### Added — stall guard: hung runs are detected on several axes and healed; remaining time "overdue since ..."
 - **Why:** an agent can wait in a polling loop (`ps | grep <gate>; sleep 30`) on a process that belongs to another run. No output,

@@ -254,22 +254,12 @@ class Brakes(Base):
         self.assertEqual(self.go(p), ["x/A1", "x/A2"])                                 # A3: same track as A1
         self.assertIn("track a", self.pl.halt["x/A3"])
 
-    def test_daily_brakes(self):
-        ps = [project("x", [task("A1"), task("A2", depends_on=["A1"])]), project("y", [task("B1")])]
+    def test_no_daily_brake_any_more(self):
+        """0.45.0: ``per_day`` is accepted but never holds a ready task back (the count used to run over all plans)."""
+        ps = [project("x", [task("A1")]), project("y", [task("B1")]), project("z", [task("C1")])]
         p = plan(ps, limits={"per_day": 1})
-        self.assertEqual(len(self.go(p)), 1)
-        self.assertIn("daily brake", self.pl.halt["p1"])
-        self.clock.t += 86400
-        self.pl.s["tasks"]["p1:x/A1"]["state"] = "done"
-        self.assertEqual(len(self.pl.fill()), 1)                                       # next day
-
-    def test_daily_brake_of_a_project(self):
-        p = plan([project("x", [task("A1"), task("A2", depends_on=["A1"])], limits={"per_day": 1}),
-                  project("y", [task("B1")])])
-        self.assertEqual(sorted(self.go(p)), ["x/A1", "y/B1"])
-        self.pl.s["tasks"]["p1:x/A1"]["state"] = "done"
-        self.assertEqual(self.pl.fill(), [])
-        self.assertIn("daily brake of the project", self.pl.halt["x/A2"])
+        self.assertEqual(sorted(self.go(p)), ["x/A1", "y/B1", "z/C1"])
+        self.assertNotIn("daily brake", " ".join(self.pl.halt.values()))
 
     def test_cross_project_dependency_waits(self):
         p = plan([project("x", [task("A1", depends_on=["y/B1"])]), project("y", [task("B1")])])
@@ -351,11 +341,11 @@ class Priority(Base):
         self.assertIn("waiting on predecessor", pp.status_text(self.pl.status()))
 
     def test_waiting_block_shows_held_ready_tasks_and_pause(self):
-        p = plan([project("x", [task("A1"), task("A2", track="u")])], limits={"per_day": 1})
+        p = plan([project("x", [task("A1"), task("A2")])])         # same track: A2 is ready but held by the track rule
         self.go(p)
         held = [w for w in self.pl.status()["waiting_on_predecessor"] if w["kind"] == "held"]
         self.assertEqual(len(held), 1)
-        self.assertIn("daily brake", held[0]["reason"])
+        self.assertIn("previous task", held[0]["reason"])
         self.pl.s["plans"]["p1"]["paused"] = True
         self.assertTrue(self.pl.fill() == [])
 
