@@ -23,6 +23,8 @@ Legend: **mirrored** = present here · **by design** = the architecture makes it
 | Agent | Live feed, timestamps, vital signs, API-error state | mirrored | 0.16.0 – 0.18.0 |
 | Agent | API errors heal themselves, bounded retries (3, 5/15/45 min) | mirrored | 0.14.3, 0.17.0 |
 | Agent | Open background work is not a finished task | mirrored | 0.23.0 |
+| Agent | **Stall guard**: hung runs detected on several axes, three stages, re-queue at the front | mirrored | 0.44.0, on by default (`WK_STALL_GUARD=0` turns it off); see [stall guard](stall-guard.md) for the deviations |
+| Queue | Remaining time says "overdue since ..." instead of a frozen estimate | mirrored | 0.44.0 |
 | Agent | Context pack with knowledge and rule block | mirrored | 0.17.0 |
 | Agent | Reading proof | mirrored | 0.29.0, opt-in |
 | Agent | One working tree per project, follow-ups never lost | mirrored | 0.18.1 |

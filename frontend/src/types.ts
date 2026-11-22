@@ -37,9 +37,11 @@ export type EtaRun = {
   progress?: { done: number | null; total: number | null; share: number | null; estimated?: boolean } | null
   after?: string[]; eta_s?: number | null; eta_text?: string; reliability?: string; line?: string
 }
+export type StallGuardView = { stage: number; quiet_s: number; active: string[]; deferred: boolean; text: string }
 export type PoolRun = {
   project: string; title: string; started_at: string | null; model: string; api_error?: ApiErrorState; background_wait?: BackgroundWait
   eta_s?: number | null; eta_text?: string; eta_spanne?: (number | null)[] | null; phase?: string | null; run?: EtaRun | null; eta_line?: string
+  eta_overdue_since?: number | null; stall_guard?: StallGuardView | null
 }
 export type WaitingStart = { project: string | null; start_in_s?: number | null; start_text?: string }
 export type TestRunnerLoad = { fresh: boolean; stand: number | null; load: number[] | null; cores: number | null; cpu_percent: number | null; test_runs: number | null; max_runs: number | null; queue_waiting?: number }

@@ -128,6 +128,17 @@ def _log(msg):
     print("[orchestrator] %s" % msg, flush=True)
 
 
+def stall_guard_env(environ=None):
+    """Stall guard settings for a run (docs/stall-guard.md): on by default, ``WK_STALL_GUARD=0`` turns it off; the stages are
+    passed on only when configured (the runner has its own defaults)."""
+    environ = os.environ if environ is None else environ
+    out = {"WK_STALL_GUARD": "0" if str(environ.get("WK_STALL_GUARD", "1")).strip().lower() in ("0", "off", "false", "no")
+           else "1"}
+    if environ.get("WK_STALL_GUARD_STAGES"):
+        out["WK_STALL_GUARD_STAGES"] = environ["WK_STALL_GUARD_STAGES"]
+    return out
+
+
 class Orchestrator:
     def __init__(self, provider_creds_fn):
         """provider_creds_fn(provider) -> dict of env vars (the API key / token),
@@ -320,6 +331,8 @@ class Orchestrator:
             # Pauses before each retry after an API error (runner default 120,300,900; empty = off).
             "AIW_API_RETRY_DELAYS": os.environ.get("AIW_API_RETRY_DELAYS", "120,300,900"),
             "WK_THREAD_ID": str(thread_id),
+            # Stall guard (docs/stall-guard.md): on by default, WK_STALL_GUARD=0 turns it off; stages only when configured.
+            **stall_guard_env(),
             "WK_REPO": d.get("repo", ""),
             "WK_PROVIDER": provider,
             "WK_MODEL": d.get("model", ""),
@@ -432,6 +445,9 @@ class Orchestrator:
             bw = engine.background_wait_state(engine._status_file(tid))
             if bw:
                 run["background_wait"] = bw
+            sgv = engine.stall_guard_state(engine._status_file(tid))
+            if sgv:
+                run["stall_guard"] = sgv
             runs.append(run)
         runs.sort(key=lambda r: (r["started_at"] or "", r["project"]))
         waiting = 0
@@ -480,15 +496,28 @@ class Orchestrator:
             est = mine[-1] if mine else None
             started = _utc_epoch(r.get("started_at"))
             runtime = max(0.0, now - started) if started else 0
-            t = eta.task_eta(runtime, None, None, run_est=est, experience_s=experience)
+            tid_i = int(tid) if tid else 0
+            todo = engine._status_file(tid_i).get("todo") if tid_i else None
+            todo = todo if isinstance(todo, dict) else {}
+            t = eta.task_eta(runtime, todo.get("done"), todo.get("total"), run_est=est, experience_s=experience)
             text = eta.eta_text(t["eta_s"], t["lo_s"], t["hi_s"], unknown="unknown (first task of this kind)")
+            # 0.44.0: far over the estimate -> "overdue since ..." instead of an estimate that stays at "~3 min" for hours
+            step_since = (now - int(todo["stand_since"])) if str(todo.get("stand_since") or "").isdigit() else None
+            over = eta.overdue_s(runtime, t, step_since_s=step_since, experience_s=experience,
+                                 done=todo.get("done"), total=todo.get("total"))
+            r["eta_overdue_since"] = int(now - over) if over is not None else None
+            if over is not None:
+                text = eta.overdue_text(now - over, now)
             r["eta_s"] = _round60(t["eta_s"])
             r["eta_text"] = text
             r["eta_spanne"] = [_round60(t["lo_s"]), _round60(t["hi_s"])] if t["eta_s"] is not None else None
             r["phase"] = (est or {}).get("phase")
             r["run"] = _run_brief(est) if est else None
             r["eta_line"] = eta.line(dict(est, text=text)) if est else text
-            free_in.append(t["eta_s"] if t["eta_s"] is not None else max(600, (experience or 45 * 60) - runtime))
+            if over is not None:
+                free_in.append(600)           # overdue: free in 10 min at the earliest (unknown, but not "soon")
+            else:
+                free_in.append(t["eta_s"] if t["eta_s"] is not None else max(600, (experience or 45 * 60) - runtime))
         active = snap.get("active")
         if active is None:
             free_in += [0] * max(0, len(waiting_orders))

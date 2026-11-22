@@ -498,6 +498,7 @@ function ThreadView({ tid, accent, isAdmin, onBack }: { tid: number; accent: str
           if (e.type === 'failed') return <div key={e.id} className="bub b-bad">{e.text}</div>
           if (e.type === 'stopped') return <div key={e.id} className="bub b-sys" style={{ color: 'var(--bad)' }}>⏹️ {e.text}</div>
           if (e.type === 'limited') return <div key={e.id} className="bub b-sys" style={{ color: 'var(--warn)' }}>⏸️ {e.text}</div>
+          if (e.type === 'hung') return <div key={e.id} className="bub b-sys" style={{ color: 'var(--warn)' }}>{e.text}</div>
           return <div key={e.id}><div className="b-label">🤖 Agent</div><div className="bub b-agent">{e.text}</div></div>
         })}
         {working && <div className="bub b-agent"><Working color={STATUS[t.status].color} /> <span className="muted">Agent {STATUS[t.status].label}…</span></div>}
@@ -702,9 +703,12 @@ function EtaBlock({ r }: { r: PoolRun }) {
   if (f && f.done != null && f.total) parts.push(`${f.done}/${f.total} tests`)
   if (l?.after && l.after.length) parts.push(`then ${l.after.join(' + ')}`)
   const unknown = !!text && /unknown/i.test(text)
+  const overdue = !!r.eta_overdue_since
+  const guard = r.stall_guard?.text || ''
   return (
     <div className="pt-eta" data-testid="eta" style={{ marginTop: '.35rem' }}>
-      {text ? <div style={{ fontWeight: 800, fontSize: '.85rem', color: unknown ? 'var(--muted)' : 'var(--text)' }}>⏱ {text}</div> : null}
+      {text ? <div style={{ fontWeight: 800, fontSize: '.85rem', color: overdue ? 'var(--warn)' : unknown ? 'var(--muted)' : 'var(--text)' }} data-overdue={overdue ? '1' : undefined}>⏱ {text}</div> : null}
+      {guard ? <div className="muted" style={{ fontSize: '.7rem', color: (r.stall_guard?.stage || 0) >= 1 ? 'var(--warn)' : undefined }}>🩺 {guard}</div> : null}
       {parts.length > 0 ? <div className="muted" style={{ fontSize: '.7rem' }}>{parts.join(' · ')}</div> : null}
       {share != null ? (
         <div style={{ height: 4, borderRadius: 99, background: 'var(--border)', overflow: 'hidden', marginTop: '.3rem' }}

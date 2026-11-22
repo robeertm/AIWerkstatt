@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.44.0 — 2026-11-22
+### Added — stall guard: hung runs are detected on several axes and healed; remaining time "overdue since ..."
+- **Why:** an agent can wait in a polling loop (`ps | grep <gate>; sleep 30`) on a process that belongs to another run. No output,
+  no CPU, no growing log - yet the output-silence watchdog never fires because the loop keeps starting new tool calls. The slot
+  stayed busy for hours although the work was long done, and the remaining time sat on "~3 min" the whole time.
+- **Measuring (`agent-runner/stall_guard.py`, new, on by default, `WK_STALL_GUARD=0` turns it off):** activity on six axes instead of "last agent
+  output" - output (API replies, tool results), CPU and I/O of the tool processes under the agent (the provider CLI itself is
+  excluded), growing files named on tool command lines or written by background tasks, git activity in the working directory, and
+  gate progress (`aiwerkstatt-progress/1` files of this run with a fresh heartbeat). A polling loop is silence; a long gate run with
+  progress is never a stall. Provider-neutral: it only looks at the process tree.
+- **Stages (`agent-runner/session.py`, thresholds `WK_STALL_GUARD_STAGES`, default 900,1500,2400 s of silence on ALL axes, tick 60 s):**
+  1 nudge the agent; 2 end the hung tool processes and ask it to check the state and continue; 3 end the run cleanly and report
+  `hung` (event type `hung`, no `failed` event, no retry request - the normal self-healing retry does not fire a second time).
+  Every stage and every healing is visible in the task history. Release, gate and deploy scripts (recognized by program or script
+  name, never by a word inside a shell line) and their whole tool subtree are never ended; while one runs, stage 3 waits. With the
+  guard on, the plain output-silence watchdog is only a backstop and never ends a run the guard sees activity on.
+- **Re-queue at the front (`backend/engine.py`, `requeue_hung`):** a `hung` event puts the task back under the same task id (the queue is
+  FIFO by id, so it sorts in front of everything newer) with a short context hint (last action, branch, last commit, uncommitted
+  files). First hang: the same session continues; second: a fresh session with the original request plus context; after
+  `AIWERKSTATT_STALL_GUARD_MAX` (default 2) hangs the old path takes over (self-healing retry with its growing pause). Attempts are not
+  counted for a stall-guard re-queue.
+- **Remaining time (`backend/eta.py`, `overdue_s` / `overdue_text`):** far over its estimate, a task shows "overdue since HH:MM" instead of
+  a frozen figure - experience rule: runtime > max(1.5 x experience, +15 min); step rule: all steps done and unchanged for > 15 min, or
+  the current step stands longer than max(3 x the task's pace, 30 min); a running gate never. The runner keeps `todo.stand_since`;
+  the pool overview gets the additive fields `eta_overdue_since` and `stall_guard` per run (stage, quiet time, active axes); the task
+  figure now also uses the todo counter. UI: amber remaining time when overdue, one line for the guard state, `hung` event bubble.
+- Config: `WK_STALL_GUARD`, `WK_STALL_GUARD_STAGES`, `AIWERKSTATT_STALL_GUARD_MAX` (compose + `.env.example`); optional
+  `AIW_STALL_GUARD_PROGRESS_DIR` for the gate axis (defaults to `AIWERKSTATT_PROGRESS_DIR`).
+- Tests: `backend/tests/test_stall_guard.py` (15: detection, axes, state machine, real process trees), `test_session_stall_guard.py` (7: fake agent -
+  hanging tool healed in stage 1/2, still hanging ends in stage 3 without `failed`, long gate with progress and growing log never a
+  stall, protected step never ended, off by default, old watchdog without the guard), `test_stall_guard_engine.py` (14: front re-queue,
+  second hang fresh session, hand-over, no double retry, overdue rules and pool fields). Docs: `docs/stall-guard.md`, parity inventory.
+
 ## 0.43.0 — 2026-11-22
 ### Changed — multi-project plans queue everything
 - `scripts/chain/projectplan.py`: every ready task (dependencies done) is filed at once and waits in the normal queue. The total

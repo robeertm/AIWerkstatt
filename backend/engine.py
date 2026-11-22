@@ -673,6 +673,34 @@ def api_error_state(status):
             "gave_up": bool(ae.get("gave_up")), "reason": str(ae.get("reason") or "")[:120]}
 
 
+def stall_guard_state(status, now=None):
+    """Short fixed view of the stall guard from a runner status file, or None: {stage, quiet_s, active, deferred, text}.
+    Only numbers and fixed words. Nothing is shown while the agent is plainly active."""
+    g = status.get("stall_guard") if isinstance(status, dict) else None
+    if not isinstance(g, dict):
+        return None
+    now = time.time() if now is None else now
+    names = {"output": "output", "cpu": "CPU", "io": "I/O", "files": "logs", "git": "git", "gate": "gate"}
+    try:
+        stage = int(g.get("stage") or 0)
+        quiet = max(0, int(now - int(g["last_activity"]))) if g.get("last_activity") else int(g.get("quiet_s") or 0)
+        axes = {str(k): int(v) for k, v in (g.get("axes") or {}).items() if str(k) in names}
+    except (TypeError, ValueError):
+        return None
+    active = sorted((k for k, v in axes.items() if v <= 300), key=lambda k: axes[k])
+    if stage >= 3:
+        text = "stall guard: re-queueing"
+    elif stage == 2:
+        text = "stall guard: tool ended, %d min quiet" % (quiet // 60) + (" (gate running, no abort)" if g.get("deferred") else "")
+    elif stage == 1:
+        text = "stall guard: nudged, %d min quiet" % (quiet // 60)
+    elif quiet >= 300 and not active:
+        text = "quiet for %d min" % (quiet // 60)
+    else:
+        text = ("active: " + ", ".join(names[k] for k in active[:3])) if active else ""
+    return {"stage": stage, "quiet_s": quiet, "active": active, "deferred": bool(g.get("deferred")), "text": text}
+
+
 def background_wait_state(status):
     """Normalised ``background_wait`` object from a runner status file, or None. Shape:
     {since, count, continuations, max, reason, description}."""
@@ -907,6 +935,8 @@ def ingest_once():
             db.execute("UPDATE tasks SET status='cancelled', finished_at=? WHERE id=?", (store.now(), task_id))
         elif etype == "limited" and task_id:
             db.execute("UPDATE tasks SET status='waiting' WHERE id=?", (task_id,))
+        elif etype == "hung" and task_id:
+            requeue_hung(task_id, thread_id, th["project_id"], d.get("payload"))
         # capture session id for resume
         sp = os.path.join(EVENTS_DIR, "sess-%d.txt" % thread_id)
         try:
@@ -960,6 +990,79 @@ def _give_up(task_id, thread_id, reason, announce=True):
         _add_event(thread_id, task_id, "failed",
                    "⏹️ Automatic retries stopped: %s. Please send the request again." % reason,
                    "System")
+
+
+# 🩺 Stall guard (0.44.0): the runner ends a hung run cleanly and reports it as a `hung` event (no `failed` event, so the
+# self-healing retry below does not fire a second time). The task is re-queued at once under the SAME task id: the queue is
+# strictly FIFO by task id, so it sorts in front of everything newer ("front of the queue"). Attempts are not counted; the
+# self-healer's cooldown does not apply. First hang: the same session continues (resume + context). Second hang: a fresh
+# session with the original request + context. Further hangs: the old path - the task is marked failed (without a final
+# error) and the self-healing retry with its growing cooldown takes over.
+HUNG_MAX = max(0, int(os.environ.get("AIWERKSTATT_STALL_GUARD_MAX", "2") or 2))
+
+
+def hung_count(task_id):
+    row = db.query_one("SELECT COUNT(*) AS n FROM events WHERE task_id=? AND type='hung'", (task_id,))
+    return int(row["n"]) if row else 0
+
+
+def hung_context(payload, quiet_min, n):
+    """Short factual hint for the re-queued run (never raw tool output)."""
+    pl = payload if isinstance(payload, dict) else {}
+    lines = ["[Workshop stall guard] The previous run of this task made no progress for %d min and was ended (hang %d; last "
+             "action: %s)." % (quiet_min, n, str(pl.get("last_action") or "unknown")[:60])]
+    state = str(pl.get("state") or "").strip()[:600]
+    if state:
+        lines.append("State of the working directory when it ended:\n" + state)
+    lines.append("Check the real state first (git log, git status, the files you were working on). If the work is already "
+                 "done and committed, do not rebuild it - finish with the result. Do not wait in a loop for another run's "
+                 "process.")
+    return "\n".join(lines)
+
+
+def requeue_hung(task_id, thread_id, project_id, payload):
+    """Handle one `hung` event: re-queue at the front with context, or fall back to the self-healing retry."""
+    proj = get_project(project_id)
+    n = hung_count(task_id)
+    row = db.query_one("SELECT kind, req_model, req_effort, status FROM tasks WHERE id=?", (task_id,))
+    if not proj or not row or row["status"] in ("done", "cancelled"):
+        return None
+    if n > HUNG_MAX:
+        db.execute("UPDATE tasks SET status='failed', finished_at=? WHERE id=? AND status NOT IN ('done','cancelled')",
+                   (store.now(), task_id))
+        _add_event(thread_id, task_id, "retrying",
+                   "🩺 Stall guard: the task hung %d times - the normal self-healing retry takes over." % n, "System")
+        return None
+    pl = payload if isinstance(payload, dict) else {}
+    quiet_min = max(1, int(round(float(pl.get("quiet_s") or 0) / 60.0)))
+    own = db.query_all("SELECT text FROM events WHERE task_id=? AND type='user' ORDER BY id", (task_id,))
+    texts = [(r["text"] or "") for r in own]
+    for tid2 in (pl.get("also") or [])[:5]:
+        if isinstance(tid2, int):
+            texts += [(r["text"] or "") for r in db.query_all(
+                "SELECT text FROM events WHERE task_id=? AND type='user' ORDER BY id", (tid2,))]
+    original = "\n\n".join(t for t in texts if t) or ""
+    ctx = hung_context(pl, quiet_min, n)
+    sess = (pl.get("session_id") or "")
+    if not sess:
+        th = db.query_one("SELECT session_id FROM threads WHERE id=?", (thread_id,))
+        sess = (th["session_id"] if th else "") or ""
+    if n == 1 and sess:
+        kind, text, sid = "followup", ctx + "\n\nContinue where you left off. The task:\n" + original, sess
+        how = "the same session continues"
+    else:
+        first = db.query_one("SELECT text FROM events WHERE thread_id=? AND type='user' ORDER BY id LIMIT 1", (thread_id,))
+        base = original if row["kind"] != "new" or not first else (first["text"] or original)
+        kind, text, sid = "new", PREAMBLE + base + "\n\n" + ctx, ""
+        how = "a fresh session starts with the context"
+    db.execute("UPDATE tasks SET status='queued', error=NULL, finished_at=NULL, "
+               "first_started_at=COALESCE(first_started_at, started_at, ?), started_at=? "
+               "WHERE id=? AND status NOT IN ('done','cancelled')", (store.now(), store.now(), task_id))
+    _drop_descriptor(task_id, proj, thread_id, kind, text, sid, log=False,
+                     req_model=row["req_model"], req_effort=row["req_effort"])
+    _add_event(thread_id, task_id, "retrying",
+               "🩺 Stall guard: re-queued at the front (hang %d of %d) - %s." % (n, HUNG_MAX, how), "System")
+    return kind
 
 
 def resurrect_stale_tasks(is_alive):

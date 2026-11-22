@@ -570,6 +570,39 @@ def task_eta(runtime_s, done, total, run_est=None, experience_s=None):
     return {"eta_s": None, "lo_s": None, "hi_s": None, "source": None}
 
 
+def overdue_s(runtime_s, t, step_since_s=None, experience_s=None, done=None, total=None):
+    """Seconds a task is over its estimate (0.44.0) - None = not overdue. Without a basis there is no "overdue" (nothing is
+    invented). ``t`` is the result of ``task_eta`` (its ``source`` decides the rule):
+      experience - runtime > max(1.5 x experience value, experience value + 15 min)
+      steps      - all steps done and the state unchanged for > 15 min, or the current step stands longer than
+                   max(3 x the task's pace per step, 30 min) (45 min without a pace)
+      run        - never (a gate or test run estimates itself and its heartbeat shows progress)"""
+    lz = max(0.0, float(runtime_s or 0))
+    src = (t or {}).get("source")
+    if src == "experience" and experience_s:
+        m = float(experience_s)
+        limit = max(1.5 * m, m + 15 * 60)
+        return int(lz - limit) if lz > limit else None
+    if src == "steps" and step_since_s is not None:
+        ss = max(0.0, float(step_since_s))
+        d = int(done) if isinstance(done, (int, float)) and not isinstance(done, bool) else 0
+        n = int(total) if isinstance(total, (int, float)) and not isinstance(total, bool) else 0
+        if n and d >= n:
+            limit = 15 * 60
+        else:
+            rate = (lz / d) if d > 0 and lz > 0 else None
+            limit = max(3 * rate, 30 * 60) if rate else 45 * 60
+        return int(ss - limit) if ss > limit else None
+    return None
+
+
+def overdue_text(since, now=None):
+    """"overdue since 14:05" (older than 20 h: "overdue since 11-21 14:05")."""
+    now = time.time() if now is None else now
+    fmt = "%m-%d %H:%M" if now - since > 20 * 3600 else "%H:%M"
+    return "overdue since %s" % time.strftime(fmt, time.localtime(since))
+
+
 def start_times(free_in, durations, fallback_s=30 * 60):
     """FIFO: free_in = seconds until free per slot (0 = free, None = unknown -> does not count), durations = expected
     duration per waiting task (None -> fallback). Returns seconds until start per waiting task (None = no slot in sight)."""

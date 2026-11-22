@@ -29,6 +29,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from providers import get_adapter, RunContext  # noqa: E402
 from evidence import Evidence  # noqa: E402
 import reading_proof  # noqa: E402
+try:
+    import stall_guard as _sg  # noqa: E402
+except ImportError:  # pragma: no cover - without the module there is no stall guard
+    _sg = None
 
 # ---------------------------------------------------------------- env contract
 SLUG        = os.environ["WK_SLUG"]
@@ -121,6 +125,30 @@ def waits_only(text):
     return bool(t) and len(t) <= 1200 and bool(_WAIT_PATTERN.search(t[-500:]))
 
 
+# 🩺 Stall guard (0.44.0; the orchestrator sets WK_STALL_GUARD=1 by default, 0 = off; see docs/stall-guard.md). While a turn is open the runner measures real
+# activity every minute on several axes (output, CPU/I/O of the tool processes, growing logs, git, gate progress). Silence on
+# ALL axes: stage 1 (15 min) nudges the agent, stage 2 (25 min) ends the hung tool processes and asks it to check the state
+# and continue, stage 3 (40 min) ends the run cleanly and reports "hung" - the engine re-queues the task at the front with
+# context (no "failed" event, so the normal self-healing retry does not fire a second time). Release/gate/deploy steps and
+# their whole tool subtree are never ended. With the guard on, the plain output-silence watchdog is only a backstop.
+STALL_GUARD = os.environ.get("WK_STALL_GUARD") == "1" and _sg is not None
+STALL_STAGES = _sg.stages_from(os.environ.get("WK_STALL_GUARD_STAGES", "")) if _sg else (900, 1500, 2400)
+try:
+    STALL_TICK = float(os.environ.get("WK_STALL_GUARD_TICK_S", "60") or 60)
+except ValueError:
+    STALL_TICK = 60.0
+STALL_PROGRESS_DIR = os.environ.get("AIW_STALL_GUARD_PROGRESS_DIR") or os.environ.get("AIWERKSTATT_PROGRESS_DIR", "")
+STALL_PROC = os.environ.get("WK_STALL_GUARD_PROC", "/proc")
+STALL_TMP = os.environ.get("WK_STALL_GUARD_TMP", "/tmp")
+STALL_BACKSTOP = int(os.environ.get("WK_STALL_GUARD_BACKSTOP", str(STALL_STAGES[2] + 3600)) or 0)
+STALL_NUDGE = ("Workshop stall guard (stage 1/3): for %s there has been no activity on any axis (no output, no CPU or I/O "
+               "from your tools, no growing logs, no git activity, no gate progress). Your last action: %s. Check the real "
+               "state now - read the log or the git state instead of waiting in a loop, and do not poll another run's "
+               "process. If something else is blocking, work around it or finish with what is done.")
+STALL_CONTINUE = ("Workshop stall guard (stage 2/3): a tool of yours showed no activity for %s and was ended (%s). Check the "
+                  "current state briefly (git status, the files you were working on), do not repeat finished steps, and "
+                  "continue. Do not wait for processes that belong to another run.")
+
 # Knowledge folder (also read by the subagent rules block through the environment).
 KNOWLEDGE_DIR = os.environ.get("AIW_KNOWLEDGE_DIR") or os.environ.get("WK_VAULT") or "/vault/%s" % SLUG
 os.environ["AIW_KNOWLEDGE_DIR"] = KNOWLEDGE_DIR
@@ -173,7 +201,8 @@ LIVE = {"api_error": None,     # api_error state shown in the status file
         "waiting": None,       # turn ended with open work: {since, continuations, reason}
         "sid": None,           # session id of this run (saved with the plan)
         "tasks": None,         # full todo list (id -> step), for the plan file
-        "todo": None}          # plan summary shown in the status file: {done, total, current[, carried_over]}
+        "todo": None,          # plan summary shown in the status file: {done, total, current, stand_since[, carried_over]}
+        "stall_guard": None}   # 0.44.0: state of the stall guard (stage, quiet_s, axes) for the overview
 EVIDENCE = Evidence([KNOWLEDGE_DIR])
 PLAN_MAX_AGE_S = 7 * 86400   # a saved plan older than this is ignored
 RUN_STARTED = int(time.time())  # when THIS run began (a restart/resume is a new run) → "run since" in the UI
@@ -239,6 +268,14 @@ def plan_summary(tasks):
             "current": ((cur or {}).get("active") or (cur or {}).get("subject") or "")[:100]}
 
 
+def todo_with_stand(new):
+    """0.44.0: `stand_since` = since when counter and current step are unchanged (remaining time "overdue since ...")."""
+    old = LIVE.get("todo") or {}
+    same = bool(old) and (old.get("done"), old.get("total"), old.get("current")) == (new["done"], new["total"], new["current"])
+    new["stand_since"] = int(old.get("stand_since") or time.time()) if same else int(time.time())
+    return new
+
+
 def plan_save():
     """Save the last known plan (never raises)."""
     if not LIVE.get("todo"):
@@ -266,7 +303,7 @@ def plan_take_over(resume_sid):
         return None
     if not isinstance(todo, dict) or not todo.get("total") or age > PLAN_MAX_AGE_S:
         return None
-    LIVE["todo"] = dict(todo, carried_over=True)
+    LIVE["todo"] = dict(todo, carried_over=True, stand_since=int(time.time()))   # a resumed run starts its clock anew
     same = bool(resume_sid) and d.get("sid") == resume_sid and isinstance(d.get("tasks"), dict)
     if same:
         LIVE["tasks"] = d["tasks"]
@@ -291,7 +328,8 @@ def write_status(ctx_pct, alive, pending, compacting=False):
          "model": MODEL, "effort": EFFORT, "updated": int(time.time()), "run_started": RUN_STARTED,
          "last_output": int(_last_output[0]), "api_error": LIVE["api_error"],
          "evidence": EVIDENCE.as_dict(), **_background_fields(),
-         **({"todo": LIVE["todo"]} if LIVE.get("todo") else {})}, ensure_ascii=False))
+         **({"todo": LIVE["todo"]} if LIVE.get("todo") else {}),
+         **({"stall_guard": LIVE["stall_guard"]} if LIVE.get("stall_guard") else {})}, ensure_ascii=False))
 
 
 def write_limit(until, since, known=False):
@@ -324,6 +362,13 @@ def start_agent(resume_id=None):
     proc = subprocess.Popen(argv, cwd=WT, stdin=subprocess.PIPE,
                             stdout=runlog_fh, stderr=subprocess.STDOUT)
     return proc
+
+
+def _sg_view(sg, now):
+    """Status-file view of the stall guard: only numbers and fixed words."""
+    st = sg.state(now)
+    st["active"] = sorted((k for k, v in st["axes"].items() if v <= 300), key=lambda k: st["axes"][k])
+    return st
 
 
 def main():
@@ -391,6 +436,11 @@ def main():
     reading_nudges = {}       # reading-proof follow-ups per task id (at most READING_MAX_NUDGES)
     reading = {}              # reading proof state for the session result: required, entries, valid, nudges, missing
     rl_size = 0               # last seen runlog size (truncation detection)
+    sg = _sg.Guard(STALL_STAGES) if STALL_GUARD else None    # 0.44.0 stall guard
+    sg_tick = 0.0             # last measuring time
+    hung = None               # stage 3 reached: {"task_id","quiet_s","last_action","state","stage"} -> result + "hung" event
+    sg_info = {"reached": 0, "healed": 0, "ended": [], "deferred": False}
+    last_action = [""]        # short text of the agent's last tool action (for the nudge and the hang report)
     should_close = False
     limited_close = None   # (task_id, reset)
     processed_inbox = set()
@@ -557,19 +607,25 @@ def main():
                                      int(ev.get("reset", 0) or 0))
                     should_close = True
                 elif kind == "activity":
+                    if sg is not None:
+                        sg.output()
+                    if ev.get("tool"):
+                        last_action[0] = str(ev["tool"].get("name", ""))[:40]
                     if ev.get("tool"):
                         EVIDENCE.tool(ev["tool"].get("name", ""), ev["tool"].get("input") or {})
                     if LIVE["waiting"] and ev.get("top") and ev.get("act") in ("say", "think", "tool"):
                         LIVE["waiting"] = None   # the CLI woke the agent itself - it works again
                     if ev.get("act") == "plan" and ev.get("top") and isinstance(ev.get("plan"), dict):
                         LIVE["tasks"] = ev["plan"]
-                        LIVE["todo"] = plan_summary(ev["plan"])
+                        LIVE["todo"] = todo_with_stand(plan_summary(ev["plan"]))
                         plan_save()
                     emit_activity(ev.get("act", "say"), ev.get("text", ""))
                     last_activity = time.time()
                 elif kind == "background":
                     background_update(ev)
                 elif kind == "result":
+                    if sg is not None:
+                        sg.output()
                     handle_result(ev)
 
         # 2) inbox: follow-ups / compact / stop
@@ -673,6 +729,76 @@ def main():
                 _last_output[0] = now
                 continue
 
+        # 3d) 🩺 Stall guard (0.44.0): only while a turn is open (answer pending). Waiting for background work (3c) and API
+        # pauses (3a) have their own rules - the clock does not run there.
+        if sg is not None:
+            now = time.time()
+            tid_g = next((t2 for k2, t2 in expected if k2 == "task" and t2 is not None), FIRST_TASK)
+            for g in sg.pick_up_healed():
+                sg_info["healed"] += 1
+                emit(tid_g, "progress", "\U0001FA7A Stall guard: activity again (%s%s) after %s of silence - healed after stage "
+                     "%d/3, the agent keeps working." % (_sg.AXIS_TEXT.get(g["axis"], g["axis"]),
+                                                       (": " + g["text"]) if g.get("text") else "",
+                                                       _sg.minutes(g["quiet_s"]), g["stage"]))
+                log("stall guard: healed after stage %d (%s)" % (g["stage"], g["axis"]))
+            if not expected or LIVE["waiting"] or api_wait_until or should_close:
+                sg.rest(now)
+                LIVE["stall_guard"] = None
+            elif now - sg_tick >= STALL_TICK:
+                sg_tick = now
+                stage = sg.tick(_sg.measure(proc.pid, THREAD_ID, sid or LIVE.get("sid") or RESUME_SID, WT,
+                                            os.path.expanduser("~"), proc_dir=STALL_PROC, tmp=STALL_TMP,
+                                            progress_dir=STALL_PROGRESS_DIR), now)
+                quiet = sg.quiet_s(now)
+                act = last_action[0] or "unknown"
+                if stage == 1:
+                    sg_info["reached"] = max(sg_info["reached"], 1)
+                    emit(tid_g, "progress", "\U0001FA7A Stall guard stage 1/3: no activity on any axis for %s (%s; last action: "
+                         "%s) - nudging the agent." % (_sg.minutes(quiet), _sg.quiet_text(), act))
+                    log("stall guard stage 1: %ds quiet - nudged" % quiet)
+                    feed(STALL_NUDGE % (_sg.minutes(quiet), act))
+                elif stage == 2:
+                    sg_info["reached"] = max(sg_info["reached"], 2)
+                    pids, protected = _sg.endable(sg.measurement or {})
+                    names = sorted({(sg.measurement or {}).get("procs", {}).get(x, {}).get("prog") or "?" for x in pids})
+                    hit = _sg.end(pids) if pids else []
+                    sg_info["ended"] = (sg_info["ended"] + names)[:12]
+                    what = ("%d process%s: %s" % (len(hit), "" if len(hit) == 1 else "es", ", ".join(names[:5]))
+                            if hit else "no running tool found")
+                    if protected:
+                        what += "; a release/gate step is left untouched"
+                    emit(tid_g, "progress", "\U0001FA7A Stall guard stage 2/3: %s without activity - hung tool ended (%s); the agent "
+                         "checks the state and continues." % (_sg.minutes(quiet), what))
+                    log("stall guard stage 2: %ds quiet - ended %s" % (quiet, what))
+                    feed(STALL_CONTINUE % (_sg.minutes(quiet), what))
+                elif stage == 3:
+                    _p, protected = _sg.endable(sg.measurement or {})
+                    if protected:
+                        # Never abort a release/gate step: stage 3 waits (the backstop stays the output watchdog)
+                        sg.stage = 2
+                        if not sg.deferred:
+                            sg.deferred = True
+                            sg_info["deferred"] = True
+                            emit(tid_g, "progress", "\U0001FA7A Stall guard: %s quiet, but a release/gate step is running in the "
+                                 "tool tree - stage 3 (re-queue) waits, nothing is aborted." % _sg.minutes(quiet))
+                            log("stall guard stage 3 deferred (protected step)")
+                    else:
+                        sg_info["reached"] = 3
+                        ids = [t2 for k2, t2 in expected if k2 == "task" and t2 is not None]
+                        hung = {"task_id": tid_g, "quiet_s": int(quiet), "last_action": act, "stage": 3,
+                                "also": [t2 for t2 in ids if t2 != tid_g], "session_id": sid or "",
+                                "state": _sg.work_state(WT)}
+                        emit(tid_g, "hung", "\U0001FA7A Stall guard stage 3/3: %s without activity (last action: %s) - run ended "
+                             "cleanly; the task is re-queued at the front with context." % (_sg.minutes(quiet), act),
+                             payload=hung)
+                        log("stall guard stage 3: %ds quiet - reporting hung" % quiet)
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
+                        break
+                LIVE["stall_guard"] = _sg_view(sg, now)
+
         # 4) exit conditions
         # 🔴 Stream abort (API) → resume THE SAME session. Done here, not in the parser:
         # we swap both the process and the file handle we are reading from.
@@ -718,7 +844,14 @@ def main():
         # Stall watchdog: tasks are pending but the agent has gone silent for too long → it's
         # hung (API-retry dead end / dead socket). Terminate it; the pending tasks are re-queued
         # in teardown (auto-retry up to MAX_RETRIES). Keeps a hung agent from blocking the project.
-        if expected and now - last_output > STALL_TIMEOUT and not LIVE["waiting"]:   # waiting is handled by 3c
+        # 🩺 0.44.0: with the stall guard on, the plain output-silence watchdog is only a backstop (and never ends a run the
+        # guard sees activity on - CPU of a tool, a growing log, gate progress, git).
+        stall_limit = STALL_TIMEOUT
+        if sg is not None:
+            stall_limit = max(stall_limit, STALL_BACKSTOP)
+            if sg.quiet_s(now) < stall_limit:
+                stall_limit = max(stall_limit, now - last_output + 1)
+        if expected and now - last_output > stall_limit and not LIVE["waiting"]:   # waiting is handled by 3c
             log("stall watchdog: no output for %ds with %d task(s) pending — agent hung, terminating + re-queueing"
                 % (int(now - last_output), len(expected)))
             try:
@@ -737,6 +870,7 @@ def main():
     result = {"session_id": sid, "limited": None, "reset": 0, "requeue": [], "ok": True,
               "api_gave_up": api_gave_up, "api_error": LIVE["api_error"],
               "stuck": stuck, "continuations": sum(bg_continuations.values()),
+              "stall_guard": (dict(sg_info, hung=hung) if sg is not None else None),   # 0.44.0
               "reading": (dict(reading) if reading else {"required": True, "entries": [], "valid": False,
                                                          "nudges": 0, "missing": True}) if READING_PROOF else None}
     if api_gave_up:
@@ -764,6 +898,13 @@ def main():
         result["limited"] = reset
         result["reset"] = reset
 
+    # 🩺 0.44.0: stage 3 -> the engine re-queues the task at the front (same task id). No "failed" event, otherwise the
+    # self-healing retry would queue it a second time. Folded follow-ups run with the re-queued task.
+    if hung is not None and not stopped:
+        for kind, tid in list(expected):
+            if kind == "task" and tid is not None and tid != hung["task_id"]:
+                emit(tid, "reply", "↳ Continues with the re-queued task (stall guard).")
+        expected.clear()
     for kind, tid in expected:
         if kind == "task" and tid is not None and tid not in result["requeue"]:
             emit(tid, "failed", "Session ended before answering — the task will be retried.")
