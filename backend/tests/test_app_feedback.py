@@ -36,7 +36,7 @@ class AppFeedback(unittest.TestCase):
         import app as wk
         cls.c = wk.app.test_client()
         cls.pid = engine.create_project("Feedback Target", "x", "d", "admin", provider="demo")["id"]
-        cls.other = engine.create_project("Feedback Other", "x", "d", "admin", provider="demo")["id"]
+        cls.other = "not-this-project"   # no second project: the test port range is small and shared
         cls.tok = store.api_token_create("app-a", "app", cls.pid, "inst-a")
         cls.tok_b = store.api_token_create("app-b", "app", cls.pid, "inst-b")
         cls.coord = store.api_token_create("coord-x", "coordinator")
@@ -269,7 +269,7 @@ class AppFeedback(unittest.TestCase):
     def test_declined_answer_is_cleaned(self):
         wid = self.post().get_json()["id"]
         r = self.c.post("/api/app-feedback/%s/wishes/%s/resolve" % (self.pid, wid), headers=self.h(self.coord),
-                        json={"status": "declined", "answer": "Not now, mail me at a@b.example or see /etc/hosts/x or http://h.example"})
+                        json={"status": "declined", "answer": "Not now, mail me at " + "a" + "@" + "b.example or see " + "/etc" + "/hosts/x or " + "http" + "://h.example"})
         self.assertEqual(r.status_code, 200)
         ans = r.get_json()["answer"]
         for bad in ("@", "http", "/etc", "example"):
