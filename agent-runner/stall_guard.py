@@ -12,7 +12,7 @@ Activity = at least ONE axis moves (everything else is silence):
   output  - the agent (or a subagent) streams output (API replies, tool results); the driver reports it
   cpu     - tool processes under the agent (all descendants except the provider CLI itself) use together at least
             CPU_SHARE of one core over the interval (default 2 %; a `ps; sleep 30` loop is about 0.3 %)
-  io      - a long-lived tool process reads/writes at least IO_CHARS characters (rchar+wchar; ssh to a remote test
+  io      - a long-lived tool process reads/writes at least IO_CHARS characters (own rchar+wchar per thread; ssh to a remote test
             runner, tail -f) or IO_BLOCK bytes of real disk I/O
   files   - a file named on a tool command line (gate log, `until grep ...` file) or an output file of a background
             task of this session grows or changes
@@ -73,6 +73,30 @@ def _read(path, binary=False):
         return None
 
 
+def own_io(p):
+    """A process's OWN I/O -> (rchar+wchar, read_bytes+write_bytes), summed over its threads (/proc/<pid>/task/<tid>/io).
+    Deliberately not /proc/<pid>/io: that file also holds the I/O of reaped children, so a `ps aux; sleep 30` polling loop
+    would look like work (every `ps` hands its /proc reads to the shell when it is reaped). Short-lived children of real work
+    (compilers, git) show up on the CPU axis through cutime/cstime."""
+    c = b = 0
+    try:
+        tids = os.listdir(os.path.join(p, "task"))
+    except OSError:
+        tids = []
+    for tid in tids:
+        io = _read(os.path.join(p, "task", tid, "io"))
+        if not io:
+            continue
+        vals = {}
+        for line in io.splitlines():
+            k, _, v = line.partition(":")
+            if v.strip().isdigit():
+                vals[k.strip()] = int(v)
+        c += vals.get("rchar", 0) + vals.get("wchar", 0)
+        b += vals.get("read_bytes", 0) + vals.get("write_bytes", 0)
+    return c, b
+
+
 def process(pid, proc_dir="/proc"):
     """One process -> {pid, ppid, comm, argv, ticks, io_c, io_b, start, cwd} or None."""
     p = os.path.join(proc_dir, str(pid))
@@ -89,16 +113,7 @@ def process(pid, proc_dir="/proc"):
         return None
     raw = _read(os.path.join(p, "cmdline"), binary=True) or b""
     argv = [a.decode("utf-8", "replace") for a in raw.split(b"\0") if a]
-    io_c = io_b = 0
-    io = _read(os.path.join(p, "io"))
-    if io:
-        vals = {}
-        for line in io.splitlines():
-            k, _, v = line.partition(":")
-            if v.strip().isdigit():
-                vals[k.strip()] = int(v)
-        io_c = vals.get("rchar", 0) + vals.get("wchar", 0)
-        io_b = vals.get("read_bytes", 0) + vals.get("write_bytes", 0)
+    io_c, io_b = own_io(p)
     try:
         cwd = os.readlink(os.path.join(p, "cwd"))
     except OSError:

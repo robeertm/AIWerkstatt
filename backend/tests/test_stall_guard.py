@@ -166,6 +166,16 @@ class RealProcesses(unittest.TestCase):
         time.sleep(0.5)
         return root.pid
 
+    def test_polling_loop_on_a_foreign_process_has_no_io(self):
+        # `ps aux | grep -q ...; sleep` - every ps reads hundreds of /proc files; that I/O must not count for the waiting shell
+        root = self.tree('for i in $(seq 1 400); do ps aux | grep -q "[n]o_such_gate_process" || true; sleep 0.3; done')
+        t = tempfile.mkdtemp(prefix="sg-e0-")
+        self.addCleanup(shutil.rmtree, t, True)
+        a = sg.measure(root, 999990, progress_dir=t)
+        time.sleep(3)
+        n = sg.measure(root, 999990, progress_dir=t)
+        self.assertNotIn("io", sg.active_axes(a, n))
+
     def test_hanging_tool_is_quiet_and_endable(self):
         root = self.tree("while :; do sleep 0.5; done")
         t = tempfile.mkdtemp(prefix="sg-e1-")

@@ -9,7 +9,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Why:** an agent can wait in a polling loop (`ps | grep <gate>; sleep 30`) on a process that belongs to another run. No output,
   no CPU, no growing log - yet the output-silence watchdog never fires because the loop keeps starting new tool calls. The slot
   stayed busy for hours although the work was long done, and the remaining time sat on "~3 min" the whole time.
-- **Measuring (`agent-runner/stall_guard.py`, new, on by default, `WK_STALL_GUARD=0` turns it off):** activity on six axes instead of "last agent
+- **Measuring (`agent-runner/stall_guard.py`, new, on by default, `WK_STALL_GUARD=0` turns it off; the I/O axis counts only a
+  process's own I/O per thread, never the inherited I/O of reaped children - a `ps` polling loop stays quiet):** activity on six axes instead of "last agent
   output" - output (API replies, tool results), CPU and I/O of the tool processes under the agent (the provider CLI itself is
   excluded), growing files named on tool command lines or written by background tasks, git activity in the working directory, and
   gate progress (`aiwerkstatt-progress/1` files of this run with a fresh heartbeat). A polling loop is silence; a long gate run with
