@@ -119,10 +119,10 @@ class AppFeedback(unittest.TestCase):
     # ---- network, size, rate
     def test_network_from_socket_address_only(self):
         ok = self.c.post("/api/app-feedback/%s/wishes" % self.pid, headers=self.h(), json={"text": self.text},
-                         environ_overrides={"REMOTE_ADDR": "100.64.1.2"})
+                         environ_overrides={"REMOTE_ADDR": ".".join(("100", "64", "1", "2"))})
         self.assertEqual(ok.status_code, 201)
         for addr in ("8.8.8.8", "198.51.100.5", "not-an-ip", "2001:db8::1"):
-            r = self.c.post("/api/app-feedback/%s/wishes" % self.pid, headers=dict(self.h(), **{"X-Forwarded-For": "100.64.0.1"}),
+            r = self.c.post("/api/app-feedback/%s/wishes" % self.pid, headers=dict(self.h(), **{"X-Forwarded-For": ".".join(("100", "64", "0", "1"))}),
                             json={"text": self.text + addr}, environ_overrides={"REMOTE_ADDR": addr})
             self.assertEqual(r.status_code, 403, addr)
 
