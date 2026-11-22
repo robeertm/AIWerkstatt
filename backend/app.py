@@ -17,6 +17,7 @@ from functools import wraps
 import requests
 from flask import Flask, g, jsonify, request, send_from_directory, send_file, abort, session
 
+import app_feedback
 import automode
 import config
 import db
@@ -71,16 +72,23 @@ API_ENDPOINTS = {
     # peer: for parallel agents that hand each other a note. One route only (thread_peer_note):
     # a note from one OPEN task to a different OPEN task. No create, no stop, no read.
     "peer": frozenset({"thread_peer_note"}),
+    # app: for a self-hosted app instance. Bound to one project + one instance (stored with the token):
+    # submit a wish and read the state of its own wishes. Nothing else (docs/app-feedback.md).
+    "app": frozenset({"app_wish_create", "app_wish_list", "app_wish_get"}),
 }
+API_ENDPOINTS["coordinator"] |= {"app_wish_pending", "app_wish_release", "app_wish_resolve", "app_wish_image"}
 API_WRITES = {"coordinator": frozenset({"thread_create", "thread_comment"}),
               "reporter": frozenset({"thread_create", "thread_comment"}),
               "chain": frozenset({"thread_create", "thread_comment"}),
-              "peer": frozenset({"thread_peer_note"})}
+              "peer": frozenset({"thread_peer_note"}),
+              "app": frozenset({"app_wish_create"})}
+API_WRITES["coordinator"] = API_WRITES["coordinator"] | {"app_wish_release", "app_wish_resolve"}
 API_BLOCKLIST = {s.strip() for s in os.environ.get("AIWERKSTATT_API_BLOCKLIST", "").split(",") if s.strip()}
 WRITE_LIMIT = service_token.WriteLimiter()
 REPORTER_LIMIT = service_token.WriteLimiter(service_token.reporter_rate())
 CHAIN_LIMIT = service_token.WriteLimiter(service_token.chain_rate())
 PEER_LIMIT = service_token.WriteLimiter(service_token.peer_rate())
+APP_LIMIT = service_token.WriteLimiter(service_token.app_rate())
 PEER_NOTE_MAX = 4000
 
 
@@ -99,8 +107,14 @@ def _service_token_gate():
     g.api_token = tok
     if tok["disabled"] or request.endpoint not in API_ENDPOINTS.get(tok["profile"], ()):
         return None   # the route itself answers 401: a token is no user here
+    if tok["profile"] == "app":
+        # only from allowed networks (socket address, never a forwarding header) and with a bounded body
+        if not app_feedback.net_ok(request.remote_addr):
+            return jsonify(error="Not allowed from this network."), 403
+        if request.method == "POST" and (request.content_length or 0) > app_feedback.REQUEST_MAX:
+            return jsonify(error="Request too large."), 413
     if request.endpoint in API_WRITES.get(tok["profile"], ()):
-        limiter = {"reporter": REPORTER_LIMIT, "chain": CHAIN_LIMIT, "peer": PEER_LIMIT}.get(tok["profile"], WRITE_LIMIT)
+        limiter = {"reporter": REPORTER_LIMIT, "chain": CHAIN_LIMIT, "peer": PEER_LIMIT, "app": APP_LIMIT}.get(tok["profile"], WRITE_LIMIT)
         ok, retry = limiter.allow(tok["name"])
         if not ok:
             resp = jsonify(error="Too many requests from this service token. Try again later.")
@@ -611,6 +625,143 @@ def thread_create(pid):
                                profile=engine.COORDINATOR if _chain_unreviewed()
                                else current_user().get("profile"))
     return jsonify(number=res["thread_id"], id=res["thread_id"]), 201
+
+
+# ---------- app feedback intake (docs/app-feedback.md) ----------
+
+def _wish_instance(pid):
+    """(project, instance) of the calling app token when it matches ``pid``, else None (403)."""
+    u = current_user()
+    tok = getattr(g, "api_token", None)
+    if not (u and u.get("api") and u.get("profile") == "app" and tok):
+        return None
+    if not (tok.get("project") and tok.get("instance")) or tok["project"] != pid:
+        return None
+    return tok["project"], tok["instance"], tok["name"]
+
+
+def _wish_running(thread_id):
+    return bool(db.query_one("SELECT 1 FROM tasks WHERE thread_id=? AND (started_at IS NOT NULL OR status IN "
+                             "('running','retrying','done'))", (thread_id,)))
+
+
+def _wish_admin(fn):
+    """A signed-in admin or a coordinator token. An app token is never one of them."""
+    @wraps(fn)
+    def wrap(*a, **k):
+        u = current_user()
+        if not u:
+            return jsonify(error="Please sign in.", need_login=True), 401
+        if not ((not u.get("api") and u["role"] == "admin") or _coordinator()):
+            return jsonify(error="Admins only."), 403
+        return fn(*a, **k)
+    return wrap
+
+
+def _wish_start(row):
+    """Turn a wish into a restricted task (review gate on: the text comes from a third party).
+    One task per wish. -> (thread id or None, error text or None)."""
+    p = engine.get_project(row["project"])
+    if not p:
+        return None, "project not found"
+    if not provider_connected(p["provider"]):
+        return None, "provider not connected"
+    if _snapshot_or_none(p["id"]):
+        return None, "workspace snapshot failed"
+    wish = {"text": row["text"], "context": json.loads(row["context"] or "{}")}
+    title = "App wish: " + (row["text"].splitlines()[0][:60] or "wish")
+    tid = app_feedback.claim(row["id"], lambda r: engine.create_thread(
+        p, title, app_feedback.fence(wish), "App feedback", origin="api:%s" % r["token"])["thread_id"])
+    return tid, None
+
+
+@app.post("/api/app-feedback/<pid>/wishes")
+@login_required
+def app_wish_create(pid):
+    who = _wish_instance(pid)
+    if not who:
+        abort(403)
+    project, instance, token = who
+    if not engine.get_project(project):
+        abort(404)
+    try:
+        wish, image, ext = app_feedback.validate(request.get_json(silent=True))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    row, created = app_feedback.submit(project, instance, token, wish, image, ext)
+    if created:
+        reason = app_feedback.screen(wish["text"])
+        if reason:
+            app_feedback.hold(row["id"], reason)
+        elif app_feedback.mode_for(project) == "auto":
+            _, err = _wish_start(row)
+            if err:
+                app_feedback.hold(row["id"], err)
+    return jsonify(id=row["id"], status="submitted"), (201 if created else 200)
+
+
+@app.get("/api/app-feedback/<pid>/wishes")
+@login_required
+def app_wish_list(pid):
+    who = _wish_instance(pid)
+    if not who:
+        abort(403)
+    return jsonify(wishes=[app_feedback.public(r, _wish_running) for r in app_feedback.own(who[0], who[1])])
+
+
+@app.get("/api/app-feedback/<pid>/wishes/<wid>")
+@login_required
+def app_wish_get(pid, wid):
+    who = _wish_instance(pid)
+    if not who:
+        abort(403)
+    row = app_feedback.get(wid)
+    if not row or row["project"] != who[0] or row["instance"] != who[1]:
+        abort(404)   # another instance's wish looks like an unknown one
+    return jsonify(app_feedback.public(row, _wish_running))
+
+
+@app.get("/api/app-feedback/<pid>/pending")
+@_wish_admin
+def app_wish_pending(pid):
+    return jsonify(wishes=[app_feedback.review_view(r, _wish_running) for r in app_feedback.pending(pid)])
+
+
+@app.get("/api/app-feedback/<pid>/wishes/<wid>/image")
+@_wish_admin
+def app_wish_image(pid, wid):
+    row = app_feedback.get(wid)
+    if not row or row["project"] != pid or not row["image"]:
+        abort(404)
+    return send_from_directory(app_feedback.IMAGE_DIR, row["image"])
+
+
+@app.post("/api/app-feedback/<pid>/wishes/<wid>/release")
+@_wish_admin
+def app_wish_release(pid, wid):
+    row = app_feedback.get(wid)
+    if not row or row["project"] != pid:
+        abort(404)
+    if row["thread_id"] or row["status"] != "submitted":
+        return jsonify(error="Already released or closed.", thread=row["thread_id"]), 409
+    tid, err = _wish_start(row)
+    if err:
+        return jsonify(error=err), 409
+    return jsonify(ok=True, thread=tid), 201
+
+
+@app.post("/api/app-feedback/<pid>/wishes/<wid>/resolve")
+@_wish_admin
+def app_wish_resolve(pid, wid):
+    row = app_feedback.get(wid)
+    if not row or row["project"] != pid:
+        abort(404)
+    d = request.get_json(silent=True) or {}
+    try:
+        row = app_feedback.resolve(wid, d.get("status"), d.get("version"), d.get("answer"))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(app_feedback.public(row, _wish_running))
 
 
 @app.get("/api/threads/<int:tid>")

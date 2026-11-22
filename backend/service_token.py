@@ -4,7 +4,8 @@ Tokens themselves live in the database as a SHA-256 digest only (see store.py). 
 module adds what the web process needs around them, plus a command line for the operator:
 
     python3 service_token.py list
-    python3 service_token.py create <name> [--profile restricted|coordinator|reporter|chain]
+    python3 service_token.py create <name> [--profile restricted|coordinator|reporter|chain|peer|app]
+                                              [--project <p> --instance <i>]   (app profile only)
     python3 service_token.py register <name> [--profile ...] [--sha256 <hex>]
     python3 service_token.py disable <name>      # kill switch on (401 at once)
     python3 service_token.py enable <name>       # kill switch off
@@ -113,6 +114,16 @@ def peer_log(entry):
         print("peer log write failed: %s" % e, file=sys.stderr)
 
 
+def app_rate():
+    """Hourly submissions per "app" token (AIWERKSTATT_APP_FEEDBACK_RATE, default 10). 0 or junk
+    never means unlimited: a bad value falls back to 10."""
+    try:
+        v = int(os.environ.get("AIWERKSTATT_APP_FEEDBACK_RATE", "10"))
+    except ValueError:
+        return 10
+    return v if v > 0 else 10
+
+
 def chain_rate():
     """Hourly write limit of a "chain" token (AIWERKSTATT_CHAIN_RATE, default 6). 0 or junk
     never means unlimited: a bad value falls back to 6."""
@@ -169,6 +180,8 @@ def main(argv=None):
         p = sub.add_parser(cmd)
         p.add_argument("name")
         p.add_argument("--profile", default="restricted", choices=store.TOKEN_PROFILES)
+        p.add_argument("--project", help="profile app: the project the token may file wishes for")
+        p.add_argument("--instance", help="profile app: the app instance the token belongs to")
         if cmd == "register":
             p.add_argument("--sha256", help="SHA-256 hex digest of the token (else: token on stdin)")
     for cmd in ("disable", "enable", "remove"):
@@ -180,7 +193,7 @@ def main(argv=None):
             for t in store.api_token_list():
                 print("%-24s %-12s %s" % (t["name"], t["profile"], "DISABLED" if t["disabled"] else "active"))
         elif a.cmd == "create":
-            token = store.api_token_create(a.name, a.profile)
+            token = store.api_token_create(a.name, a.profile, a.project, a.instance)
             print("Token for %s (%s), shown once:" % (a.name.strip().lower(), a.profile), file=sys.stderr)
             print(token)
         elif a.cmd == "register":
@@ -191,7 +204,7 @@ def main(argv=None):
                     raise ValueError("No token on stdin.")
                 digest = hashlib.sha256(plain.encode("utf-8")).hexdigest()
                 del plain
-            name = store.api_token_register(a.name, digest, a.profile)
+            name = store.api_token_register(a.name, digest, a.profile, a.project, a.instance)
             print("Registered %s (%s)." % (name, a.profile))
         elif a.cmd == "disable":
             store.api_token_set_disabled(a.name, True)

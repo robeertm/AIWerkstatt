@@ -134,7 +134,7 @@ def provider_connected(provider_id):
 # for any other profile. Kill switch: a file <DATA>/service-token-disabled/<name> makes the
 # token answer 401 immediately, without a restart.
 
-TOKEN_PROFILES = ("restricted", "coordinator", "reporter", "chain", "peer")
+TOKEN_PROFILES = ("restricted", "coordinator", "reporter", "chain", "peer", "app")
 DISABLED_DIR = os.path.join(config.DATA, "service-token-disabled")
 _TOKEN_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
@@ -153,12 +153,32 @@ def _token_name(name):
     return name
 
 
-def _token_value(digest, profile):
+_BIND = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+
+
+def _token_value(digest, profile, project=None, instance=None):
     if profile not in TOKEN_PROFILES:
         raise ValueError("Profile must be one of: %s." % ", ".join(TOKEN_PROFILES))
+    if profile == "app":
+        # an app token is bound to one project + one instance; without both it is never valid
+        if not (_BIND.match(project or "") and _BIND.match(instance or "")):
+            raise ValueError("Profile app needs --project and --instance (a-z, 0-9, dash).")
+        return json.dumps({"sha256": digest, "profile": profile, "project": project, "instance": instance})
+    if project or instance:
+        raise ValueError("--project/--instance only belong to profile app.")
     if profile == "restricted":
         return digest
     return json.dumps({"sha256": digest, "profile": profile})
+
+
+def _token_binding(value):
+    """(project, instance) stored with an app token, else (None, None)."""
+    try:
+        d = json.loads(value) if str(value).startswith("{") else {}
+    except ValueError:
+        return None, None
+    p, i = d.get("project"), d.get("instance")
+    return (p, i) if _BIND.match(str(p or "")) and _BIND.match(str(i or "")) else (None, None)
 
 
 def _parse_token_value(value):
@@ -176,22 +196,22 @@ def _parse_token_value(value):
     return value, "restricted"
 
 
-def api_token_create(name, profile="restricted"):
+def api_token_create(name, profile="restricted", project=None, instance=None):
     """Create (or replace) the bearer token of a service. Returns the plain token ONCE."""
     name = _token_name(name)
     token = pysecrets.token_urlsafe(32)
-    set_secret("api_token:" + name, _token_value(_hash_token(token), profile))
+    set_secret("api_token:" + name, _token_value(_hash_token(token), profile, project, instance))
     return token
 
 
-def api_token_register(name, sha256_hex, profile="restricted"):
+def api_token_register(name, sha256_hex, profile="restricted", project=None, instance=None):
     """Register (or replace) a token generated elsewhere by its SHA-256 hex digest only.
     The plain token never reaches this process."""
     name = _token_name(name)
     digest = (sha256_hex or "").strip().lower()
     if not _SHA256_HEX.match(digest):
         raise ValueError("Expected a SHA-256 hex digest (64 characters 0-9a-f).")
-    set_secret("api_token:" + name, _token_value(digest, profile))
+    set_secret("api_token:" + name, _token_value(digest, profile, project, instance))
     return name
 
 
@@ -239,6 +259,7 @@ def api_token_lookup(token):
         digest, profile = _parse_token_value(r["value"])
         if digest.isascii() and hmac.compare_digest(digest, h):
             found = {"name": r["key"][len("api_token:"):], "profile": profile}
+            found["project"], found["instance"] = _token_binding(r["value"])
     if found:
         found["disabled"] = api_token_disabled(found["name"])
     return found

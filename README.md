@@ -223,6 +223,10 @@ set of endpoints. Each token has a **profile**:
   projects in `AIWERKSTATT_CHAIN_PLAN_PROJECTS` with their own title prefix
   (`AIWERKSTATT_CHAIN_PLAN_PREFIX`); `AIWERKSTATT_CHAIN_PLAN_EXCLUDED` projects stay unreachable.
 
+- **app**: for a self-hosted app instance, bound to one project and one instance. It can only submit
+  a wish (`POST /api/app-feedback/<project>/wishes`) and read the state of its own instance's wishes,
+  from allowed networks only, with an hourly limit. See [docs/app-feedback.md](docs/app-feedback.md).
+
 No token can release, publish, create or delete projects, change settings, manage users or
 tokens, or decide a review. Every task shows which token created it (**via &lt;name&gt;**),
 every token request is written to an audit log, and a kill-switch file disables a token at

@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.42.0 — 2026-11-22
+### Added — app feedback intake
+- Service token profile `app`: bound to one project and one instance (`service_token.py create <name> --profile app --project <p> --instance <i>`;
+  without both the token is never valid). It can only submit a wish and read the state of its own instance's wishes.
+- Routes `POST /api/app-feedback/<project>/wishes` (text up to 2000 characters, optional context, optional png/jpeg/webp image up to 1.5 MB with
+  magic-byte check), `GET …/wishes`, `GET …/wishes/<id>`. Only from allowed networks (socket address, `AIWERKSTATT_APP_FEEDBACK_NETS`, default
+  tailnet + Docker + loopback), 10 submissions per hour per token (`AIWERKSTATT_APP_FEEDBACK_RATE`), request size cap.
+- Per-project mode (`AIWERKSTATT_APP_FEEDBACK_MODES`, default `collect`): `auto` turns a clean wish into one restricted task (text fenced as
+  untrusted); a deterministic screen (injection phrases, threats, secrets requests, over 1200 characters) holds the wish for review instead.
+  The same wish is never stored or turned into a task twice.
+- Admin or coordinator token: list pending wishes, release one into a task, close it as `done` (needs a version) or `declined` (needs a short
+  answer; links, addresses and paths are stripped). State `in_progress` once the task has started.
+- `docs/app-feedback.md`, parity inventory row, tests `backend/tests/test_app_feedback.py`.
+
 ## 0.41.0 — 2026-11-21
 ### Added — release check (published release completeness)
 - `scripts/release-check/release_check.py`: after each release, checks that the published release contains every deliverable the

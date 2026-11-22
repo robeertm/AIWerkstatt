@@ -49,6 +49,13 @@ CREATE TABLE IF NOT EXISTS pubmeta (
   visibility TEXT, version TEXT, release_url TEXT,
   published_at TEXT, released_at TEXT
 );
+-- App feedback intake: one row per wish sent by an app instance (see docs/app-feedback.md).
+CREATE TABLE IF NOT EXISTS app_wishes (
+  id TEXT PRIMARY KEY, project TEXT, instance TEXT, token TEXT, text TEXT, context TEXT,
+  image TEXT, fp TEXT, status TEXT DEFAULT 'submitted', version TEXT, answer TEXT,
+  hold TEXT, thread_id INTEGER, created_at TEXT, updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS app_wishes_inst ON app_wishes(project, instance, created_at);
 -- 🤖 Auto mode: one row per dispatched task recording the chosen model/intensity
 -- (feeds the "which model ran most, with which intensity" overview), plus the latest
 -- auto decision per project (model/effort/reason/plan) for the live view.

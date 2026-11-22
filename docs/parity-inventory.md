@@ -28,6 +28,7 @@ Legend: **mirrored** = present here · **by design** = the architecture makes it
 | Agent | One working tree per project, follow-ups never lost | mirrored | 0.18.1 |
 | Agent | Notes between parallel tasks | mirrored | 0.28.0 |
 | Access | Service tokens (restricted, coordinator, reporter, chain, peer) | mirrored | 0.13.0 – 0.28.0 |
+| Access | App feedback intake (wishes from app instances, state read-back) | mirrored | 0.42.0 |
 | Access | Stop with a reason via coordinator token | mirrored | 0.27.0 |
 | Release | Release train, one result per commit | mirrored | 0.26.0 |
 | Release | Branch check ("waiting for release" really on main?) | mirrored | 0.31.0, 0.36.0 |
