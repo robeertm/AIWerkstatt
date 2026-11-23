@@ -60,21 +60,61 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 
 </div>
 
-| The agent at work, across the project | The finished conversation |
-|:---:|:---:|
-| <img src="docs/screenshots/13-activity.png" alt="Project view with a live activity ticker and an unread badge" width="410"> | <img src="docs/screenshots/04-thread.png" alt="A completed task thread with an Open live link" width="410"> |
-| **Your project gallery** | **Inside a project** |
-| <img src="docs/screenshots/02-gallery.png" alt="Project gallery with the Agents at work strip: slot switch, remaining time per run, waiting orders and test runner load" width="410"> | <img src="docs/screenshots/03-project.png" alt="Project view with per-project provider and model" width="410"> |
-| **Connect any AI provider** | **The live app it built** |
-| <img src="docs/screenshots/05-providers.png" alt="Connect Claude, OpenAI or Gemini — or use the zero-key demo" width="410"> | <img src="docs/screenshots/06-live-app.png" alt="A live app the agent built, served from its own container" width="410"> |
-| **Publish — leak-scanned first** | **See what it costs** |
-| <img src="docs/screenshots/10-publish.png" alt="Publish panel: scan for secrets, download a zip, or push to GitHub" width="410"> | <img src="docs/screenshots/08-usage.png" alt="Usage: tokens and cost, today and all-time, per provider" width="410"> |
-| **Manage your household or team** | **Your account &amp; PIN** |
-| <img src="docs/screenshots/09-users.png" alt="Admin user manager" width="410"> | <img src="docs/screenshots/11-account.png" alt="Change your PIN" width="410"> |
-| **Pick a model for a single task** | **A task in progress** |
-| <img src="docs/screenshots/12-task-model.png" alt="New task form with the optional Model field, set to Sonnet 5.5 for this one task" width="410"> | <img src="docs/screenshots/12-working.png" alt="A running task with the live feed, model and effort chips and a Stop button" width="410"> |
-| **A short first-run guide** | **Simple PIN sign-in** |
-| <img src="docs/screenshots/07-onboarding.png" alt="Onboarding overlay" width="410"> | <img src="docs/screenshots/01-login.png" alt="PIN login screen" width="410"> |
+**The agent at work, across the project**
+
+<p align="center"><img src="docs/screenshots/13-activity.png" alt="Project view with a live activity ticker and an unread badge" width="640"></p>
+
+**The finished conversation**
+
+<p align="center"><img src="docs/screenshots/04-thread.png" alt="A completed task thread with an Open live link" width="640"></p>
+
+**Your project gallery**
+
+<p align="center"><img src="docs/screenshots/02-gallery.png" alt="Project gallery with the Agents at work strip: slot switch, remaining time per run, waiting orders and test runner load" width="640"></p>
+
+**Inside a project**
+
+<p align="center"><img src="docs/screenshots/03-project.png" alt="Project view with per-project provider and model" width="640"></p>
+
+**Connect any AI provider**
+
+<p align="center"><img src="docs/screenshots/05-providers.png" alt="Connect Claude, OpenAI or Gemini — or use the zero-key demo" width="640"></p>
+
+**The live app it built**
+
+<p align="center"><img src="docs/screenshots/06-live-app.png" alt="A live app the agent built, served from its own container" width="640"></p>
+
+**Publish — leak-scanned first**
+
+<p align="center"><img src="docs/screenshots/10-publish.png" alt="Publish panel: scan for secrets, download a zip, or push to GitHub" width="640"></p>
+
+**See what it costs**
+
+<p align="center"><img src="docs/screenshots/08-usage.png" alt="Usage: tokens and cost, today and all-time, per provider" width="640"></p>
+
+**Manage your household or team**
+
+<p align="center"><img src="docs/screenshots/09-users.png" alt="Admin user manager" width="640"></p>
+
+**Your account &amp; PIN**
+
+<p align="center"><img src="docs/screenshots/11-account.png" alt="Change your PIN" width="640"></p>
+
+**Pick a model for a single task**
+
+<p align="center"><img src="docs/screenshots/12-task-model.png" alt="New task form with the optional Model field, set to Sonnet 5.5 for this one task" width="640"></p>
+
+**A task in progress**
+
+<p align="center"><img src="docs/screenshots/12-working.png" alt="A running task with the live feed, model and effort chips and a Stop button" width="640"></p>
+
+**A short first-run guide**
+
+<p align="center"><img src="docs/screenshots/07-onboarding.png" alt="Onboarding overlay" width="640"></p>
+
+**Simple PIN sign-in**
+
+<p align="center"><img src="docs/screenshots/01-login.png" alt="PIN login screen" width="640"></p>
 
 ## ✨ Why AIWerkstatt
 
