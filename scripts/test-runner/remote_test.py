@@ -19,7 +19,9 @@ What happens:
      priority; the test gets slower but never waits because of CPU, load or pressure.
      Both slots taken (the receiver never accepts more than 2) -> FIFO queue on this machine (<STATUS_DIR>/queue/, one file
      per waiting run, name = arrival time): message "queue position N, ahead of you: <run>, expected free in ~X min"
-     (estimate from the own protocols). First come, first served; no deadline, no abort, no overtaking. Entries whose
+     (estimate from the own protocols). First come, first served inside a class; no deadline, no abort. Class "release"
+     (--queue-class release or AIWERKSTATT_TEST_RUNNER_CLASS=release, set by release gates) goes before class "task"
+     (probe runs, the default); a task run that waited 45 min ranks with the releases (never starves). Entries whose
      process is gone (PID + start time) clean themselves up. If the queue is not writable, the run waits for a free slot
      without a queue position (note on stderr). --wait-max-min is still accepted but has no effect.
   3. The output of the tests goes to stdout unchanged, build and info lines to stderr. The exit code is the exit code of
@@ -80,6 +82,8 @@ THRESHOLD_PSI = 40.0
 COLLECT_TICK_S = int(os.environ.get(PREFIX + "COLLECT_TICK_S") or 30)
 COLLECT_DAYS = 14
 QUEUE = os.environ.get(PREFIX + "QUEUE") or os.path.join(STATUS_DIR, "queue")
+QUEUE_CLASSES = ("release", "task")        # 0.46.0: a release gate run goes before a probe run of a task
+QUEUE_AGE_S = int(os.environ.get(PREFIX + "QUEUE_AGE_S") or 45 * 60)   # a waiting task run older than this ranks with the releases
 WAIT_NOTE_S = 300               # waiting message at most every 5 min (or at once when the position changes)
 STATUS_FAILS_MAX = 3            # while waiting: this many status requests in a row without answer = runner gone
 DEFAULT_DURATION_S = 20 * 60    # estimate without own protocols
@@ -201,6 +205,14 @@ def _entry_alive(e):
     return start is not None and (e.get("pid_start") is None or start == e.get("pid_start"))
 
 
+def _env_class():
+    c = (os.environ.get(PREFIX + "CLASS") or "").strip().lower()
+    return c if c in QUEUE_CLASSES else "task"
+
+
+QUEUE_CLASS = _env_class()
+
+
 def queue_read(clean=True):
     """Live queue entries in arrival order. Orphans (process gone or PID reused) are removed on the way (if allowed)."""
     try:
@@ -225,7 +237,24 @@ def queue_read(clean=True):
             continue
         e["file"] = n
         out.append(e)
-    return out
+    return queue_order(out)
+
+
+def queue_class_of(e):
+    c = e.get("class") if isinstance(e, dict) else None
+    return c if c in QUEUE_CLASSES else "task"
+
+
+def queue_order(entries, now=None):
+    """Waiting order (0.46.0): class ``release`` first, then ``task``; first come, first served inside a class. A task run that
+    has waited longer than QUEUE_AGE_S ranks with the releases (by arrival), so a stream of releases never starves it. Nothing
+    is aborted and nothing has a deadline - only the order changes."""
+    now = time.time() if now is None else now
+
+    def rank(e):
+        young = queue_class_of(e) != "release" and (now - float(e.get("since") or now)) < QUEUE_AGE_S
+        return (1 if young else 0, e.get("file") or "")
+    return sorted(entries, key=rank)
 
 
 def queue_join(request):
@@ -237,7 +266,8 @@ def queue_join(request):
     pid = os.getpid()
     o = request.get("origin") or {}
     e = {"id": request["id"], "pid": pid, "pid_start": _pid_start(pid), "since": int(time.time()), "repo": request["repo"],
-         "profile": request["profile"], "mode": request["mode"], "slot": o.get("slot"), "ref": o.get("ref")}
+         "profile": request["profile"], "mode": request["mode"], "slot": o.get("slot"), "ref": o.get("ref"),
+         "class": QUEUE_CLASS}
     name = "%020d-%s.json" % (time.time_ns(), request["id"])
     tmp = os.path.join(QUEUE, ".%s.tmp" % name)
     try:
@@ -312,7 +342,7 @@ def queue_state(st, own, own_id):
     waiting = [e for e in queue_read() if e.get("id") not in running_ids]
     if own and not any(e["file"] == own for e in waiting):
         waiting.append({"file": own, "id": own_id})
-        waiting.sort(key=lambda e: e["file"])
+    waiting = queue_order(waiting)
     pos = next(i for i, e in enumerate(waiting) if e["file"] == own) if own else len(waiting)
     free = max(0, int(st.get("max_runs") or 2) - int(st.get("test_runs") or 0))
     return pos < free, pos + 1, waiting[:pos], running
@@ -324,7 +354,8 @@ def queue_summary(running_ids=()):
     w = [e for e in queue_read() if e.get("id") not in set(running_ids)]
     return {"length": len(w), "waiting": [{"position": i + 1, "id": e.get("id"), "repo": e.get("repo"),
                                            "profile": e.get("profile"), "mode": e.get("mode"), "slot": e.get("slot"),
-                                           "ref": e.get("ref"), "since_s": max(0, int(now - (e.get("since") or now)))}
+                                           "ref": e.get("ref"), "class": queue_class_of(e),
+                                           "since_s": max(0, int(now - (e.get("since") or now)))}
                                           for i, e in enumerate(w)]}
 
 
@@ -880,6 +911,8 @@ def main(argv=None):
     p.add_argument("--junit", help="write the JUnit report here")
     p.add_argument("--wait-max-min", type=int, default=None,
                    help="no effect since 0.24.0 (queue without deadline), only accepted for old callers")
+    p.add_argument("--queue-class", choices=QUEUE_CLASSES, default=None,
+                   help="queue class of this run (default: AIWERKSTATT_TEST_RUNNER_CLASS or task): release gate runs go before probe runs")
     p.add_argument("--quiet-build", action="store_true", help="build lines only into the protocol")
     p.add_argument("--only-needed", action="store_true",
                    help="full suite only: reuse green results of unchanged code (result_store.py), run the rest, retry red serially")
@@ -896,6 +929,9 @@ def main(argv=None):
     p.add_argument("--collect", action="store_true", help="collector for the load (run it as a service)")
     p.add_argument("--once", action="store_true", help="with --collect: only one request")
     a = p.parse_args(argv)
+    global QUEUE_CLASS
+    if a.queue_class:
+        QUEUE_CLASS = a.queue_class
     a.runner_args = runner_args
     a.n = max(1, min(a.n, 8))
     if a.collect:

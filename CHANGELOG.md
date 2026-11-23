@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.46.0 — 2026-11-23
+### Added — wave 2 of the private control plane, bundled: queue classes for the test runner, early warning "the plans run dry"
+- **Queue classes (`scripts/test-runner/remote_test.py`):** a waiting run is class `release` (`--queue-class release` or
+  `AIWERKSTATT_TEST_RUNNER_CLASS=release`, set by release gates) or `task` (probe runs, default). Waiting `release` runs go before
+  waiting `task` runs, first come, first served inside a class. A `task` run that has waited longer than 45 minutes
+  (`AIWERKSTATT_TEST_RUNNER_QUEUE_AGE_S`) ranks with the releases by arrival, so a stream of releases never starves it. A run that
+  already holds a slot is never displaced; no deadline, nothing is aborted. The collector shows the class per waiting run
+  (`queue.waiting[].class`, additive). Older clients without a class count as `task`. Why: waiting for the test machine dominated the
+  time of a release gate, while probe runs of working tasks sat in front of it.
+- **Early warning (`scripts/chain/projectplan.py`):** `runway` = remaining hours of all approved, not paused plans x pace factor
+  (`AIWERKSTATT_PLAN_PACE_FACTOR`) divided by the switched-on slots. Below 6 hours exactly one event (log entry `runway_warning` and an
+  optional notification command `AIWERKSTATT_PLAN_NOTIFY`, text via stdin); armed again only above 9 hours. New status field `runway`
+  (additive) and a status line. Why: idle slots appear quietly when the last planned tasks are filed.
+- Not ported, with the reason in `docs/parity-inventory.md`: wish list status from the claim book, browser-test environment tool, load
+  fingerprint, reply draft for finished issue cases (all tied to private services or host tooling) and the delivery way for small
+  services (every repo here goes through the release train or has no release target).
+- Tests: `scripts/test-runner/test_remote_test.py` (queue order, aging, class in the summary, setting), `scripts/chain/test_projectplan.py`
+  (class `Runway`, 5 tests). Docs: `docs/test-runner.md`, `docs/chain.md`, `docs/parity-inventory.md`.
+
 ## 0.45.0 — 2026-11-22
 ### Fixed — project plan chain: ready tasks were silently held back by the daily brake
 - The daily brake compared the number of tasks filed today across ALL plans with the limit of a single plan and stopped that plan

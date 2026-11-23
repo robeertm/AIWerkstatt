@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import redirect_stderr
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -486,6 +487,74 @@ class StatusAndSimulation(Base):
         two = pp.simulate(plan([project("x", [task("A1", track="a"), task("A2", track="b")])]))
         self.assertEqual(two["end_h"], 1.0)                                              # no per-project brake
         self.assertEqual(pp.simulate(plan([project("x", [task("A1", optional=True)])]))["tasks"], {})
+
+
+class Runway(Base):
+    """0.46.0 - early warning "the plans run dry": plan hours x pace against the slots, below 6 h exactly one event."""
+
+    def setUp(self):
+        super().setUp()
+        self.events = []
+        self.pl._notify = lambda text: self.events.append(text) or True
+
+    def plan_of(self, hours):
+        return plan([project("x", [task("A%d" % i, track="t%d" % i, hours=h) for i, h in enumerate(hours, 1)])])
+
+    def test_runway_is_computed_and_warns_exactly_once(self):
+        self.go(self.plan_of([2, 2, 2, 2, 2]))                 # 10 h on 5 slots = 2 h runway
+        r = self.pl.runway()
+        self.assertEqual((r["rest_h"], r["slots"], r["runway_h"]), (10.0, 5, 2.0))
+        self.step()
+        self.step()
+        self.assertEqual(len(self.events), 1)                  # no stream of events
+        self.assertIn("2.0 more hours", self.events[0])
+        st = self.pl.write_status()
+        self.assertTrue(st["runway"]["warned"])
+        self.assertEqual(st["runway"]["runway_h"], 2.0)
+        self.assertIn("LOW", pp.status_text(st))
+
+    def test_enough_work_never_warns_and_rearms_above_the_clear_limit(self):
+        self.go(self.plan_of([20] * 5))                        # 100 h on 5 slots = 20 h
+        self.assertEqual(self.events, [])
+        self.pl.s["runway"] = {"warned_ts": 1.0}
+        self.step()
+        self.assertNotIn("warned_ts", self.pl.s["runway"])     # armed again
+        self.assertEqual(self.pl.runway()["runway_h"], 20.0)
+
+    def test_draft_paused_and_done_tasks_count_nothing(self):
+        p = self.plan_of([2, 2])
+        self.go(p, approve=False)
+        self.step()
+        self.assertEqual(self.events, [])                      # nothing approved: nothing warned
+        self.pl.approve("p1", "tester")
+        self.pl.s["plans"]["p1"]["paused"] = True
+        self.assertEqual(self.pl.runway()["rest_h"], 0.0)
+
+    def test_pace_factor_and_switched_off_slots(self):
+        self.go(self.plan_of([5, 5]))
+        self.queue["slots_active"] = 2
+        with mock.patch.dict(os.environ, {"AIWERKSTATT_PLAN_PACE_FACTOR": "2"}):
+            self.assertEqual(self.pl.runway()["runway_h"], 10.0)   # 10 h x 2 / 2 slots
+        with mock.patch.dict(os.environ, {"AIWERKSTATT_PLAN_PACE_FACTOR": "junk"}):
+            self.assertEqual(pp.pace_factor(), 1.0)
+        with mock.patch.dict(os.environ, {"AIWERKSTATT_PLAN_PACE_FACTOR": "-3"}):
+            self.assertEqual(pp.pace_factor(), 1.0)
+
+    def test_failed_delivery_is_tried_again_and_the_text_stays_off_the_command_line(self):
+        self.pl._notify = lambda text: False
+        self.go(self.plan_of([1, 1]))                          # the check inside go() tries and fails
+        self.pl.warn_runway()
+        self.assertNotIn("warned_ts", self.pl.s.get("runway", {}))
+        marker = os.path.join(self.root, "stdin.txt")
+        script = "import sys; open(%r, 'w').write(sys.stdin.read())" % marker
+        with mock.patch.dict(os.environ, {"AIWERKSTATT_PLAN_NOTIFY": json.dumps([sys.executable, "-c", script])}):
+            self.assertTrue(pp.notify_command("hello runway"))
+        with open(marker) as fh:
+            self.assertEqual(fh.read(), "hello runway")
+        with mock.patch.dict(os.environ, {"AIWERKSTATT_PLAN_NOTIFY": "not json"}):
+            self.assertFalse(pp.notify_command("x"))
+        with mock.patch.dict(os.environ, {"AIWERKSTATT_PLAN_NOTIFY": ""}):
+            self.assertTrue(pp.notify_command("x"))            # no channel: the warning stays in log and status
 
 
 class CommandLine(Base):

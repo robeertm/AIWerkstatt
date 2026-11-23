@@ -70,6 +70,8 @@ LIMITS_DEFAULT = {"total": 5, "per_project": 1, "per_day": 30}
 LIMITS_MAX = {"total": 5, "per_project": 2, "per_day": 60}   # total / per_project: accepted, no effect since 0.43.0
 IDLE_GAP_MIN = 6                    # one measurement counts at most this many minutes (no extrapolation over gaps)
 IDLE_DAYS = 14
+RUNWAY_WARN_H = 6.0                  # 0.46.0: less plan work than this many hours ahead -> exactly ONE warning event
+RUNWAY_CLEAR_H = 9.0                 # only above this the warning is armed again (hysteresis, never a stream of events)
 PRIORITIES = ("free", "queue")      # 0.43.0: accepted in old plans, without effect (everything is queued)
 PLAN_PRIORITY_DEFAULT = 5            # plan priority 1 (first) ... 9
 PLAN_PRIORITY_MIN, PLAN_PRIORITY_MAX = 1, 9
@@ -88,6 +90,7 @@ ACTIVE = ("running", "question")
 DONE_STATES = ("done", "waiting_release", "published")
 STATES = ("draft", "planned", "ready", "waiting", "held", "running", "question", "waiting_release", "published",
           "done", "stopped", "stuck", "failed")
+RUNWAY_SKIPPED = DONE_STATES + ("draft", "question", "stopped", "stuck", "failed")   # nothing a slot could still consume
 TASK_KEYS = {"id", "track", "title", "model", "effort", "hours", "priority", "depends_on", "release", "release_fix",
              "optional", "prompt", "live"}
 
@@ -117,6 +120,32 @@ def read_json(path, default=None):
             return json.load(f)
     except (OSError, ValueError):
         return default
+
+
+def pace_factor():
+    """Measured duration / estimated ``hours`` of plan tasks (env AIWERKSTATT_PLAN_PACE_FACTOR, default 1.0; junk or <= 0 = 1.0)."""
+    try:
+        v = float(os.environ.get("AIWERKSTATT_PLAN_PACE_FACTOR") or 1.0)
+    except ValueError:
+        return 1.0
+    return v if 0 < v < 100 else 1.0
+
+
+def notify_command(text):
+    """Deliver an early-warning text to the operator's own channel: env AIWERKSTATT_PLAN_NOTIFY = JSON list (the command,
+    the text goes through stdin, never through the command line). Not set -> True (the warning stays in the log and the
+    status only); a command that fails or times out -> False (tried again at the next check)."""
+    raw = os.environ.get("AIWERKSTATT_PLAN_NOTIFY")
+    if not raw:
+        return True
+    import subprocess
+    try:
+        cmd = json.loads(raw)
+        if not (isinstance(cmd, list) and cmd and all(isinstance(x, str) for x in cmd)):
+            return False
+        return subprocess.run(cmd, input=text, capture_output=True, text=True, timeout=60).returncode == 0
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return False
 
 
 def day_of(ts):
@@ -441,8 +470,9 @@ class ProjectPlans:
     """Everything outside is injectable (tests): api, clock, load, release_state."""
 
     def __init__(self, root, api, prefix=DEFAULT_PREFIX, excluded=None, clock=None, load=None, release_state=None,
-                 out=print):
+                 out=print, notify=None):
         self.root, self.api, self.prefix = root, api, prefix
+        self._notify = notify
         self.base = os.path.join(root, "projectplans")
         self.excluded = [x.lower() for x in (excluded_default() if excluded is None else excluded)]
         self.clock = clock or chain.Clock()
@@ -923,6 +953,58 @@ class ProjectPlans:
                     break
         return new
 
+    # ------------------------------------------------------------- runway (early warning "the plans run dry", 0.46.0)
+    def slots_on(self):
+        """Switched-on worker slots from the load file (``slots_active``, else ``slots_total``/``max``), at least 1."""
+        info = self.load_info() or {}
+        for key in ("slots_active", "slots_total", "max"):
+            v = info.get(key)
+            if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+                return v
+        return LIMITS_MAX["total"]
+
+    def runway(self, active=None):
+        """Remaining plan hours of all approved, not paused plans x pace factor against the switched-on slots.
+        -> {rest_h, slots, runway_h, tasks, pace_factor, warn_h}; ``runway_h`` = hours the slots would be busy with it."""
+        active = active if active is not None else self.load_plans("active")
+        rest, n = 0.0, 0
+        for name, (plan, _sha) in active.items():
+            ps = self.s["plans"].get(name) or {}
+            if not ps.get("approved") or ps.get("withdrawn") or ps.get("paused"):
+                continue
+            allt, order = flatten(plan)
+            for k in order:
+                e = allt[k]
+                if e["t"].get("optional") or self.state_of(name, k, e, True) in RUNWAY_SKIPPED:
+                    continue
+                rest += float(e["t"]["hours"])
+                n += 1
+        slots = max(1, self.slots_on())
+        pace = pace_factor()
+        rest = round(rest * pace, 2)
+        return {"rest_h": rest, "slots": slots, "runway_h": round(rest / slots, 2), "tasks": n, "pace_factor": pace,
+                "warn_h": RUNWAY_WARN_H}
+
+    def warn_runway(self, active=None):
+        """Below RUNWAY_WARN_H exactly one event (log + optional notify command); armed again only above RUNWAY_CLEAR_H.
+        With no approved plan nothing is warned (an operator without plans did not plan anything to run dry)."""
+        active = active if active is not None else self.load_plans("active")
+        r = self.runway(active)
+        if not any((self.s["plans"].get(n) or {}).get("approved") and not (self.s["plans"].get(n) or {}).get("withdrawn")
+                   for n in self.s["plans"]):
+            return r
+        rz = self.s.setdefault("runway", {})
+        if r["runway_h"] >= RUNWAY_CLEAR_H:
+            rz.pop("warned_ts", None)
+        elif r["runway_h"] < RUNWAY_WARN_H and not rz.get("warned_ts"):
+            text = ("Plan runway: the remaining work of all approved plans lasts only %.1f more hours "
+                    "(%.1f plan hours x pace %.2f in %d tasks, %d slots on; threshold %g h). Add new plan tasks."
+                    % (r["runway_h"], r["rest_h"], r["pace_factor"], r["tasks"], r["slots"], RUNWAY_WARN_H))
+            if (self._notify or notify_command)(text):
+                rz["warned_ts"] = self.now()
+                self.note("runway_warning", runway_h=r["runway_h"], slots=r["slots"])
+        return r
+
     def check(self):
         self.guard()
         active = self.load_plans("active")
@@ -934,6 +1016,10 @@ class ProjectPlans:
         try:
             self.measure_idle(active, new)
         except Exception:  # noqa: BLE001 — the measurement never disturbs filing
+            pass
+        try:
+            self.warn_runway(active)
+        except Exception:  # noqa: BLE001 — the early warning never disturbs filing
             pass
         return new
 
@@ -1061,7 +1147,9 @@ class ProjectPlans:
                 "live": {"not_live": len(all_nl), "tasks": all_nl[:20]},
                 "halt": clean(self.halt.get("*") or "", 160) or None, "open": len(self.open_tasks()),
                 "total": self.total_info(),
-                "idle": self.idle_block(), "plans": plans, "waiting_on_predecessor": self.waiting_block(plans)}
+                "idle": self.idle_block(),
+                "runway": dict(self.runway(active), warned=bool((self.s.get("runway") or {}).get("warned_ts"))),   # 0.46.0 (additive)
+                "plans": plans, "waiting_on_predecessor": self.waiting_block(plans)}
 
     def waiting_on(self, name, e):
         """Open dependencies of a task: [{key, state, thread}]."""
@@ -1128,6 +1216,12 @@ def status_text(st):
             if r["state"] in ("running", "question", "waiting_release", "stuck", "stopped", "failed", "ready"):
                 lines.append("   %-28s %-16s %s%s" % (r["key"], r["state"], "#%s " % r["thread"] if r.get("thread") else "",
                                                       "(%s)" % r["halt"] if r.get("halt") else ""))
+    rw = st.get("runway") or {}
+    if rw and st["plans"]:
+        lines.append("")
+        lines.append("runway: %.1f h of plan work left x pace %.2f on %d slots = %.1f h%s" % (
+            rw.get("rest_h", 0), rw.get("pace_factor", 1), rw.get("slots", 0), rw.get("runway_h", 0),
+            " · LOW (below %g h)" % rw.get("warn_h", RUNWAY_WARN_H) if rw.get("runway_h", 0) < rw.get("warn_h", RUNWAY_WARN_H) else ""))
     wp = st.get("waiting_on_predecessor") or []
     if wp:
         lines.append("")

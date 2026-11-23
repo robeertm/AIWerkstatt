@@ -729,6 +729,43 @@ class Queue(QueueTools):
             q = CLI.queue_summary()
             self.assertEqual((q["length"], q["waiting"][0]["position"]), (1, 1))
 
+    def test_release_class_goes_before_task_class_and_aged_tasks_catch_up(self):
+        now = 100000.0
+        def ent(n, cls, age_s):
+            return {"file": "%020d-%s.json" % (n, cls), "id": "%s-%d" % (cls, n), "class": cls, "since": now - age_s}
+        a = ent(1, "task", 600)          # first in line, young task
+        b = ent(2, "release", 500)       # a release arrives later but goes first
+        c = ent(3, "task", 400)
+        d = ent(4, "release", 300)
+        self.assertEqual([e["id"] for e in CLI.queue_order([a, b, c, d], now)], ["release-2", "release-4", "task-1", "task-3"])
+        old = ent(0, "task", CLI.QUEUE_AGE_S + 60)    # waited longer than the age limit -> ranks with the releases by arrival
+        self.assertEqual([e["id"] for e in CLI.queue_order([a, b, old, d], now)][:3], ["task-0", "release-2", "release-4"])
+        # an unknown class counts as task, a missing class (older client) too
+        legacy = {"file": "%020d-x.json" % 1, "id": "legacy", "since": now - 10}
+        rel = ent(5, "release", 1)
+        self.assertEqual([e["id"] for e in CLI.queue_order([legacy, rel], now)], ["release-5", "legacy"])
+        self.assertEqual(CLI.queue_class_of({"class": "urgent"}), "task")
+
+    def test_queue_state_uses_the_class_order_and_summary_names_the_class(self):
+        os.makedirs(self.queue)
+        mine = CLI._pid_start(os.getpid())
+        now = time.time()
+        for n, (cid, cls) in enumerate((("t1-123456", "task"), ("r1-123456", "release")), start=1):
+            with open(os.path.join(self.queue, "%020d-x.json" % n), "w") as fh:
+                json.dump({"id": cid, "pid": os.getpid(), "pid_start": mine, "since": now - 5, "repo": "r", "class": cls}, fh)
+        st = {"max_runs": 2, "test_runs": 2, "runs": [{"id": "a"}, {"id": "b"}]}
+        with mock.patch.object(CLI, "QUEUE", self.queue):
+            may, pos, ahead, _run = CLI.queue_state(st, "%020d-x.json" % 1, "t1-123456")
+            self.assertEqual((may, pos, [e["id"] for e in ahead]), (False, 2, ["r1-123456"]))   # the task waits behind the release
+            q = CLI.queue_summary()
+            self.assertEqual([(w["id"], w["class"]) for w in q["waiting"]], [("r1-123456", "release"), ("t1-123456", "task")])
+
+    def test_class_setting(self):
+        with mock.patch.dict(os.environ, {CLI.PREFIX + "CLASS": "Release"}):
+            self.assertEqual(CLI._env_class(), "release")
+        with mock.patch.dict(os.environ, {CLI.PREFIX + "CLASS": "nonsense"}):
+            self.assertEqual(CLI._env_class(), "task")
+
     def test_estimate_from_protocols(self):
         os.makedirs(self.logs, exist_ok=True)
         for i, d in enumerate((600, 900, 1200)):

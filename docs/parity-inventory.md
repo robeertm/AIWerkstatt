@@ -2,7 +2,7 @@
 
 AIWerkstatt is the public, platform-independent sibling of a private, single-site control plane. The two codebases are
 separate (container-per-agent here, host broker there), so features are mirrored by hand. This table is the checkpoint
-for that work. Status as of 0.40.0; the private side was compared by its changelog, entry by entry.
+for that work. Status as of 0.46.0 (wave 2 of the private side, 0.205.0 - 0.212.0, bundled in one release); the private side was compared by its changelog, entry by entry.
 
 Legend: **mirrored** = present here · **by design** = the architecture makes it unnecessary · **gap** = generic and missing ·
 **private** = tied to one site's hardware, accounts, houses or tooling and deliberately not mirrored.
@@ -38,6 +38,14 @@ Legend: **mirrored** = present here · **by design** = the architecture makes it
 | Release | Release only a commit the gate has seen | mirrored | `scripts/chain`, release commit field |
 | Tests | Remote test runner, green stays green, image environment | mirrored | 0.22.0 – 0.33.0 |
 | Plans | Task chain and multi-project plans, credit limit | mirrored | 0.20.0 – 0.38.0 |
+| Plans | **Early warning "the plans run dry"** (plan hours x pace against the slots, one event below 6 h) | **mirrored in 0.46.0** | `AIWERKSTATT_PLAN_PACE_FACTOR`, optional `AIWERKSTATT_PLAN_NOTIFY`; see [chain](chain.md) |
+| Tests | **Queue classes**: release gate runs before probe runs, aged probe runs catch up (private: gate traffic light, 0.205.0) | **mirrored in 0.46.0** | `--queue-class`, `AIWERKSTATT_TEST_RUNNER_CLASS`; no deadline, nothing aborted; see [test runner](test-runner.md) |
+| Tests | Gate traffic light with a protocol and weekly wait report | private | the report reads one site's gate service; the generic part (order of the queue) is the row above |
+| Tests | Browser-test virtual environment tool (shared browsers, pinned test tools) | private | tooling of one host; the containerised test runner here brings its own images |
+| Release | One delivery way for small services without a release manifest, commit checker without release target | by design | every repo here is released by the release train or has no release target at all; the branch check (0.31.0, 0.36.0) already covers "is it on main" |
+| Overlap guard | Reply draft for an already finished issue case (follow-up draft) | private | belongs to the issue watcher, which is private (see the overlap-guard row below) |
+| Wishes | Wish list status derived from the claim book and published tags | private | reads the claim book of the private issue watcher; the public intake (`app_feedback.py`) has no such list |
+| Ops | Load fingerprint (top consumers per slot/service when the load spikes) | private | reads the host's per-slot accounting and the night watch; a container-per-run setup has neither |
 | Security | Dependency audit and history secret scan | mirrored | 0.39.0 |
 | Security | No secret on any command line | mirrored | 0.14.1 |
 | Ops | Docker health check | mirrored | 0.14.4 |

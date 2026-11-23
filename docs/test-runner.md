@@ -71,11 +71,17 @@ The trust boundary is one SSH key that can only start the receiver (details in
    both slots are taken the client joins a FIFO queue on its own machine (`<STATUS_DIR>/queue/` or
    `AIWERKSTATT_TEST_RUNNER_QUEUE`, one file per waiting run, named by arrival time, holding PID and process start time)
    and prints `queue position N, ahead of you: <run>, expected free in ~X min` (estimate = median duration of the own
-   protocols per repo/profile/mode). First come, first served: no deadline, no abort, no overtaking; a run that already
+   protocols per repo/profile/mode). First come, first served inside a class: no deadline, no abort; a run that already
    holds a slot over there does not count as waiting. Entries whose process is gone (or whose PID was reused) are removed
    by the next reader. If several users share the queue, make the folder group-writable without sticky bit so anyone can
    remove orphans. If the receiver still answers `busy` (a run from an older client without the queue came first), the run
    keeps its queue position. `--wait-max-min` is still accepted but has no effect.
+   **Queue classes (0.46.0):** a run is `release` (a release gate: `--queue-class release` or
+   `AIWERKSTATT_TEST_RUNNER_CLASS=release`) or `task` (a probe run of a working task, the default). Waiting `release` runs go
+   before waiting `task` runs, first come, first served inside a class. A `task` run that has waited longer than 45 minutes
+   (`AIWERKSTATT_TEST_RUNNER_QUEUE_AGE_S`) ranks with the releases by arrival, so a stream of releases never starves it. A
+   run that already holds a slot is never displaced; nothing is aborted and nothing gets a deadline - only the order of the
+   waiting entries changes. The collector shows the class per waiting run (`queue.waiting[].class`, additive).
 3. A running test is never aborted, also not when the connection drops (the receiver ignores SIGHUP and SIGPIPE). The
    client fetches the result with `result <id>` until it is there (results stay for 2 days). The only limit is the
    emergency brake `max_run_seconds`.

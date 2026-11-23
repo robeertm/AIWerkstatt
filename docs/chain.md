@@ -244,6 +244,23 @@ answer is checked again), after that the task stays `live: held` in the status. 
 checked (`live_required`), older state is left alone. `status.json` gains `tasks[].live` and `live.not_live`
 (finished with a release, not confirmed live). Fields are additive.
 
+### Early warning: the plans run dry (0.46.0)
+
+Idle slots are the most expensive thing a plan chain can cause, and they appear quietly: the last tasks are filed, nothing new
+is planned. `check` therefore computes the **runway**: remaining hours of all approved, not paused plans (optional tasks,
+finished, stopped and drafted tasks do not count) times the pace factor, divided by the switched-on slots (`slots_active`,
+else `slots_total` or `max` of the load file). Below 6 hours exactly **one** event is raised (log entry `runway_warning` plus,
+when configured, a notification command); the warning is armed again only above 9 hours, so it never turns into a stream.
+Nothing is warned while no plan is approved.
+
+- `AIWERKSTATT_PLAN_PACE_FACTOR` - measured duration divided by the estimated `hours` (default 1.0; junk or a value outside
+  0 to 100 counts as 1.0).
+- `AIWERKSTATT_PLAN_NOTIFY` - optional JSON list, the notification command of the operator; the text goes through **stdin**,
+  never through the command line. Not set: the warning stays in the log and in the status. A command that fails is tried
+  again at the next check.
+- `status.json` gains `runway` (`rest_h`, `slots`, `runway_h`, `tasks`, `pace_factor`, `warn_h`, `warned`; additive), and
+  `status` prints one line "runway: ...".
+
 ## Tests
 
 `python3 -m unittest discover -s scripts/chain` (chain and multi-project plans) and
