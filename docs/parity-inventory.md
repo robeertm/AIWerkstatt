@@ -16,6 +16,7 @@ Legend: **mirrored** = present here · **by design** = the architecture makes it
 | Pool | Idle slots are refilled, only running tasks count | mirrored | 0.38.0 |
 | Pool | Ghost slot released when its session is gone | by design | a run is busy only while its container is alive |
 | Pool | CPU cap per agent run | **mirrored in 0.40.0** | `AIWERKSTATT_RUN_CPUS`, default no cap |
+| Pool | **Build/review split** — builder slots hand off branch + commit + test plan and are freed at once; AI-free test runners execute suites and gates; reviewer slots decide green (merge, release) or rework, which goes back to the same parked builder session with priority; switch off/probe/on | **gap** | private side since 0.229.0; port as its own task (runner service, reviewer slot class, finding format, flow API for dashboards) |
 | Queue | Remaining time per run and per task | mirrored | 0.25.0 |
 | Queue | Queues instead of wait locks | mirrored | 0.24.0 |
 | Queue | **Priority in the queue** (urgent, next, move up/down, drag) | **gap** | order is strictly by task id; port as its own task (API, UI, tests, browser probe) |
