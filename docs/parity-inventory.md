@@ -40,6 +40,7 @@ Legend: **mirrored** = present here · **by design** = the architecture makes it
 | Tests | Remote test runner, green stays green, image environment | mirrored | 0.22.0 – 0.33.0 |
 | Plans | Task chain and multi-project plans, credit limit | mirrored | 0.20.0 – 0.38.0 |
 | Plans | **Early warning "the plans run dry"** (plan hours x pace against the slots, one event below 6 h) | **mirrored in 0.46.0** | `AIWERKSTATT_PLAN_PACE_FACTOR`, optional `AIWERKSTATT_PLAN_NOTIFY`; see [chain](chain.md) |
+| Plans | **Dependency on an entry of another plan** (`<plan>:<project>/<ID>`; private: 0.227.0) | **mirrored in 0.47.0** | form checked on save, state read at run time, simulation treats it as met; see [chain](chain.md) |
 | Tests | **Queue classes**: release gate runs before probe runs, aged probe runs catch up (private: gate traffic light, 0.205.0) | **mirrored in 0.46.0** | `--queue-class`, `AIWERKSTATT_TEST_RUNNER_CLASS`; no deadline, nothing aborted; see [test runner](test-runner.md) |
 | Tests | Gate traffic light with a protocol and weekly wait report | private | the report reads one site's gate service; the generic part (order of the queue) is the row above |
 | Tests | Browser-test virtual environment tool (shared browsers, pinned test tools) | private | tooling of one host; the containerised test runner here brings its own images |
