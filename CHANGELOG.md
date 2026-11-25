@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.47.0 — 2026-11-25
+### Added — project plans: a dependency on an entry of another plan (`<plan>:<project>/<ID>`)
+- `depends_on` accepts `<plan>:<project>/<ID>`. Saving the plan checks only the form (a plan prefix naming the plan itself is
+  refused); the state of the other entry is read at run time (`state_key`), so the task waits until it is finished and its
+  filing text and the "waiting on predecessor" block list it. The simulation and the timeline treat it as met from outside.
+- Tests: `scripts/chain/test_projectplan.py` (class `ForeignPlan`). Docs: `docs/chain.md`.
+
 ## 0.46.0 — 2026-11-23
 ### Added — wave 2 of the private control plane, bundled: queue classes for the test runner, early warning "the plans run dry"
 - **Queue classes (`scripts/test-runner/remote_test.py`):** a waiting run is class `release` (`--queue-class release` or

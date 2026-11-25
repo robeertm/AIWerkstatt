@@ -224,6 +224,25 @@ def key_of(project, tid):
     return "%s/%s" % (project, tid)
 
 
+FOREIGN_DEP_RE = re.compile(r"^([a-z0-9][a-z0-9-]{0,63}):([A-Za-z0-9][A-Za-z0-9_-]{0,63}/[A-Z][A-Z0-9]{0,11})$")
+
+
+def foreign_dep(d):
+    """True when a dependency names an entry of ANOTHER plan (``<plan>:<project>/<ID>``, 0.47.0)."""
+    return ":" in str(d)
+
+
+def state_key(plan_name, d):
+    """Key of a dependency in the task state: foreign keys are already complete, own ones get the plan name."""
+    return d if foreign_dep(d) else "%s:%s" % (plan_name, d)
+
+
+def dep_key(project_id, d):
+    """Normalised dependency: foreign stays as is, ``<project>/<ID>`` stays, a bare ID gets the project."""
+    d = str(d)
+    return d if foreign_dep(d) or "/" in d else key_of(project_id, d)
+
+
 def validate_plan(plan, excluded=None):
     """Check a ``projectplan/2`` plan. Returns a list of errors (empty = fine). Never raises."""
     excl = [x.lower() for x in (excluded_default() if excluded is None else excluded)]
@@ -329,7 +348,16 @@ def validate_plan(plan, excluded=None):
     for k, (p, t) in tasks.items():
         out = []
         for d in t.get("depends_on") or []:
-            dk = d if "/" in str(d) else key_of(p["id"], d)
+            dk = dep_key(p["id"], d)
+            if foreign_dep(d):
+                m = FOREIGN_DEP_RE.match(dk)
+                if not m:
+                    err.append("%s: dependency %r must have the form <plan>:<project>/<ID>" % (k, d))
+                elif m.group(1) == plan.get("name"):
+                    err.append("%s: dependency %r names the own plan (drop the plan prefix)" % (k, d))
+                else:
+                    out.append(dk)   # only the form is checked; the state decides at run time
+                continue
             if dk not in tasks:
                 err.append("%s: unknown dependency %r" % (k, d))
                 continue
@@ -365,7 +393,7 @@ def flatten(plan):
             k = key_of(p["id"], t["id"])
             rel = release_of(t, p)
             allt[k] = {"project": p, "t": t, "release": rel, "live": live_of(t, p, rel),
-                       "deps": [d if "/" in str(d) else key_of(p["id"], d) for d in t.get("depends_on") or []]}
+                       "deps": [dep_key(p["id"], d) for d in t.get("depends_on") or []]}
     order = [k for k in (plan.get("order") or []) if k in allt]
     if not order:
         keys = list(allt)
@@ -404,7 +432,7 @@ def simulate(plan, slots=5):
             for k in pend:
                 e = allt[k]
                 pid = e["project"]["id"]
-                if not all(d in done for d in e["deps"]):
+                if not all(d in done or foreign_dep(d) for d in e["deps"]):
                     continue
                 if any(allt[j]["project"]["id"] == pid and allt[j]["t"]["track"] == e["t"]["track"] for j in run):
                     continue
@@ -645,7 +673,7 @@ class ProjectPlans:
             return "draft"
         if e["t"].get("optional") and not ts.get("option_on"):
             return "held"
-        deps = [(self.s["tasks"].get("%s:%s" % (name, d)) or {}).get("state") for d in e["deps"]]
+        deps = [(self.s["tasks"].get(state_key(name, d)) or {}).get("state") for d in e["deps"]]
         return "ready" if all(x in DONE_STATES for x in deps) else "waiting"
 
     def occupying(self):
@@ -840,7 +868,7 @@ class ProjectPlans:
         p, t, rel = e["project"], e["t"], e["release"]
         prior = []
         for d in e["deps"]:
-            ds = self.s["tasks"].get("%s:%s" % (name, d)) or {}
+            ds = self.s["tasks"].get(state_key(name, d)) or {}
             prior.append("- %s: task #%s, state %s" % (d, ds.get("thread", "?"), ds.get("state", "?")))
         if rel["kind"] == "train":
             rt = ("Release target **train**: test the work, bring it to main by fast-forward, write the changelog "
@@ -1155,7 +1183,7 @@ class ProjectPlans:
         """Open dependencies of a task: [{key, state, thread}]."""
         out = []
         for d in e["deps"]:
-            ts = self.s["tasks"].get("%s:%s" % (name, d)) or {}
+            ts = self.s["tasks"].get(state_key(name, d)) or {}
             if ts.get("state") in DONE_STATES:
                 continue
             out.append({"key": d, "state": ts.get("state") or "open", "thread": ts.get("thread")})

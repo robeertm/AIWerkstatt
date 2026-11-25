@@ -187,7 +187,10 @@ same `chain` token. The plain chain above stays as it is. Example: `scripts/chai
 ```
 
 - `projects[].id` is the AIWerkstatt project id the tasks are filed into. `depends_on` names a task of the same project
-  (`A0`) or of another one (`<project>/<ID>`); cycles and unknown names are refused. `release` is `none | train | own`
+  (`A0`) or of another one (`<project>/<ID>`); cycles and unknown names are refused. Since 0.47.0 it may also name an entry of another plan, `<plan>:<project>/<ID>` (for example a follow-up
+  wave waiting for check entries of an earlier plan): only the form is checked when the plan is saved, the entry's state is
+  looked up at run time (the task waits until it is finished), and the simulation and timeline treat it as met from outside.
+  A prefix naming the plan itself is refused. `release` is `none | train | own`
   (a version string such as `"1.5.0"` sets only the expected version); a task inherits the kind from its project.
   `history[]` is past work for a timeline and is never run. `priority` 1 (wishes of people) to 4 (optimisation) orders the
   plan when `order` is missing.

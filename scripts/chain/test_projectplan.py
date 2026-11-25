@@ -489,6 +489,37 @@ class StatusAndSimulation(Base):
         self.assertEqual(pp.simulate(plan([project("x", [task("A1", optional=True)])]))["tasks"], {})
 
 
+class ForeignPlan(Base):
+    """0.47.0 - a dependency on an entry of ANOTHER plan (`<plan>:<project>/<ID>`): form check, state lookup, simulation."""
+
+    def follow(self, dep="p1:x/A1", name="p2"):
+        return plan([project("y", [task("B1", depends_on=[dep]), task("B2", track="u")])], name=name)
+
+    def test_form(self):
+        self.assertEqual(pp.validate_plan(self.follow(), []), [])
+        self.assertTrue(any("own plan" in e for e in pp.validate_plan(self.follow("p2:y/B2"), [])))
+        for bad in ("p1:A1", "P1:x/A1", "p1:x/a1", "p1:/A1"):
+            self.assertTrue(any("<plan>:<project>/<ID>" in e for e in pp.validate_plan(self.follow(bad), [])), bad)
+        self.assertTrue(pp.foreign_dep("p1:x/A1"))
+        self.assertFalse(pp.foreign_dep("x/A1"))
+        self.assertEqual(pp.state_key("p", "x/A1"), "p:x/A1")
+        self.assertEqual(pp.state_key("p", "q:x/A1"), "q:x/A1")
+
+    def test_waits_until_the_other_plan_entry_is_done(self):
+        self.go(plan([project("x", [task("A1")])]))
+        self.go(self.follow())
+        self.assertEqual(self.st("p1", "x/A1"), "running")
+        self.assertEqual(self.st("p2", "y/B2"), "running")
+        self.assertIsNone(self.st("p2", "y/B1"))   # not filed yet
+        self.pl.s["tasks"]["p1:x/A1"]["state"] = "done"
+        self.step()
+        self.assertEqual(self.st("p2", "y/B1"), "running")
+
+    def test_simulation_treats_it_as_met(self):
+        sim = pp.simulate(self.follow())
+        self.assertEqual(set(sim["tasks"]), {"y/B1", "y/B2"})
+
+
 class Runway(Base):
     """0.46.0 - early warning "the plans run dry": plan hours x pace against the slots, below 6 h exactly one event."""
 
