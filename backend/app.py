@@ -1097,6 +1097,10 @@ def update_check():
         return jsonify(_update_cache["data"])
     data = {"current": config.VERSION, "latest": None, "update_available": False,
             "url": "https://github.com/%s/releases" % config.REPO_SLUG}
+    if not force and not config.UPDATE_CHECK:
+        # AIWERKSTATT_UPDATE_CHECK=off: the automatic check never contacts GitHub.
+        # Only the "Check for updates" button (force=1) asks, on the admin's own click.
+        return jsonify(dict(data, check_disabled=True))
     try:
         r = requests.get("https://api.github.com/repos/%s/releases/latest" % config.REPO_SLUG,
                          headers={"Accept": "application/vnd.github+json", "User-Agent": "AIWerkstatt"},

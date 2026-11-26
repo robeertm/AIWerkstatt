@@ -20,6 +20,8 @@ COPY backend/ ./
 # The version single-source: config.py reads it at runtime so the self-update
 # check always reports the version the build actually shipped.
 COPY pyproject.toml ./
+# Licence and third-party notices travel with the image.
+COPY LICENSE THIRD-PARTY-NOTICES.md ./
 COPY --from=build /fe/dist ./dist
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

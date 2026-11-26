@@ -43,6 +43,11 @@ def _read_cli_version(fallback="2.1.310"):
 CLAUDE_CLI_VERSION = _read_cli_version()
 # GitHub repository this build is distributed from (owner/name).
 REPO_SLUG = os.environ.get("AIWERKSTATT_REPO", "robeertm/AIWerkstatt")
+# The automatic check for a newer release (one request to the GitHub releases API
+# when an admin opens the page). AIWERKSTATT_UPDATE_CHECK=off turns it off; the
+# "Check for updates" button still asks GitHub when an admin clicks it.
+UPDATE_CHECK = os.environ.get("AIWERKSTATT_UPDATE_CHECK", "").strip().lower() not in (
+    "off", "0", "false", "no", "disabled")
 
 # Where SQLite, provider credentials and queues live (a Docker named volume).
 DATA = os.environ.get("AIWERKSTATT_DATA", os.path.join(os.path.dirname(__file__), "..", "data"))

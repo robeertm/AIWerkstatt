@@ -32,6 +32,8 @@ services:
       # Host reachable name the browser uses to open a live app (localhost by default).
       AIWERKSTATT_PUBLIC_HOST: ${AIWERKSTATT_PUBLIC_HOST:-localhost}
       AIWERKSTATT_MAX_RETRIES: ${AIWERKSTATT_MAX_RETRIES:-3}
+      # `off` = never check GitHub for a newer release automatically (the button in the UI still can).
+      AIWERKSTATT_UPDATE_CHECK: ${AIWERKSTATT_UPDATE_CHECK:-on}
       # At most this many agent runs at the same time across all projects; 0 = unlimited.
       AIWERKSTATT_MAX_PARALLEL_RUNS: ${AIWERKSTATT_MAX_PARALLEL_RUNS:-5}
       # Volume names the orchestrator mounts into the agent-runner containers.
