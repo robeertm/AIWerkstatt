@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.48.0 — 2026-11-26
+### Added — priority in the task queue (urgent, next, up/down, drag)
+- **One rule** (`backend/queue_priority.py`) decides which waiting order gets the next free slot; the orchestrator and the
+  "Agents at work" overview both sort with it. Without any priority nothing changes: strictly first come, first served by task
+  id. Urgent stands before normal (first come, first served inside the class); next / up / down / to the end / to position n move an
+  order only inside its own class; at the edge nothing happens. An order with several waiting parts (the order plus follow-ups of the
+  same thread) moves as one block. A running order is never touched, and entries of orders that no longer wait are dropped.
+- **API** (admins only): `POST /api/queue/<thread id>/priority` with `{"action": "urgent|normal|front|up|down|end|position",
+  "position": n}`; 409 when the order does not wait, 400 for a bad action or position. Every change is logged as one JSON line
+  (`data/queue-priority.jsonl`: who, when, what); state in `data/queue-priority.json` (a broken file means plain first come, first served).
+  `GET /api/pool` gains the additive field `queue` (one row per waiting order in start order) and `thread_id` in `waiting_list`;
+  the waiting list is now in start order.
+- **Overview:** new "Queue" list with the start order, buttons of at least 44 px (⚡ urgent/normal, ⏫ next, ▲, ▼) and drag and drop
+  on a desktop (inside the own class); on a phone the buttons are the way.
+- Tests: `backend/tests/test_queue_priority.py` (15 tests: rule, blocks, edges, start order of the orchestrator, API and rights).
+  Docs: `docs/queue-priority.md`, `docs/parity-inventory.md`.
+
 ## 0.47.0 — 2026-11-25
 ### Added — project plans: a dependency on an entry of another plan (`<plan>:<project>/<ID>`)
 - `depends_on` accepts `<plan>:<project>/<ID>`. Saving the plan checks only the form (a plan prefix naming the plan itself is

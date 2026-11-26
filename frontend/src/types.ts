@@ -43,9 +43,15 @@ export type PoolRun = {
   eta_s?: number | null; eta_text?: string; eta_spanne?: (number | null)[] | null; phase?: string | null; run?: EtaRun | null; eta_line?: string
   eta_overdue_since?: number | null; stall_guard?: StallGuardView | null
 }
-export type WaitingStart = { project: string | null; start_in_s?: number | null; start_text?: string }
+export type WaitingStart = { project: string | null; thread_id?: number | string | null; start_in_s?: number | null; start_text?: string }
+// Waiting orders in start order (0.48.0), one row per order; an older backend does not send it.
+export type QueueRow = {
+  thread_id: number; task_ids: number[]; slug: string; title: string; urgent: boolean; position: number; followups: number
+  can_up: boolean; can_down: boolean; class_position: number; class_size: number
+}
+export type QueueAction = 'urgent' | 'normal' | 'front' | 'up' | 'down' | 'end' | 'position'
 export type TestRunnerLoad = { fresh: boolean; stand: number | null; load: number[] | null; cores: number | null; cpu_percent: number | null; test_runs: number | null; max_runs: number | null; queue_waiting?: number }
-export type PoolSnapshot = { max: number; busy: number; waiting: number; runs: PoolRun[]; test_runner?: TestRunnerLoad; waiting_list?: WaitingStart[]; eta_runs?: EtaRun[]; active?: number | null; configurable?: boolean; waiting_reason?: string | null }
+export type PoolSnapshot = { max: number; busy: number; waiting: number; runs: PoolRun[]; test_runner?: TestRunnerLoad; waiting_list?: WaitingStart[]; eta_runs?: EtaRun[]; active?: number | null; configurable?: boolean; waiting_reason?: string | null; queue?: QueueRow[] }
 export type LimitStatus = { active: boolean; until?: number; resumes_at?: string; reset_known?: boolean }
 export type UpdateInfo = { current: string; latest: string | null; update_available: boolean; url: string }
 export type GithubStatus = { connected: boolean; login: string | null }

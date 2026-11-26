@@ -29,6 +29,7 @@ import review
 import service_token
 import planlimit
 import pool_slots
+import queue_priority
 import orchestrator as orch
 
 DIST = os.environ.get("AIWERKSTATT_DIST",
@@ -1029,6 +1030,22 @@ def pool():
     if tr is not None:
         snap = dict(snap, test_runner=tr)
     return jsonify(snap)
+
+
+@app.post("/api/queue/<int:thread_id>/priority")
+@admin_required
+def queue_priority_set(thread_id):
+    """The one write path for the priority of a WAITING order. Body: {"action": "urgent"|"normal"|"front"|"up"|"down"|
+    "end"|"position", "position": n}. Admins only. A running order is never touched (409: it does not wait)."""
+    d = request.get_json(silent=True) or {}
+    try:
+        res = queue_priority.change(orch.PRIORITY_FILE, orch.TASK_QUEUE, thread_id, d.get("action"),
+                                    current_user()["name"], position=d.get("position"))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    except LookupError as e:
+        return jsonify(error=str(e)), 409
+    return jsonify(res)
 
 
 @app.get("/api/pool/slots")

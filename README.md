@@ -72,6 +72,10 @@ No SaaS, no lock-in, no data leaving your box. Bring your own AI key.
 
 <p align="center"><img src="docs/screenshots/02-gallery.png" alt="Project gallery with the Agents at work strip: slot switch, remaining time per run, waiting orders and test runner load" width="640"></p>
 
+**Priority in the queue** — urgent, next, up/down and drag and drop for waiting orders (running orders are never touched)
+
+<p align="center"><img src="docs/screenshots/15-queue-priority.png" alt="The Queue list of the Agents at work strip: waiting orders in start order, one marked urgent, buttons for urgent, next, up and down" width="640"></p>
+
 **Inside a project**
 
 <p align="center"><img src="docs/screenshots/03-project.png" alt="Project view with per-project provider and model" width="640"></p>

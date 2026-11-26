@@ -80,6 +80,9 @@ export const planLimitStart = () => req('/api/planlimit/connect/start', 'POST').
 export const planLimitFinish = (code: string) => req('/api/planlimit/connect/finish', 'POST', { code }).then(j<{ ok: boolean }>)
 export const planLimitDisconnect = () => req('/api/planlimit/connect', 'DELETE').then(j<{ ok: boolean }>)
 export const setPoolSlots = (active: number) => req('/api/pool/slots', 'POST', { active }).then(j<{ ok: boolean; active: number | null; max: number }>)
+export const setQueuePriority = (thread: number, action: import('./types').QueueAction, position?: number) =>
+  req(`/api/queue/${thread}/priority`, 'POST', position == null ? { action } : { action, position })
+    .then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`); return d as { ok: boolean; unchanged: boolean } })
 export const getPool = () => fetch('/api/pool').then(j<import('./types').PoolSnapshot>)
 export const getLimit = () => fetch('/api/limit').then(j<LimitStatus>)
 export const getUpdate = (force?: boolean) => fetch('/api/update' + (force ? '?force=1' : '')).then(j<UpdateInfo>)

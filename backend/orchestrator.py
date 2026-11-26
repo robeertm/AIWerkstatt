@@ -32,6 +32,7 @@ import time
 import config
 import eta
 import pool_slots
+import queue_priority
 import context_pack
 import db
 import engine
@@ -44,6 +45,7 @@ except Exception:  # pragma: no cover - import guard for tooling
 
 APP_UID = os.environ.get("AIWERKSTATT_APP_UID", "10001")
 TASK_QUEUE = os.path.join(config.DATA, "task-queue")
+PRIORITY_FILE = os.path.join(config.DATA, queue_priority.FILE_NAME)
 
 
 def _round60(x):
@@ -471,14 +473,31 @@ class Orchestrator:
                 continue
             waiting += 1
             waiting_orders.append(d)
+        prio = queue_priority.load(PRIORITY_FILE)
+        waiting_orders = queue_priority.order(waiting_orders, prio)    # start order (priority, else FIFO)
         snap = {"max": max(MAX_PARALLEL_RUNS, 0), "busy": len(runs), "waiting": waiting, "runs": runs}
         snap.update(pool_slots.view(MAX_PARALLEL_RUNS))
         snap["waiting_reason"] = pool_slots.waiting_reason(MAX_PARALLEL_RUNS, waiting)
+        snap["queue"] = self._queue_view(waiting_orders, prio)
         try:
             self._add_eta(snap, live_threads, waiting_orders)
         except Exception:   # the remaining-time display is an extra, never a reason for a broken overview
             pass
         return snap
+
+    @staticmethod
+    def _queue_view(waiting_orders, prio):
+        """One row per waiting ORDER in start order (additive ``queue`` field): what the overview needs to draw the
+        priority controls. Title from the thread, never raw text of the order."""
+        rows = queue_priority.orders_view(waiting_orders, prio)
+        for r in rows:
+            try:
+                th = db.query_one("SELECT title FROM threads WHERE id = ?", (int(r["thread_id"]),))
+            except Exception:
+                th = None
+            title = ((th["title"] if th else "") or "").strip()
+            r["title"] = title[:79].rstrip() + "…" if len(title) > 80 else title
+        return rows
 
     def _add_eta(self, snap, live_threads, waiting_orders):
         """Additive remaining-time fields (0.25.0): per busy slot ``eta_s``, ``eta_text``, ``eta_spanne``, ``phase``,
@@ -536,7 +555,7 @@ class Orchestrator:
             text = ("starts once a slot is switched on" if active == 0 else
                     "starts shortly" if t is not None and t < 60 else
                     eta.eta_text(t, prefix="starts in", unknown="start unknown"))
-            waiting_list.append({"project": d.get("slug"), "start_in_s": _round60(t), "start_text": text})
+            waiting_list.append({"project": d.get("slug"), "thread_id": d.get("thread_id"), "start_in_s": _round60(t), "start_text": text})
         snap["waiting_list"] = waiting_list
         snap["eta_runs"] = [dict(_run_brief(e), thread=e.get("thread")) for e in ests]
 
@@ -603,7 +622,8 @@ class Orchestrator:
 
     @staticmethod
     def _queue_order(name):
-        """Strict FIFO by task id (9 before 10); non-numeric control descriptors first."""
+        """Control descriptors (non-numeric names) first, then strictly by task id (9 before 10). Only the fallback
+        for the order: ``poll_once`` sorts with ``queue_priority.sort_key`` (the same FIFO unless a priority is set)."""
         stem = name[:-5] if name.endswith(".json") else name
         return (1, int(stem), "") if stem.isdigit() else (0, 0, stem)
 
@@ -612,7 +632,8 @@ class Orchestrator:
             names = sorted(os.listdir(TASK_QUEUE), key=self._queue_order)
         except OSError:
             return
-        pool_full = False
+        prio = queue_priority.load(PRIORITY_FILE)
+        items = []
         for n in names:
             if not n.endswith(".json") or n.endswith(".tmp"):
                 continue
@@ -620,11 +641,22 @@ class Orchestrator:
             try:
                 with open(p, "r", encoding="utf-8") as f:
                     d = json.load(f)
-                os.remove(p)
+                if not isinstance(d, dict):
+                    raise ValueError("descriptor is not an object")
             except (OSError, ValueError):
                 try: os.remove(p)
                 except OSError: pass
                 continue
+            items.append((n, p, d))
+        # Priority (0.48.0): urgent before normal, a manual rank inside the class; without any priority this is the
+        # old strict FIFO by task id. sorted() is stable, so equal keys keep the order of the listing above.
+        items.sort(key=lambda it: queue_priority.sort_key(it[2], prio))
+        pool_full = False
+        for n, p, d in items:
+            try:
+                os.remove(p)
+            except OSError:
+                continue          # claimed or removed (stop) meanwhile
             try:
                 # Once the pool is full, every later order waits too (no overtaking).
                 if self._handle(d, pool_full=pool_full) == "requeued_pool":

@@ -19,7 +19,7 @@ Legend: **mirrored** = present here · **by design** = the architecture makes it
 | Pool | **Build/review split** — builder slots hand off branch + commit + test plan and are freed at once; AI-free test runners execute suites and gates; reviewer slots decide green (merge, release) or rework, which goes back to the same parked builder session with priority; switch off/probe/on | **gap** | private side since 0.229.0; port as its own task (runner service, reviewer slot class, finding format, flow API for dashboards) |
 | Queue | Remaining time per run and per task | mirrored | 0.25.0 |
 | Queue | Queues instead of wait locks | mirrored | 0.24.0 |
-| Queue | **Priority in the queue** (urgent, next, move up/down, drag) | **gap** | order is strictly by task id; port as its own task (API, UI, tests, browser probe) |
+| Queue | **Priority in the queue** (urgent, next, move up/down, drag) | **mirrored in 0.48.0** | one rule for orchestrator and overview; deviations: no issue-watch class and no plan-chain insertion (`before` action), those belong to private services; see [queue priority](queue-priority.md) |
 | Queue | Stopped task never stays in the queue | mirrored | 0.27.0 |
 | Agent | Live feed, timestamps, vital signs, API-error state | mirrored | 0.16.0 – 0.18.0 |
 | Agent | API errors heal themselves, bounded retries (3, 5/15/45 min) | mirrored | 0.14.3, 0.17.0 |

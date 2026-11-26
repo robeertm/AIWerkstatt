@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   Me, User, Provider, Project, ThreadSummary, ThreadDetail, FileEntry, FileListing,
   UsageSummary, LimitStatus, UpdateInfo, GithubStatus, ActivityItem, ScanResult, PublishStatus,
-  LiveEntry, LiveFeed, PlanLimit, PoolRun, PoolSnapshot, TestRunnerLoad,
+  LiveEntry, LiveFeed, PlanLimit, PoolRun, PoolSnapshot, QueueAction, QueueRow, TestRunnerLoad,
 } from './types'
 import * as api from './api'
 import { focusInField, hasDraft, loopGuard, reloadAllowed } from './updateReload'
@@ -720,6 +720,58 @@ function EtaBlock({ r }: { r: PoolRun }) {
     </div>
   )
 }
+// Waiting orders in start order with the priority controls (0.48.0). Urgent stands before normal; up / down / next / drag act
+// inside the own class only; a running order never shows up here. Drag and drop is for a mouse, the buttons work everywhere.
+function QueueList({ pool, names, reload }: { pool: PoolSnapshot; names: Record<string, string>; reload: () => void }) {
+  const rows = pool.queue || []
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [drag, setDrag] = useState<number | null>(null)
+  const start = (r: QueueRow) => (pool.waiting_list || []).find((w) => String(w.thread_id) === String(r.thread_id))?.start_text
+  const act = (r: QueueRow, action: QueueAction, position?: number) => {
+    if (busy) return
+    setErr(null); setBusy(true)
+    api.setQueuePriority(r.thread_id, action, position).then(reload).catch((e) => { setErr(String(e?.message || e)); reload() }).finally(() => setBusy(false))
+  }
+  const dragged = rows.find((r) => r.thread_id === drag) || null
+  return (
+    <div className="queue" data-testid="queue">
+      <div className="queue-head"><b>Queue</b><span className="muted">{rows.length} waiting · starts at the top</span></div>
+      <ol className="queue-list">
+        {rows.map((r) => {
+          const sameClass = !!dragged && dragged.urgent === r.urgent && dragged.thread_id !== r.thread_id
+          return (
+            <li key={r.thread_id} className={`qrow${r.urgent ? ' urgent' : ''}${drag === r.thread_id ? ' dragging' : ''}${sameClass ? ' droppable' : ''}`}
+                data-testid="queue-row" draggable
+                onDragStart={(e) => { setDrag(r.thread_id); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(r.thread_id)) }}
+                onDragEnd={() => setDrag(null)}
+                onDragOver={(e) => { if (sameClass) { e.preventDefault(); e.dataTransfer.dropEffect = 'move' } }}
+                onDrop={(e) => { e.preventDefault(); const d = dragged; setDrag(null); if (d && d.urgent === r.urgent && d.thread_id !== r.thread_id) act(d, 'position', r.class_position) }}>
+              <span className="qgrip" aria-hidden="true" title="Drag to reorder (inside the same class)">⠿</span>
+              <span className="qpos">{r.position}</span>
+              <span className="qmain">
+                <span className="qtitle">{names[r.slug] || r.slug}{r.title ? ` — ${r.title}` : ''}</span>
+                <span className="qmeta muted">
+                  {r.urgent && <span className="chip qchip" style={{ cursor: 'default', color: 'var(--warn)' }}>⚡ urgent</span>}
+                  {r.followups > 0 && <span>{r.followups} follow-up{r.followups > 1 ? 's' : ''}</span>}
+                  {start(r) && <span>{start(r)}</span>}
+                </span>
+              </span>
+              <span className="qbtns" role="group" aria-label="Priority">
+                <button type="button" className="qbtn" disabled={busy} aria-pressed={r.urgent} title={r.urgent ? 'Back to normal' : 'Mark urgent: starts before every normal order'}
+                        onClick={() => act(r, r.urgent ? 'normal' : 'urgent')}>⚡</button>
+                <button type="button" className="qbtn" disabled={busy || !r.can_up} title="Next: to the front of its class" aria-label="Next" onClick={() => act(r, 'front')}>⏫</button>
+                <button type="button" className="qbtn" disabled={busy || !r.can_up} title="Move up" aria-label="Move up" onClick={() => act(r, 'up')}>▲</button>
+                <button type="button" className="qbtn" disabled={busy || !r.can_down} title="Move down" aria-label="Move down" onClick={() => act(r, 'down')}>▼</button>
+              </span>
+            </li>
+          )
+        })}
+      </ol>
+      {err && <div className="slotbar-err" role="alert">{err}</div>}
+    </div>
+  )
+}
 // Polls only while the tab is visible; rendered for admins only, so everyone else never calls /api/pool.
 function PoolStrip({ names }: { names: Record<string, string> }) {
   const [pool, setPool] = useState<PoolSnapshot | null>(null)
@@ -780,7 +832,8 @@ function PoolStrip({ names }: { names: Record<string, string> }) {
         ))}
       </div>
       {pool.waiting_reason && <div className="muted" style={{ fontSize: '.75rem', marginTop: '.5rem' }} data-testid="waiting-reason">⏸ {pool.waiting_reason}</div>}
-      {(pool.waiting_list || []).some((w) => w.start_text) && (
+      {(pool.queue || []).length > 0 && <QueueList pool={pool} names={names} reload={() => api.getPool().then(setPool).catch(() => {})} />}
+      {!(pool.queue || []).length && (pool.waiting_list || []).some((w) => w.start_text) && (
         <div className="muted" style={{ fontSize: '.75rem', marginTop: '.5rem' }} data-testid="waiting-starts">
           {(pool.waiting_list || []).filter((w) => w.start_text).map((w, i) => (
             <div key={i}>{names[w.project || ''] || w.project || 'task'}: {w.start_text}</div>
