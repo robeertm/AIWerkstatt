@@ -56,6 +56,12 @@ services:
       # Opt-in reading proof for new runs (1 = on): reading list in the first message, `READ:` line in the result.
       AIW_READING_PROOF: ${AIW_READING_PROOF:-}
       AIW_READING_MAX_NUDGES: ${AIW_READING_MAX_NUDGES:-1}
+      # AI-free review runner (off by default; probe/on): runs check commands of handed-over commits in throwaway
+      # containers, see docs/review-runner.md.
+      AIWERKSTATT_REVIEW_MODE: ${AIWERKSTATT_REVIEW_MODE:-off}
+      AIWERKSTATT_REVIEW_TARGETS: ${AIWERKSTATT_REVIEW_TARGETS:-}
+      AIWERKSTATT_REVIEW_IMAGE: ${AIWERKSTATT_REVIEW_IMAGE:-}
+      AIWERKSTATT_REVIEW_CACHE_DAYS: ${AIWERKSTATT_REVIEW_CACHE_DAYS:-7}
     volumes:
       # SQLite, provider credentials (0600), queues, journal — persists across redeploys.
       - data:/data

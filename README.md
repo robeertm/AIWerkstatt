@@ -303,6 +303,13 @@ Heavy test suites can run on a second machine through a forced-command SSH key, 
 at 2 runs at once, with the machine's load shown in the admin overview. Standard library only, off unless
 configured. See [docs/test-runner.md](docs/test-runner.md).
 
+### 🔍 AI-free review runner
+
+Builders hand over a commit and its check commands and are free at once; the review runner runs the checks in throwaway
+containers (no credentials, no network unless a target allows it), with limits per target and green results reused per
+commit, and a reviewer records green or rework in a fixed finding format. Off by default (off / probe / on). See
+[docs/review-runner.md](docs/review-runner.md).
+
 ### ✅ Release check
 
 After each release, a standard-library script checks that the **published** release contains every deliverable the project

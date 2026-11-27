@@ -272,6 +272,22 @@ no route and no permission to AIWerkstatt itself; the trust boundary is the SSH 
   as `.env` never leave the client. The client configuration (target and key path) lives in a file or the
   environment, never in the code.
 
+## Review runner
+
+The optional [review runner](review-runner.md) (off by default) executes check commands of a handed-over commit. Those commands
+come from a signed-in admin or a coordinator token, never from a restricted, reporter, chain, peer or app token, and they run
+with less than an agent run has:
+
+- **Sandboxed source.** The commit is extracted with `git archive` in a short prepare container that mounts the workspaces volume
+  read-only and has no network. git never runs inside the web container, so repository configuration written by an agent (filters,
+  hooks) never executes next to the provider credentials. Only tracked files of the commit reach a check.
+- **Step containers.** uid 10001, all capabilities dropped, `no-new-privileges`, PID and memory limits, only the job's own volume
+  (never the workspaces, events, inbox or data volume), no provider credentials, no Docker access. Network only for targets that
+  allow it (`online` by default); `local` has none.
+- **No total limit, but limits per target**, an output-silence and a maximum-runtime stop per step, and removal of containers and
+  the job volume when the job ends.
+- The mode switch is admin-only (signed-in), the emergency stop is a file in the data volume.
+
 ## Honest residual risk
 
 Two things you should hold in mind:

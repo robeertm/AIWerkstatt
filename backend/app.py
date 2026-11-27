@@ -30,6 +30,8 @@ import service_token
 import planlimit
 import pool_slots
 import queue_priority
+import review_jobs
+import review_runner
 import orchestrator as orch
 
 DIST = os.environ.get("AIWERKSTATT_DIST",
@@ -78,12 +80,17 @@ API_ENDPOINTS = {
     "app": frozenset({"app_wish_create", "app_wish_list", "app_wish_get"}),
 }
 API_ENDPOINTS["coordinator"] |= {"app_wish_pending", "app_wish_release", "app_wish_resolve", "app_wish_image"}
+# review runner (docs/review-runner.md): a coordinator hands over commits, reads jobs and records findings; the mode
+# switch stays sign-in only (admins)
+API_ENDPOINTS["coordinator"] |= {"review_status", "review_handover", "review_jobs_list", "review_job_get",
+                                 "review_step_log", "review_finding", "review_cancel"}
 API_WRITES = {"coordinator": frozenset({"thread_create", "thread_comment"}),
               "reporter": frozenset({"thread_create", "thread_comment"}),
               "chain": frozenset({"thread_create", "thread_comment"}),
               "peer": frozenset({"thread_peer_note"}),
               "app": frozenset({"app_wish_create"})}
-API_WRITES["coordinator"] = API_WRITES["coordinator"] | {"app_wish_release", "app_wish_resolve"}
+API_WRITES["coordinator"] = API_WRITES["coordinator"] | {"app_wish_release", "app_wish_resolve",
+                                                         "review_handover", "review_finding", "review_cancel"}
 API_BLOCKLIST = {s.strip() for s in os.environ.get("AIWERKSTATT_API_BLOCKLIST", "").split(",") if s.strip()}
 WRITE_LIMIT = service_token.WriteLimiter()
 REPORTER_LIMIT = service_token.WriteLimiter(service_token.reporter_rate())
@@ -1343,9 +1350,124 @@ def static_proxy(path):
     return send_from_directory(DIST, "index.html")
 
 
+# ---------- review runner (build/review split, part 1; docs/review-runner.md) ----------
+
+def _review_access(fn):
+    """A signed-in admin or a coordinator token."""
+    @wraps(fn)
+    def wrap(*a, **k):
+        u = current_user()
+        if not u:
+            return jsonify(error="Please sign in.", need_login=True), 401
+        if not ((not u.get("api") and u["role"] == "admin") or _coordinator()):
+            return jsonify(error="Admins only."), 403
+        return fn(*a, **k)
+    return wrap
+
+
+def _review_by():
+    u = current_user() or {}
+    return ("api:%s" % u.get("service")) if u.get("api") else (u.get("name") or "")
+
+
+@app.get("/api/review/runner")
+@_review_access
+def review_status():
+    return jsonify(REVIEW.status())
+
+
+@app.post("/api/review/runner/mode")
+@admin_required
+def review_mode():
+    u = current_user()
+    if u.get("api"):
+        return jsonify(error="Admins only."), 403
+    d = request.get_json(silent=True) or {}
+    res, err = review_jobs.set_mode(d.get("mode"), u.get("name"), d.get("probe_max"), d.get("reason") or "")
+    if err:
+        return jsonify(error=err), 400
+    return jsonify(res)
+
+
+@app.post("/api/review/jobs")
+@_review_access
+def review_handover():
+    d = request.get_json(silent=True) or {}
+    try:
+        tid = int(d.get("thread_id"))
+    except (TypeError, ValueError):
+        return jsonify(error="thread_id must be a number"), 400
+    row = db.query_one("SELECT project_id FROM threads WHERE id=?", (tid,))
+    project = engine.get_project(row["project_id"]) if row else None
+    if not project:
+        return jsonify(error="task not found"), 404
+    job, created, err = review_jobs.hand_over(d, project, _review_by(), REVIEW.targets)
+    if err:
+        return jsonify(error=err), (409 if err.startswith(("the review runner is off", "probe mode")) else 400)
+    return jsonify(job=review_jobs.public_job(job), created=created), (201 if created else 200)
+
+
+@app.get("/api/review/jobs")
+@_review_access
+def review_jobs_list():
+    jobs = review_jobs.list_jobs()
+    if request.args.get("open") in ("1", "true"):
+        jobs = [j for j in jobs if j["phase"] in review_jobs.OPEN]
+    tid = request.args.get("thread_id", "")
+    if tid.isdigit():
+        jobs = [j for j in jobs if int(j.get("thread_id") or -1) == int(tid)]
+    return jsonify(jobs=[review_jobs.public_job(j) for j in jobs[-200:]])
+
+
+@app.get("/api/review/jobs/<jid>")
+@_review_access
+def review_job_get(jid):
+    j = review_jobs.read_job(jid)
+    if not j:
+        return jsonify(error="not found"), 404
+    return jsonify(review_jobs.public_job(j, tail=review_runner.TAIL_CHARS))
+
+
+@app.get("/api/review/jobs/<jid>/steps/<int:nr>/log")
+@_review_access
+def review_step_log(jid, nr):
+    j = review_jobs.read_job(jid)
+    if not j:
+        return jsonify(error="not found"), 404
+    path = os.path.join(review_jobs.logs_dir(), j["id"], "step-0-prepare.log" if nr == 0 else "step-%d.log" % nr)
+    if not os.path.isfile(path):
+        return jsonify(error="no log for this step"), 404
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        f.seek(max(0, size - 65536))
+        text = f.read().decode("utf-8", "replace")
+    return app.response_class(text, mimetype="text/plain; charset=utf-8")
+
+
+@app.post("/api/review/jobs/<jid>/finding")
+@_review_access
+def review_finding(jid):
+    j, err = review_jobs.record_finding(jid, request.get_json(silent=True), _review_by())
+    if err:
+        return jsonify(error=err), (404 if err == "not found" else 409 if err.startswith("a finding is accepted") else 400)
+    return jsonify(review_jobs.public_job(j))
+
+
+@app.post("/api/review/jobs/<jid>/cancel")
+@_review_access
+def review_cancel(jid):
+    d = request.get_json(silent=True) or {}
+    j, err = review_jobs.cancel(jid, _review_by(), d.get("reason") or "")
+    if err:
+        return jsonify(error=err), (404 if err == "not found" else 409)
+    return jsonify(review_jobs.public_job(j))
+
+
 # ---------- background: orchestrator + ingest ----------
 
 ORCH = orch.Orchestrator(provider_creds)
+# AI-free review runner: containers through the same socket proxy; idles while there is no job (docs/review-runner.md)
+REVIEW = review_runner.ReviewRunner(review_runner.DockerExecutor(ORCH._client))
 
 
 def _deploy_now(project_id, thread_id=None):
@@ -1410,6 +1532,8 @@ def _ingest_loop():
 def _start_background():
     threading.Thread(target=ORCH.run_loop, daemon=True, name="orchestrator").start()
     threading.Thread(target=_ingest_loop, daemon=True, name="ingest").start()
+    if ORCH._client is not None:
+        threading.Thread(target=REVIEW.run_loop, daemon=True, name="review-runner").start()
 
 
 _start_background()

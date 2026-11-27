@@ -108,6 +108,11 @@ agent-runner:
 A fourth volume, `data`, is **private to the web container** — SQLite, provider
 credentials, the task queue.
 
+The optional [review runner](review-runner.md) adds one short-lived volume per review
+job (`aiwerkstatt-review-<job>`): a sandboxed prepare container extracts the handed-over
+commit from `workspaces` (mounted read-only) into it, the check containers mount only that
+volume, and it is removed when the job ends.
+
 ### Why named volumes, not bind mounts
 
 Named volumes are **portable across Windows, macOS and Linux**. Bind mounts drag in

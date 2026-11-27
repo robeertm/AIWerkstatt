@@ -6,6 +6,29 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 0.49.0 — 2026-11-27
+### Added — AI-free review runner and finding format (build/review split, part 1)
+- **Review runner** (`backend/review_runner.py`, `backend/review_jobs.py`): a service inside the web app that runs the check
+  commands of a handed-over commit. A short prepare container (no network, workspaces volume read-only) extracts exactly that
+  commit with `git archive` into a fresh job volume, so git never runs inside the web container and untracked files never reach a
+  check; every step is its own unprivileged container on the job volume (no credentials, no Docker access, network only if its
+  target allows it). Steps run in order and all of them run, also after a red one.
+- **Limits per target**, no total limit: `local` (1, no network) and `online` (1, network) by default, replaceable through
+  `AIWERKSTATT_REVIEW_TARGETS` (limit, network, cpus, memory, image). Rework rounds start before first rounds.
+- **Green cache** per project, commit, command, target and image for 7 days (`AIWERKSTATT_REVIEW_CACHE_DAYS`); a job whose steps
+  are all green from the cache needs no container. Red is never cached.
+- **Emergency stop per step**: no output for 45 minutes or longer than 6 hours ends the step red with the reason; steps that were
+  running during a restart wait again and the source is prepared anew.
+- **Job phases** `waiting_runner`, `running`, `waiting_review`, `in_review`, `green`, `rework`, `escalated`, `cancelled`; one job
+  per task and commit, a new commit is the next round and supersedes an older open job.
+- **Finding format** (`review-finding/1`): decision green or rework, findings with file, line, photo, expected, measured and
+  severity (critical, high, medium, low); rework needs a finding, green with a red step needs a reason.
+- **Switch** `off` (default) / `probe` (at most `probe_max` open jobs) / `on`: `AIWERKSTATT_REVIEW_MODE` as default, admins switch it
+  with `POST /api/review/runner/mode` (logged), emergency stop file `data/review/OFF`.
+- **API** for signed-in admins and coordinator tokens: hand-off `POST /api/review/jobs`, status `GET /api/review/runner`, jobs,
+  step logs, cancel, finding. Part 2 (reviewer slots, rework back to the same builder session, flow API) follows.
+- Docs: `docs/review-runner.md`, security section, parity inventory; 39 new tests (`backend/tests/test_review_runner.py`).
+
 ## 0.48.1 — 2026-11-26
 ### Added
 - `THIRD-PARTY-NOTICES.md` with the Python packages of the backend, the production JavaScript packages of the frontend,
