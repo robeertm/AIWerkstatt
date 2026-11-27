@@ -251,7 +251,9 @@ class ClaudeAdapter(AgentAdapter):
             out.append({"kind": "session", "id": o["session_id"]})
         t = o.get("type")
         if t == "assistant":
-            msg = o.get("message") or {}
+            msg = o.get("message")
+            if not isinstance(msg, dict):      # a malformed line must never end the run
+                msg = {}
             # Only the MAIN conversation drives the context bar. Subagent messages carry a
             # parent_tool_use_id (≠ null) and have their own context — counting them would skew
             # the parent agent's ctx%.
@@ -288,7 +290,8 @@ class ClaudeAdapter(AgentAdapter):
                 if e["kind"] == "activity":
                     e["top"] = top          # main conversation (True) or a subagent (False)
         elif t == "user":
-            content = (o.get("message") or {}).get("content")
+            umsg = o.get("message")
+            content = umsg.get("content") if isinstance(umsg, dict) else None
             if isinstance(content, list):
                 for bl in content:
                     if isinstance(bl, dict) and bl.get("type") == "tool_result":

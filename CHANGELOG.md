@@ -5,6 +5,15 @@ All notable changes to this project are documented here. The format is based on
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added — test gaps closed for modules with outward effect
+- Measured which modules reach outside (GitHub, runner start, token exchange) with thin or no tests; the three largest gaps now
+  have offline tests (fakes for HTTP and git, each test well under a second):
+  `test_publish_delivery.py` (repo lookup/creation, leak-scan gate stops before any call, token only on the push, temp tree
+  removed, release tag rules and target commit, zip export), `test_claude_adapter.py` (run argv without secrets, subagent guard
+  wiring, usage limit vs. transient API error, stream parsing) and `test_planlimit.py` (PKCE connect, refresh, cache, last good
+  value on failure).
+### Fixed
+- Runner: a malformed stream line whose `message` is not an object no longer raises in the Claude adapter.
 ### Changed — updater: pre-check, backup and rollback proven
 - `scripts/self-update.sh` now checks before it swaps (clean checkout, remote reachable, strict fast-forward, newer version),
   records the old commit (`refs/aiwerkstatt/pre-update`), verifies the new version on the health URL and rolls back to the old
