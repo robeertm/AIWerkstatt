@@ -5,6 +5,12 @@ All notable changes to this project are documented here. The format is based on
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed — updater: pre-check, backup and rollback proven
+- `scripts/self-update.sh` now checks before it swaps (clean checkout, remote reachable, strict fast-forward, newer version),
+  records the old commit (`refs/aiwerkstatt/pre-update`), verifies the new version on the health URL and rolls back to the old
+  commit if the build, the recreate or the health check fails. Data and `.env` are never touched.
+- 14 new tests (`backend/tests/test_self_update_script.py`) run the script against a throw-away git origin and a fake `docker`
+  (no network, no Docker socket); they pin the check switch wiring too.
 
 ## 0.49.0 — 2026-11-27
 ### Added — AI-free review runner and finding format (build/review split, part 1)
