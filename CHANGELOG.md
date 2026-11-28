@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## 0.49.1 — 2026-11-28
 ### Added — test gaps closed for modules with outward effect
 - Measured which modules reach outside (GitHub, runner start, token exchange) with thin or no tests; the three largest gaps now
   have offline tests (fakes for HTTP and git, each test well under a second):
